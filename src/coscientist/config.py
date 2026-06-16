@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     scout_strong_threshold: int = 5
     scout_weak_threshold: int = 1
     scout_sparse_threshold: int = 3
+    approach_min_evidence: int = 2
 
 
 settings = Settings()

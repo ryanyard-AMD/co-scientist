@@ -8,7 +8,7 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from coscientist.database import Base
-from coscientist.models import evidence, goal, ontology  # noqa: F401 — registers ORM models
+from coscientist.models import approach, evidence, goal, ontology  # noqa: F401 — registers ORM models
 
 config = context.config
 

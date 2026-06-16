@@ -8,7 +8,7 @@ An agent-based co-scientist system that accelerates research-to-device synthesis
 Layer 4: Co-Scientist (this project, port 8001)
          ├── Goal Workspace    (CS-EPIC-GOAL)
          ├── Research Scout     (CS-EPIC-SCOUT)
-         ├── Approach Forge     (CS-EPIC-FORGE)     [planned]
+         ├── Approach Forge     (CS-EPIC-APPROACH)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT) [planned]
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
@@ -47,6 +47,17 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 - CRUD API + merge operation (merges keywords, moves relationships, updates evidence records, deprecates source)
 - Scout automatically loads ontology terms from DB for classification
 
+### CS-EPIC-APPROACH: Approach Card Generation and Curation
+
+Synthesizes scout evidence into structured Approach Cards — one per method family — for comparing candidate research approaches.
+
+- **ApproachCard** with 8-state lifecycle: `generated` → `reviewed` → `scored` → `experiment_proposed` → `tested` → `validated` / `refuted` → `superseded`
+- Algorithmic generation from evidence groups: extracts metrics, hardware requirements, risks, and evidence links per method family
+- Every field traced to source evidence records with direct/inferred evidence type
+- Duplicate detection across approach cards within a workspace
+- Merge operation combines evidence, metrics, hardware, risks; supersedes source card
+- Maturity inference (theoretical, simulated, measured, validated) from evidence text
+
 ## Quick Start
 
 ```bash
@@ -72,6 +83,13 @@ cs ontology list --category method
 cs ontology show <TERM_ID>
 cs ontology add --name "new_method" --category method --keywords '["new method"]'
 cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
+
+# Generate and manage approach cards
+cs approach generate <GOAL_ID>
+cs approach list <GOAL_ID>
+cs approach show <APPROACH_ID>
+cs approach review <APPROACH_ID>
+cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
 ```
 
 ## API Endpoints
@@ -98,6 +116,20 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/scout/evidence/groups` | Grouped evidence view |
 | GET | `/goals/{id}/scout/evidence/summary` | Summary stats and warnings |
 | GET | `/goals/{id}/scout/evidence/{eid}` | Single evidence record |
+
+### Approaches
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/approaches/generate` | Generate approach cards from evidence |
+| POST | `/goals/{id}/approaches` | Create a manual approach card |
+| GET | `/goals/{id}/approaches` | List approach cards (filter by status, method) |
+| GET | `/goals/{id}/approaches/{aid}` | Get approach card details |
+| PATCH | `/goals/{id}/approaches/{aid}` | Update approach card fields |
+| POST | `/goals/{id}/approaches/{aid}/transition` | Transition approach status |
+| DELETE | `/goals/{id}/approaches/{aid}` | Delete a generated approach |
+| POST | `/goals/{id}/approaches/merge` | Merge two approach cards |
+| GET | `/goals/{id}/approaches/duplicates` | Detect duplicate approach cards |
 
 ### Ontology
 
@@ -133,6 +165,7 @@ Environment variables (prefix `CS_`):
 | `CS_SCOUT_STRONG_THRESHOLD` | `5` | Papers for "strong" evidence |
 | `CS_SCOUT_WEAK_THRESHOLD` | `1` | Papers for "weak" evidence |
 | `CS_SCOUT_SPARSE_THRESHOLD` | `3` | Warn if fewer papers than this |
+| `CS_APPROACH_MIN_EVIDENCE` | `2` | Min evidence records to generate an approach |
 
 ## Development
 
@@ -152,22 +185,26 @@ src/coscientist/
 ├── database.py            # SQLAlchemy engine, session, Base
 ├── domain.py              # PSZ domain keyword dictionaries
 ├── main.py                # FastAPI app with lifespan
-├── cli/app.py             # Typer CLI (cs goal/scout commands)
+├── cli/app.py             # Typer CLI (cs goal/scout/ontology/approach commands)
 ├── clients/retrieval.py   # httpx client for retrieval API
 ├── models/
 │   ├── goal.py            # ResearchGoal ORM
 │   ├── evidence.py        # EvidenceRecord ORM
-│   └── ontology.py        # OntologyTerm, OntologyRelationship ORM
+│   ├── ontology.py        # OntologyTerm, OntologyRelationship ORM
+│   └── approach.py        # ApproachCard ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
-│   └── ontology.py        # Ontology request/response schemas
+│   ├── ontology.py        # Ontology request/response schemas
+│   └── approach.py        # Approach request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
-│   └── ontology.py        # Ontology CRUD, merge, relationships
+│   ├── ontology.py        # Ontology CRUD, merge, relationships
+│   └── approach.py        # Approach generation, CRUD, merge
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
-    └── ontology.py        # Ontology API endpoints
+    ├── ontology.py        # Ontology API endpoints
+    └── approach.py        # Approach API endpoints
 ```

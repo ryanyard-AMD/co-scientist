@@ -17,8 +17,14 @@ from coscientist.schemas.goal import (
     GoalUpdate,
     SuccessCriterion,
 )
+from coscientist.schemas.approach import (
+    ApproachGenerateRequest,
+    ApproachMergeRequest,
+    ApproachStatusEnum,
+)
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
+from coscientist.services import approach as approach_svc
 from coscientist.services import goal as svc
 from coscientist.services import ontology as ontology_svc
 from coscientist.services import scout as scout_svc
@@ -27,9 +33,11 @@ app = typer.Typer(no_args_is_help=True)
 goal_app = typer.Typer(no_args_is_help=True, help="Manage research goals")
 scout_app = typer.Typer(no_args_is_help=True, help="Scout evidence for research goals")
 ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
+approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
+app.add_typer(approach_app, name="approach")
 
 console = Console()
 
@@ -337,5 +345,121 @@ def ontology_merge(
             target_term_id=target,
         ))
         console.print(f"[green]Merged into {result.canonical_name} ({result.id[:8]}…)[/green]")
+    finally:
+        db.close()
+
+
+# --- Approach commands ---
+
+
+@approach_app.command("generate")
+def approach_generate(
+    goal_id: str = typer.Argument(...),
+    scout_run_id: Optional[str] = typer.Option(None, "--scout-run", "-s"),
+    min_evidence: int = typer.Option(2, "--min-evidence", "-e"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
+):
+    """Generate approach cards from evidence."""
+    db = _get_session()
+    try:
+        request = ApproachGenerateRequest(
+            scout_run_id=scout_run_id,
+            min_evidence_count=min_evidence,
+            method_families=[method] if method else None,
+        )
+        result = approach_svc.generate_approaches(db, goal_id, request)
+        console.print(f"[green]Generation run {result.generation_run_id[:8]}… complete[/green]")
+        console.print(f"  Approaches created: {result.approaches_created}")
+        console.print(f"  Duplicates skipped: {result.approaches_skipped_duplicate}")
+        for a in result.approaches:
+            console.print(f"  - {a.name} ({a.method_family}) [{a.maturity.value}]")
+    finally:
+        db.close()
+
+
+@approach_app.command("list")
+def approach_list(
+    goal_id: str = typer.Argument(...),
+    status: Optional[ApproachStatusEnum] = typer.Option(None, "--status", "-s"),
+    method: Optional[str] = typer.Option(None, "--method", "-m"),
+):
+    """List approach cards for a goal."""
+    db = _get_session()
+    try:
+        items, total = approach_svc.list_approaches(
+            db, goal_id, status=status, method_family=method,
+        )
+        table = Table(title=f"Approach Cards ({total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Method")
+        table.add_column("Status", style="green")
+        table.add_column("Maturity")
+        table.add_column("Evidence", justify="right")
+        for a in items:
+            table.add_row(
+                a.id[:8] + "…",
+                a.name,
+                a.method_family,
+                a.status.value,
+                a.maturity.value,
+                str(len(a.evidence_links)),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@approach_app.command("show")
+def approach_show(approach_id: str = typer.Argument(...)):
+    """Show full details of an approach card."""
+    db = _get_session()
+    try:
+        result = approach_svc.get(db, approach_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@approach_app.command("review")
+def approach_review(approach_id: str = typer.Argument(...)):
+    """Transition approach card to 'reviewed' status."""
+    db = _get_session()
+    try:
+        result = approach_svc.transition(db, approach_id, ApproachStatusEnum.reviewed)
+        console.print(f"[green]Approach {approach_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@approach_app.command("merge")
+def approach_merge(
+    source: str = typer.Option(..., "--source", help="Source approach ID (will be superseded)"),
+    target: str = typer.Option(..., "--target", help="Target approach ID (will absorb source)"),
+):
+    """Merge source approach card into target."""
+    db = _get_session()
+    try:
+        result = approach_svc.merge_approaches(db, ApproachMergeRequest(
+            source_approach_id=source,
+            target_approach_id=target,
+        ))
+        console.print(f"[green]Merged into {result.name} ({result.id[:8]}…)[/green]")
+    finally:
+        db.close()
+
+
+@approach_app.command("delete")
+def approach_delete(
+    approach_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a generated approach card."""
+    if not yes:
+        typer.confirm(f"Delete approach {approach_id}?", abort=True)
+    db = _get_session()
+    try:
+        approach_svc.delete(db, approach_id)
+        console.print(f"[red]Approach {approach_id[:8]}… deleted[/red]")
     finally:
         db.close()
