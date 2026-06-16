@@ -4,7 +4,9 @@ from fastapi import FastAPI
 
 from coscientist.config import settings
 from coscientist.database import Base, engine
+from coscientist.models import evidence  # noqa: F401 — registers ORM model
 from coscientist.routers import goal as goal_router
+from coscientist.routers import scout as scout_router
 
 
 @asynccontextmanager
@@ -20,6 +22,7 @@ app = FastAPI(
 )
 
 app.include_router(goal_router.router, prefix=settings.api_prefix)
+app.include_router(scout_router.router, prefix=settings.api_prefix)
 
 
 @app.get(f"{settings.api_prefix}/health")

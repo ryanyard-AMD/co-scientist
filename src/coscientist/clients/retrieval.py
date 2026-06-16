@@ -1,14 +1,25 @@
 """
 httpx-based client for the retrieval API.
 Modeled after ../experiment/src/repro/retrieval_client/client.py.
-Active calls are added in the SCOUT epic; this stub wires settings and data contracts.
 """
 
-from pydantic import BaseModel
+from __future__ import annotations
 
 import httpx
+from pydantic import BaseModel
 
 from coscientist.config import settings
+
+
+class MetadataFilter(BaseModel):
+    paper_ids: list[str] | None = None
+    authors: list[str] | None = None
+    year_min: int | None = None
+    year_max: int | None = None
+    source_ids: list[str] | None = None
+    source_types: list[str] | None = None
+    source_collection: str | None = None
+    source_tag: str | None = None
 
 
 class ChunkResult(BaseModel):
@@ -16,9 +27,14 @@ class ChunkResult(BaseModel):
     paper_id: str
     title: str
     text: str
-    page_number: int
+    section_title: str | None = None
+    page_number: int | None = None
     chunk_index: int
     score: float
+    vector_score: float | None = None
+    fulltext_score: float | None = None
+    source_id: str | None = None
+    source_type: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -37,6 +53,17 @@ class EvidencePack(BaseModel):
     chunks: list[ChunkResult]
     answer: str | None = None
     confidence: float | None = None
+
+
+class DocumentMetadata(BaseModel):
+    paper_id: str
+    title: str
+    original_filename: str
+    ingestion_status: str
+    abstract: str | None = None
+    year: int | None = None
+    source_id: str | None = None
+    source_type: str | None = None
 
 
 class RetrievalClient:
@@ -65,9 +92,32 @@ class RetrievalClient:
         paper_ids: list[str] | None = None,
         generate_answer: bool = False,
     ) -> QueryResponse:
-        payload: dict = {"query": query, "top_k": top_k, "generate_answer": generate_answer}
-        if paper_ids:
-            payload["filters"] = {"paper_ids": paper_ids}
+        filters = MetadataFilter(paper_ids=paper_ids) if paper_ids else None
+        return self.query_with_filters(
+            query, top_k=top_k, filters=filters, generate_answer=generate_answer,
+        )
+
+    def query_with_filters(
+        self,
+        query: str,
+        *,
+        top_k: int = 20,
+        filters: MetadataFilter | None = None,
+        expand_graph: bool = True,
+        rerank: bool = True,
+        generate_answer: bool = False,
+    ) -> QueryResponse:
+        payload: dict = {
+            "query": query,
+            "top_k": top_k,
+            "expand_graph": expand_graph,
+            "rerank": rerank,
+            "generate_answer": generate_answer,
+        }
+        if filters:
+            filter_dict = filters.model_dump(exclude_none=True)
+            if filter_dict:
+                payload["filters"] = filter_dict
         resp = self._client.post("/api/v1/query", json=payload)
         resp.raise_for_status()
         return QueryResponse.model_validate(resp.json())
@@ -96,6 +146,16 @@ class RetrievalClient:
             answer=qr.answer,
             confidence=qr.confidence,
         )
+
+    def get_document(self, document_id: str) -> DocumentMetadata:
+        resp = self._client.get(f"/api/v1/documents/{document_id}")
+        resp.raise_for_status()
+        return DocumentMetadata.model_validate(resp.json())
+
+    def get_paper_entities(self, paper_id: str) -> dict:
+        resp = self._client.get(f"/api/v1/entities/papers/{paper_id}")
+        resp.raise_for_status()
+        return resp.json()
 
     def close(self) -> None:
         self._client.close()

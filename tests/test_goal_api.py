@@ -1,20 +1,6 @@
 import pytest
 
-GOAL_PAYLOAD = {
-    "name": "PSZ Headphone",
-    "description": "Personal sound zone for headphone form factor",
-    "target_application": "personal_sound_zones",
-    "success_criteria": [
-        {"name": "acoustic_contrast", "operator": ">=", "target": 20.0, "unit": "dB"},
-        {"name": "latency", "operator": "<=", "target": 10.0, "unit": "ms"},
-    ],
-    "device_constraints": {
-        "speaker_count": 2,
-        "form_factor": "headphone",
-        "compute_budget": "low",
-        "setup_time_minutes": 5,
-    },
-}
+from conftest import GOAL_PAYLOAD
 
 
 def test_create_goal_returns_201(client):
