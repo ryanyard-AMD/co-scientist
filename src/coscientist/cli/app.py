@@ -22,11 +22,13 @@ from coscientist.schemas.approach import (
     ApproachMergeRequest,
     ApproachStatusEnum,
 )
+from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approach as approach_svc
 from coscientist.services import goal as svc
 from coscientist.services import ontology as ontology_svc
+from coscientist.services import score as score_svc
 from coscientist.services import scout as scout_svc
 
 app = typer.Typer(no_args_is_help=True)
@@ -34,10 +36,12 @@ goal_app = typer.Typer(no_args_is_help=True, help="Manage research goals")
 scout_app = typer.Typer(no_args_is_help=True, help="Scout evidence for research goals")
 ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
 approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
+score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach cards")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(approach_app, name="approach")
+app.add_typer(score_app, name="score")
 
 console = Console()
 
@@ -461,5 +465,106 @@ def approach_delete(
     try:
         approach_svc.delete(db, approach_id)
         console.print(f"[red]Approach {approach_id[:8]}… deleted[/red]")
+    finally:
+        db.close()
+
+
+# --- Score commands ---
+
+
+@score_app.command("run")
+def score_run(
+    goal_id: str = typer.Argument(...),
+    profile: WeightProfileEnum = typer.Option(
+        WeightProfileEnum.default, "--profile", "-p", help="Weight profile"
+    ),
+):
+    """Score all reviewed/scored approaches for a goal."""
+    db = _get_session()
+    try:
+        results = score_svc.score_all_approaches(db, goal_id, profile)
+        console.print(f"[green]Scored {len(results)} approaches with profile '{profile.value}'[/green]")
+        for r in results:
+            console.print(
+                f"  {r.approach_name} ({r.method_family}): "
+                f"final={r.final_score:.3f} (total={r.total_score:.3f} - penalty={r.risk_penalty:.3f})"
+            )
+    finally:
+        db.close()
+
+
+@score_app.command("show")
+def score_show(approach_id: str = typer.Argument(...)):
+    """Show scores for an approach card."""
+    db = _get_session()
+    try:
+        result = score_svc.get_scores(db, approach_id)
+        table = Table(title=f"Scores: {result.approach_name} ({result.method_family})")
+        table.add_column("Dimension")
+        table.add_column("Score", justify="right")
+        table.add_column("Weight", justify="right")
+        table.add_column("Weighted", justify="right")
+        table.add_column("Low?")
+        table.add_column("Rationale", max_width=50)
+        for d in result.dimensions:
+            table.add_row(
+                d.dimension.value,
+                f"{d.score:.3f}",
+                f"{d.weight:.2f}",
+                f"{d.weighted_score:.4f}",
+                "!" if d.low_confidence else "",
+                d.rationale,
+            )
+        console.print(table)
+        console.print(
+            f"Total: {result.total_score:.4f} | "
+            f"Risk penalty: {result.risk_penalty:.4f} | "
+            f"[bold]Final: {result.final_score:.4f}[/bold]"
+        )
+    finally:
+        db.close()
+
+
+@score_app.command("compare")
+def score_compare(
+    goal_id: str = typer.Argument(...),
+    profile: WeightProfileEnum = typer.Option(
+        WeightProfileEnum.default, "--profile", "-p",
+    ),
+):
+    """Ranked comparison of scored approaches."""
+    db = _get_session()
+    try:
+        result = score_svc.get_comparison(db, goal_id, profile)
+        table = Table(title="Approach Comparison (ranked by final score)")
+        table.add_column("Rank", justify="right")
+        table.add_column("Name")
+        table.add_column("Method")
+        table.add_column("Final", justify="right", style="bold")
+        table.add_column("Total", justify="right")
+        table.add_column("Penalty", justify="right")
+        for i, a in enumerate(result.approaches, 1):
+            table.add_row(
+                str(i), a.approach_name, a.method_family,
+                f"{a.final_score:.4f}", f"{a.total_score:.4f}", f"{a.risk_penalty:.4f}",
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@score_app.command("pareto")
+def score_pareto(goal_id: str = typer.Argument(...)):
+    """Show Pareto-optimal approaches."""
+    db = _get_session()
+    try:
+        result = score_svc.get_pareto(db, goal_id)
+        console.print(f"[green]Pareto-optimal ({len(result.pareto_optimal)}):[/green]")
+        for a in result.pareto_optimal:
+            console.print(f"  {a.approach_name} ({a.method_family}) final={a.final_score:.4f}")
+        if result.dominated:
+            console.print(f"[yellow]Dominated ({len(result.dominated)}):[/yellow]")
+            for a in result.dominated:
+                console.print(f"  {a.approach_name} ({a.method_family}) final={a.final_score:.4f}")
     finally:
         db.close()

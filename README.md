@@ -9,6 +9,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Goal Workspace    (CS-EPIC-GOAL)
          ├── Research Scout     (CS-EPIC-SCOUT)
          ├── Approach Forge     (CS-EPIC-APPROACH)
+         ├── Rubric Scoring     (CS-EPIC-SCORE)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT) [planned]
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
@@ -58,6 +59,19 @@ Synthesizes scout evidence into structured Approach Cards — one per method fam
 - Merge operation combines evidence, metrics, hardware, risks; supersedes source card
 - Maturity inference (theoretical, simulated, measured, validated) from evidence text
 
+### CS-EPIC-SCORE: Evidence-Linked Rubric Scoring
+
+Transparent, evidence-linked scoring system for evaluating and comparing approach cards across 10 weighted dimensions.
+
+- **RubricScore** with 10 dimensions: evidence_strength, reproducibility, acoustic_performance, robustness, realtime_feasibility, hardware_feasibility, calibration_burden, composability, measurement_clarity, device_relevance
+- Formula: `final_score = Σ(weight_i × score_i) - risk_penalty`
+- 5 weight profiles: default, fastest_prototype, scientific_novelty, robustness, product_feasibility
+- Each dimension score includes rationale, confidence, evidence links, and low-confidence flag
+- Algorithmic scoring from approach card fields and evidence metadata
+- Auto-transitions approach from `reviewed` → `scored` on first score
+- Per-dimension comparison rankings across all scored approaches
+- Pareto frontier analysis: identifies non-dominated approaches
+
 ## Quick Start
 
 ```bash
@@ -90,6 +104,13 @@ cs approach list <GOAL_ID>
 cs approach show <APPROACH_ID>
 cs approach review <APPROACH_ID>
 cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
+
+# Score and compare approaches
+cs score run <GOAL_ID>                          # score all reviewed approaches
+cs score run <GOAL_ID> --profile robustness     # score with alternate weight profile
+cs score show <APPROACH_ID>                     # show dimension scores
+cs score compare <GOAL_ID>                      # ranked comparison table
+cs score pareto <GOAL_ID>                       # Pareto-optimal set
 ```
 
 ## API Endpoints
@@ -131,6 +152,17 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/approaches/merge` | Merge two approach cards |
 | GET | `/goals/{id}/approaches/duplicates` | Detect duplicate approach cards |
 
+### Scores
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/approaches/{aid}/score` | Score an approach across all dimensions |
+| POST | `/goals/{id}/approaches/score-all` | Score all reviewed/scored approaches |
+| GET | `/goals/{id}/approaches/{aid}/scores` | Get existing scores for an approach |
+| GET | `/goals/{id}/approaches/comparison` | Ranked comparison of scored approaches |
+| GET | `/goals/{id}/approaches/pareto` | Pareto frontier analysis |
+| POST | `/goals/{id}/approaches/{aid}/rescore` | Rescore with different weight profile |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -166,6 +198,7 @@ Environment variables (prefix `CS_`):
 | `CS_SCOUT_WEAK_THRESHOLD` | `1` | Papers for "weak" evidence |
 | `CS_SCOUT_SPARSE_THRESHOLD` | `3` | Warn if fewer papers than this |
 | `CS_APPROACH_MIN_EVIDENCE` | `2` | Min evidence records to generate an approach |
+| `CS_SCORE_WEIGHT_PROFILE` | `default` | Default weight profile (default, fastest_prototype, scientific_novelty, robustness, product_feasibility) |
 
 ## Development
 
@@ -191,20 +224,24 @@ src/coscientist/
 │   ├── goal.py            # ResearchGoal ORM
 │   ├── evidence.py        # EvidenceRecord ORM
 │   ├── ontology.py        # OntologyTerm, OntologyRelationship ORM
-│   └── approach.py        # ApproachCard ORM
+│   ├── approach.py        # ApproachCard ORM
+│   └── score.py           # RubricScore ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
 │   ├── ontology.py        # Ontology request/response schemas
-│   └── approach.py        # Approach request/response schemas
+│   ├── approach.py        # Approach request/response schemas
+│   └── score.py           # Score request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
 │   ├── ontology.py        # Ontology CRUD, merge, relationships
-│   └── approach.py        # Approach generation, CRUD, merge
+│   ├── approach.py        # Approach generation, CRUD, merge
+│   └── score.py           # Rubric scoring, comparison, Pareto
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
     ├── ontology.py        # Ontology API endpoints
-    └── approach.py        # Approach API endpoints
+    ├── approach.py        # Approach API endpoints
+    └── score.py           # Score API endpoints
 ```
