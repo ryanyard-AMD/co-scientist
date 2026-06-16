@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 import coscientist.database as db_module
 from coscientist.database import Base, get_db
 from coscientist.main import app
-from coscientist.models import evidence  # noqa: F401 — ensure evidence table created
+from coscientist.models import evidence, ontology  # noqa: F401 — ensure tables created
 from coscientist.clients.retrieval import (
     ChunkResult,
     DocumentMetadata,

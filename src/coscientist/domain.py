@@ -1,7 +1,24 @@
 """
 PSZ domain keyword dictionaries for evidence classification.
-Pre-ONTOLOGY placeholder — will be replaced by graph-based classification.
+Falls back to hardcoded dicts when no DB terms are provided.
 """
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from coscientist.models.ontology import OntologyRelationship, OntologyTerm
+
+_CATEGORY_TO_FIELD = {
+    "method": "method_families",
+    "metric": "metrics",
+    "hardware": "hardware",
+    "failure_mode": "failure_modes",
+    "acoustic_goal": "acoustic_goals",
+    "scene_assumption": "scene_assumptions",
+}
 
 METHOD_FAMILIES: dict[str, list[str]] = {
     "acoustic_contrast_control": [
@@ -158,9 +175,25 @@ RELATED_METHODS: dict[str, list[str]] = {
 }
 
 
-def classify_text(text: str) -> dict[str, list[str]]:
+def classify_text(
+    text: str,
+    terms: list[OntologyTerm] | None = None,
+) -> dict[str, list[str]]:
     lower = text.lower()
-    result: dict[str, list[str]] = {
+
+    if terms is not None:
+        result: dict[str, list[str]] = {}
+        for field in _CATEGORY_TO_FIELD.values():
+            result[field] = []
+        for term in terms:
+            kw_list = json.loads(term.keywords)
+            if any(kw in lower for kw in kw_list):
+                field_name = _CATEGORY_TO_FIELD.get(term.category)
+                if field_name and field_name in result:
+                    result[field_name].append(term.canonical_name)
+        return result
+
+    result = {
         "method_families": [],
         "metrics": [],
         "hardware": [],
@@ -179,3 +212,19 @@ def classify_text(text: str) -> dict[str, list[str]]:
         if any(kw in lower for kw in keywords):
             result["failure_modes"].append(canonical)
     return result
+
+
+def get_related_methods(
+    terms: list[OntologyTerm],
+    relationships: list[OntologyRelationship],
+) -> dict[str, list[str]]:
+    id_to_name = {t.id: t.canonical_name for t in terms}
+    method_terms = {t.id for t in terms if t.category == "method"}
+    related: dict[str, list[str]] = {}
+    for rel in relationships:
+        if rel.source_term_id in method_terms and rel.target_term_id in method_terms:
+            src = id_to_name[rel.source_term_id]
+            tgt = id_to_name[rel.target_term_id]
+            related.setdefault(src, []).append(tgt)
+            related.setdefault(tgt, []).append(src)
+    return related

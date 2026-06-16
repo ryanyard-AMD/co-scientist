@@ -32,10 +32,20 @@ Evidence retrieval layer that queries the retrieval API and organizes literature
 
 - Decomposes goals into search queries across method families, metrics, and constraints
 - Groups evidence by method family, metric, hardware assumption, and failure mode
-- Classifies chunks using PSZ domain keyword dictionaries (7 method families, 7 metrics, 6 hardware terms, 5 failure modes)
+- Classifies chunks using DB-backed ontology terms (falls back to hardcoded dicts if DB empty)
 - Detects insufficient evidence with configurable thresholds and suggests related methods
 - Distinguishes primary vs. incidental method mentions
 - Full traceability: every evidence record links to paper, section, page, chunk, and source
+
+### CS-EPIC-ONTOLOGY: PSZ Semantic Layer
+
+Database-backed taxonomy for personal sound zone domain concepts, replacing hardcoded keyword dictionaries.
+
+- **OntologyTerm** with 6 categories: method, metric, hardware, failure_mode, acoustic_goal, scene_assumption
+- **OntologyRelationship** for term-to-term links (related_to, subsumes, alias_of)
+- 63 seed terms across all categories, seeded via Alembic migration
+- CRUD API + merge operation (merges keywords, moves relationships, updates evidence records, deprecates source)
+- Scout automatically loads ontology terms from DB for classification
 
 ## Quick Start
 
@@ -56,6 +66,12 @@ cs goal activate <GOAL_ID>
 cs scout run <GOAL_ID>
 cs scout evidence <GOAL_ID> --group-by method
 cs scout summary <GOAL_ID>
+
+# Browse ontology
+cs ontology list --category method
+cs ontology show <TERM_ID>
+cs ontology add --name "new_method" --category method --keywords '["new method"]'
+cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
 ```
 
 ## API Endpoints
@@ -82,6 +98,20 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/scout/evidence/groups` | Grouped evidence view |
 | GET | `/goals/{id}/scout/evidence/summary` | Summary stats and warnings |
 | GET | `/goals/{id}/scout/evidence/{eid}` | Single evidence record |
+
+### Ontology
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/ontology/terms` | Create an ontology term |
+| GET | `/ontology/terms` | List terms (filter by category, status) |
+| GET | `/ontology/terms/{id}` | Get term details |
+| PATCH | `/ontology/terms/{id}` | Update term fields |
+| DELETE | `/ontology/terms/{id}` | Delete a deprecated term |
+| POST | `/ontology/terms/merge` | Merge source term into target |
+| GET | `/ontology/terms/{id}/related` | Get related terms |
+| POST | `/ontology/relationships` | Create a relationship |
+| DELETE | `/ontology/relationships/{id}` | Delete a relationship |
 
 ### Health
 
@@ -126,14 +156,18 @@ src/coscientist/
 ├── clients/retrieval.py   # httpx client for retrieval API
 ├── models/
 │   ├── goal.py            # ResearchGoal ORM
-│   └── evidence.py        # EvidenceRecord ORM
+│   ├── evidence.py        # EvidenceRecord ORM
+│   └── ontology.py        # OntologyTerm, OntologyRelationship ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
-│   └── scout.py           # Scout request/response schemas
+│   ├── scout.py           # Scout request/response schemas
+│   └── ontology.py        # Ontology request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
-│   └── scout.py           # Scout orchestration + grouping
+│   ├── scout.py           # Scout orchestration + grouping
+│   └── ontology.py        # Ontology CRUD, merge, relationships
 └── routers/
     ├── goal.py            # Goal API endpoints
-    └── scout.py           # Scout API endpoints
+    ├── scout.py           # Scout API endpoints
+    └── ontology.py        # Ontology API endpoints
 ```

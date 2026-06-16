@@ -17,15 +17,19 @@ from coscientist.schemas.goal import (
     GoalUpdate,
     SuccessCriterion,
 )
+from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import goal as svc
+from coscientist.services import ontology as ontology_svc
 from coscientist.services import scout as scout_svc
 
 app = typer.Typer(no_args_is_help=True)
 goal_app = typer.Typer(no_args_is_help=True, help="Manage research goals")
 scout_app = typer.Typer(no_args_is_help=True, help="Scout evidence for research goals")
+ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
+app.add_typer(ontology_app, name="ontology")
 
 console = Console()
 
@@ -249,5 +253,89 @@ def scout_summary(goal_id: str = typer.Argument(...)):
     try:
         summary = scout_svc.get_summary(db, goal_id)
         console.print_json(summary.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+# --- Ontology commands ---
+
+
+@ontology_app.command("list")
+def ontology_list(
+    category: Optional[OntologyCategoryEnum] = typer.Option(
+        None, "--category", "-c", help="Filter by category"
+    ),
+    status: Optional[str] = typer.Option(None, "--status", "-s"),
+):
+    """List ontology terms."""
+    db = _get_session()
+    try:
+        items, total = ontology_svc.list_terms(db, category=category, status=status)
+        table = Table(title=f"Ontology Terms ({total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Category")
+        table.add_column("Status", style="green")
+        table.add_column("Keywords", max_width=40)
+        for t in items:
+            table.add_row(
+                t.id[:8] + "…",
+                t.canonical_name,
+                t.category.value,
+                t.status,
+                ", ".join(t.keywords[:3]) + ("…" if len(t.keywords) > 3 else ""),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@ontology_app.command("show")
+def ontology_show(term_id: str = typer.Argument(...)):
+    """Show full details of an ontology term."""
+    db = _get_session()
+    try:
+        result = ontology_svc.get_term(db, term_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@ontology_app.command("add")
+def ontology_add(
+    name: str = typer.Option(..., "--name", "-n", help="Canonical name"),
+    category: OntologyCategoryEnum = typer.Option(..., "--category", "-c"),
+    description: Optional[str] = typer.Option(None, "--description", "-d"),
+    keywords: Optional[str] = typer.Option(None, "--keywords", "-k", help="JSON list of keywords"),
+):
+    """Add a new ontology term."""
+    kw_list = json.loads(keywords) if keywords else []
+    data = TermCreate(
+        canonical_name=name,
+        category=category,
+        description=description,
+        keywords=kw_list,
+    )
+    db = _get_session()
+    try:
+        result = ontology_svc.create_term(db, data)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@ontology_app.command("merge")
+def ontology_merge(
+    source: str = typer.Option(..., "--source", help="Source term ID (will be deprecated)"),
+    target: str = typer.Option(..., "--target", help="Target term ID (will absorb source)"),
+):
+    """Merge source term into target term."""
+    db = _get_session()
+    try:
+        result = ontology_svc.merge_terms(db, TermMergeRequest(
+            source_term_id=source,
+            target_term_id=target,
+        ))
+        console.print(f"[green]Merged into {result.canonical_name} ({result.id[:8]}…)[/green]")
     finally:
         db.close()

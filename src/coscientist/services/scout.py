@@ -17,8 +17,10 @@ from coscientist.domain import (
     METHOD_FAMILIES,
     RELATED_METHODS,
     classify_text,
+    get_related_methods,
 )
 from coscientist.models.evidence import EvidenceRecord
+from coscientist.models.ontology import OntologyTerm
 from coscientist.schemas.scout import (
     EvidenceGroupItem,
     EvidenceGroupResponse,
@@ -30,7 +32,9 @@ from coscientist.schemas.scout import (
     ScoutSummaryStats,
     SparsityWarning,
 )
+from coscientist.schemas.ontology import OntologyCategoryEnum
 from coscientist.services import goal as goal_svc
+from coscientist.services import ontology as ontology_svc
 
 
 def _strength(paper_count: int) -> EvidenceStrengthEnum:
@@ -41,7 +45,10 @@ def _strength(paper_count: int) -> EvidenceStrengthEnum:
     return EvidenceStrengthEnum.none_
 
 
-def _decompose_goal_to_queries(goal) -> list[str]:
+def _decompose_goal_to_queries(
+    goal,
+    method_terms: list[OntologyTerm] | None = None,
+) -> list[str]:
     queries: list[str] = []
     app = goal.target_application.replace("_", " ")
     queries.append(app)
@@ -50,7 +57,12 @@ def _decompose_goal_to_queries(goal) -> list[str]:
             queries.append(f"{app} {criterion.name.replace('_', ' ')}")
     if goal.device_constraints and goal.device_constraints.form_factor:
         queries.append(f"{app} {goal.device_constraints.form_factor}")
-    for family_name in METHOD_FAMILIES:
+    method_names = (
+        [t.canonical_name for t in method_terms]
+        if method_terms is not None
+        else list(METHOD_FAMILIES.keys())
+    )
+    for family_name in method_names:
         queries.append(f"{app} {family_name.replace('_', ' ')}")
     seen: set[str] = set()
     deduped: list[str] = []
@@ -62,8 +74,20 @@ def _decompose_goal_to_queries(goal) -> list[str]:
     return deduped
 
 
-def _is_primary_method(chunk: ChunkResult, method_family: str) -> bool:
-    keywords = METHOD_FAMILIES.get(method_family, [])
+def _is_primary_method(
+    chunk: ChunkResult,
+    method_family: str,
+    all_terms: list[OntologyTerm] | None = None,
+) -> bool:
+    if all_terms is not None:
+        for t in all_terms:
+            if t.canonical_name == method_family and t.category == "method":
+                keywords = json.loads(t.keywords)
+                break
+        else:
+            keywords = []
+    else:
+        keywords = METHOD_FAMILIES.get(method_family, [])
     text_prefix = (chunk.title + " " + chunk.text[:500]).lower()
     return any(kw in text_prefix for kw in keywords)
 
@@ -140,6 +164,8 @@ def _compute_groups_from_records(
 
 def _assess_sparsity(
     records: list[EvidenceRecord],
+    method_terms: list[OntologyTerm] | None = None,
+    related_map: dict[str, list[str]] | None = None,
 ) -> list[SparsityWarning]:
     method_papers: dict[str, set[str]] = defaultdict(set)
     for rec in records:
@@ -147,8 +173,15 @@ def _assess_sparsity(
         for mf in families:
             method_papers[mf].add(rec.paper_id)
 
+    method_names = (
+        [t.canonical_name for t in method_terms]
+        if method_terms is not None
+        else list(METHOD_FAMILIES.keys())
+    )
+    rel = related_map if related_map is not None else RELATED_METHODS
+
     warnings: list[SparsityWarning] = []
-    for family_name in METHOD_FAMILIES:
+    for family_name in method_names:
         paper_ids = method_papers.get(family_name, set())
         count = len(paper_ids)
         if count < settings.scout_sparse_threshold:
@@ -157,9 +190,20 @@ def _assess_sparsity(
                 category_type="method_family",
                 papers_found=count,
                 evidence_strength=_strength(count),
-                suggested_related=RELATED_METHODS.get(family_name, []),
+                suggested_related=rel.get(family_name, []),
             ))
     return warnings
+
+
+def _load_ontology_terms(db: Session):
+    all_terms = list(db.scalars(
+        select(OntologyTerm).where(OntologyTerm.status == "active")
+    ).all())
+    method_terms = [t for t in all_terms if t.category == "method"]
+    from coscientist.models.ontology import OntologyRelationship
+    all_rels = list(db.scalars(select(OntologyRelationship)).all())
+    related_map = get_related_methods(all_terms, all_rels)
+    return all_terms, method_terms, related_map
 
 
 def run_scout(
@@ -170,7 +214,14 @@ def run_scout(
 ) -> ScoutResultResponse:
     goal = goal_svc.get(db, goal_id)
 
-    queries = _decompose_goal_to_queries(goal)
+    # Load ontology terms from DB (falls back gracefully if tables empty)
+    all_terms, method_terms, related_map = _load_ontology_terms(db)
+    use_db_terms = len(all_terms) > 0
+
+    queries = _decompose_goal_to_queries(
+        goal,
+        method_terms=method_terms if use_db_terms else None,
+    )
     if request.method_families:
         for mf in request.method_families:
             q = f"{goal.target_application.replace('_', ' ')} {mf.replace('_', ' ')}"
@@ -211,7 +262,10 @@ def run_scout(
                     continue
                 seen_chunk_ids.add(chunk.chunk_id)
 
-                classification = classify_text(chunk.text)
+                classification = classify_text(
+                    chunk.text,
+                    terms=all_terms if use_db_terms else None,
+                )
 
                 if request.method_families:
                     chunk_methods = set(classification["method_families"])
@@ -222,7 +276,7 @@ def run_scout(
                             continue
 
                 primary = any(
-                    _is_primary_method(chunk, mf)
+                    _is_primary_method(chunk, mf, all_terms if use_db_terms else None)
                     for mf in classification["method_families"]
                 )
 
@@ -274,7 +328,11 @@ def run_scout(
     for rec in all_records:
         rec.evidence_strength = strength_by_paper.get(rec.paper_id, "none")
 
-    warnings = _assess_sparsity(all_records)
+    warnings = _assess_sparsity(
+        all_records,
+        method_terms=method_terms if use_db_terms else None,
+        related_map=related_map if use_db_terms else None,
+    )
 
     for record in all_records:
         db.add(record)
