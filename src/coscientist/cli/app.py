@@ -126,7 +126,7 @@ def goal_list(
         table.add_column("Application")
         table.add_column("Status", style="green")
         for g in items:
-            table.add_row(g.id[:8] + "…", g.name, g.target_application, g.status.value)
+            table.add_row(g.id, g.name, g.target_application, g.status.value)
         console.print(table)
     finally:
         db.close()
@@ -265,7 +265,7 @@ def scout_evidence(
             for item in items:
                 methods = ", ".join(item.method_families[:2])
                 table.add_row(
-                    item.id[:8] + "…",
+                    item.id,
                     item.title[:30],
                     item.section_title or "-",
                     f"{item.score:.3f}",
@@ -310,7 +310,7 @@ def ontology_list(
         table.add_column("Keywords", max_width=40)
         for t in items:
             table.add_row(
-                t.id[:8] + "…",
+                t.id,
                 t.canonical_name,
                 t.category.value,
                 t.status,
@@ -421,7 +421,7 @@ def approach_list(
         table.add_column("Evidence", justify="right")
         for a in items:
             table.add_row(
-                a.id[:8] + "…",
+                a.id,
                 a.name,
                 a.method_family,
                 a.status.value,
@@ -608,6 +608,9 @@ def hypothesis_generate(
         result = hypothesis_svc.generate_hypotheses(db, goal_id, request)
         console.print(f"[green]Generation run {result.generation_run_id[:8]}… complete[/green]")
         console.print(f"  Hypotheses created: {result.hypotheses_created}")
+        if result.hypotheses_created == 0:
+            console.print("[yellow]  No hypotheses generated — need at least 2 scored approaches.[/yellow]")
+            console.print("  Run: cs approach list <GOAL_ID> --status scored")
         console.print(f"  Conservative: {result.conservative_count}")
         console.print(f"  Exploratory: {result.exploratory_count}")
         console.print(f"  Duplicates skipped: {result.hypotheses_skipped_duplicate}")
@@ -639,7 +642,7 @@ def hypothesis_list(
         table.add_column("Approaches", justify="right")
         for h in items:
             table.add_row(
-                h.id[:8] + "…",
+                h.id,
                 h.name,
                 h.hypothesis_type.value,
                 h.status.value,
@@ -742,7 +745,7 @@ def experiment_list(
         table.add_column("Sweep", justify="right")
         for e in items:
             table.add_row(
-                e.id[:8] + "…",
+                e.id,
                 e.name,
                 e.experiment_type.value,
                 e.status.value,
@@ -866,7 +869,7 @@ def approval_pending(
         table.add_column("Type")
         table.add_column("Cost")
         for e in experiments:
-            table.add_row(e.id[:8] + "…", e.name, e.workspace_id[:8] + "…", e.experiment_type.value, e.estimated_cost)
+            table.add_row(e.id, e.name, e.workspace_id, e.experiment_type.value, e.estimated_cost)
         console.print(table)
         console.print(f"[bold]{len(experiments)} experiment(s) pending approval[/bold]")
     finally:
@@ -959,7 +962,7 @@ def approval_history(
         table.add_column("Created")
         for d in result.items:
             table.add_row(
-                d.id[:8] + "…",
+                d.id,
                 d.decision.value,
                 d.reviewer_id or "—",
                 (d.reason or "—")[:80],

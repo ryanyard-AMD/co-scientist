@@ -113,78 +113,201 @@ Generates ExperimentCards — structured experiment proposals from approach card
 - YAML and Python config export without external dependencies
 - Deduplication against existing experiments by approach ID sets
 
-## Quick Start
+## Setup
 
 ```bash
 # Prerequisites: Python 3.12, uv
 uv venv && uv pip install -e ".[dev]"
+source .venv/bin/activate
+
+# Initialise the database
 alembic upgrade head
 
-# Start the API
+# Start the API server (terminal 1)
 uvicorn coscientist.main:app --reload --port 8001
+```
 
-# Or use the CLI
+The CLI (`cs`) talks directly to the database — the API server is only needed if you want to hit the REST endpoints directly.
+
+## End-to-End Workflow
+
+A complete run from goal to approved experiment. IDs are shown as `<X_ID>` — copy them from the table output of each `list` command (full UUIDs are printed).
+
+### 1. Create and activate a research goal
+
+```bash
 cs goal create --name "PSZ Headphone" --app personal_sound_zones
-cs goal list
+cs goal list                        # copy GOAL_ID
 cs goal activate <GOAL_ID>
+```
 
-# Run scout (requires retrieval API on port 8000)
+### 2. Scout literature (requires retrieval API on port 8000)
+
+```bash
 cs scout run <GOAL_ID>
-cs scout evidence <GOAL_ID> --group-by method
-cs scout summary <GOAL_ID>
+cs scout summary <GOAL_ID>          # check evidence counts and sparsity warnings
+cs scout evidence <GOAL_ID> --group-by method   # review method families found
+```
 
-# Browse ontology
-cs ontology list --category method
-cs ontology show <TERM_ID>
-cs ontology add --name "new_method" --category method --keywords '["new method"]'
-cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
+### 3. Generate and review approach cards
 
-# Generate and manage approach cards
+Approach cards are generated one per method family found in the evidence.
+
+```bash
 cs approach generate <GOAL_ID>
-cs approach list <GOAL_ID>
+cs approach list <GOAL_ID>          # copy APPROACH_IDs
+cs approach show <APPROACH_ID>      # inspect evidence links, metrics, risks
+cs approach review <APPROACH_ID>    # repeat for each approach worth keeping
+```
+
+If two approaches cover the same method, merge them:
+
+```bash
+cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
+```
+
+### 4. Score and compare approaches
+
+Hypothesis generation requires **at least 2 scored approaches**.
+
+```bash
+cs score run <GOAL_ID>              # scores all reviewed approaches
+cs score compare <GOAL_ID>          # ranked table across all dimensions
+cs score pareto <GOAL_ID>           # non-dominated (Pareto-optimal) set
+cs score show <APPROACH_ID>         # per-dimension breakdown with rationale
+```
+
+To re-score with a different priority profile:
+
+```bash
+cs score run <GOAL_ID> --profile robustness
+# profiles: default, fastest_prototype, scientific_novelty, robustness, product_feasibility
+```
+
+### 5. Generate and review hypotheses
+
+Hypotheses combine 2+ scored approaches into testable propositions.
+
+```bash
+cs hypothesis generate <GOAL_ID>
+cs hypothesis list <GOAL_ID>                    # copy HYPOTHESIS_IDs
+cs hypothesis list <GOAL_ID> --type exploratory # filter by type
+cs hypothesis show <HYPOTHESIS_ID>              # rationale, conflicts, required experiments
+cs hypothesis review <HYPOTHESIS_ID>
+```
+
+### 6. Generate and score experiments
+
+Experiments can be generated from the full scored approach set, a single approach, or a specific hypothesis.
+
+```bash
+cs experiment generate <GOAL_ID>                        # all scored approaches
+cs experiment generate <GOAL_ID> --approach <ID>        # single approach
+cs experiment generate <GOAL_ID> --hypothesis <ID>      # from hypothesis
+
+cs experiment list <GOAL_ID>                            # copy EXPERIMENT_IDs
+cs experiment show <EXPERIMENT_ID>                      # full spec with sweep params
+cs experiment score <EXPERIMENT_ID> <GOAL_ID>           # 10-dimension quality score
+cs experiment export <EXPERIMENT_ID>                    # YAML handoff spec
+cs experiment export <EXPERIMENT_ID> --format python    # Python config dict
+```
+
+### 7. Approve experiments
+
+Experiments must be transitioned to `reviewed` before the approval flow.
+
+```bash
+cs experiment review <EXPERIMENT_ID>
+
+cs approval pending --goal <GOAL_ID>            # confirm it appears in the queue
+cs approval approve <EXPERIMENT_ID> <GOAL_ID>   # → approved, YAML spec stored automatically
+cs approval approve <EXPERIMENT_ID> <GOAL_ID> --reviewer "ryard" --reason "ready to run"
+
+# If changes are needed instead:
+cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "add measurement baseline"
+# experiment returns to 'generated'; edit and re-review
+
+# Or reject outright:
+cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "superseded by hypothesis experiment"
+
+# Audit trail and copy management:
+cs approval history <EXPERIMENT_ID> <GOAL_ID>   # chronological decision log
+cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' status
+```
+
+## Command Reference
+
+### Goals
+```bash
+cs goal create --name <NAME> --app <APP>
+cs goal list [--status draft|active|archived]
+cs goal show <GOAL_ID>
+cs goal activate <GOAL_ID>
+cs goal archive <GOAL_ID>
+cs goal delete <GOAL_ID>
+```
+
+### Scout
+```bash
+cs scout run <GOAL_ID>
+cs scout evidence <GOAL_ID> [--group-by method|metric|hardware|failure_mode]
+cs scout summary <GOAL_ID>
+```
+
+### Ontology
+```bash
+cs ontology list [--category method|metric|hardware|failure_mode|acoustic_goal|scene_assumption]
+cs ontology show <TERM_ID>
+cs ontology add --name <NAME> --category <CAT> --keywords '["kw1","kw2"]'
+cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
+```
+
+### Approaches
+```bash
+cs approach generate <GOAL_ID>
+cs approach list <GOAL_ID> [--status generated|reviewed|scored|...] [--method <FAMILY>]
 cs approach show <APPROACH_ID>
 cs approach review <APPROACH_ID>
 cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
+cs approach delete <APPROACH_ID>
+```
 
-# Score and compare approaches
-cs score run <GOAL_ID>                          # score all reviewed approaches
-cs score run <GOAL_ID> --profile robustness     # score with alternate weight profile
-cs score show <APPROACH_ID>                     # show dimension scores
-cs score compare <GOAL_ID>                      # ranked comparison table
-cs score pareto <GOAL_ID>                       # Pareto-optimal set
+### Scores
+```bash
+cs score run <GOAL_ID> [--profile default|fastest_prototype|scientific_novelty|robustness|product_feasibility]
+cs score show <APPROACH_ID>
+cs score compare <GOAL_ID>
+cs score pareto <GOAL_ID>
+```
 
-# Generate and manage hypotheses
-cs hypothesis generate <GOAL_ID>                 # generate from scored approaches
-cs hypothesis generate <GOAL_ID> --no-exploratory  # conservative only
-cs hypothesis list <GOAL_ID>                     # list all hypotheses
-cs hypothesis list <GOAL_ID> --type exploratory  # filter by type
-cs hypothesis show <HYPOTHESIS_ID>               # show full details
-cs hypothesis review <HYPOTHESIS_ID>             # transition to reviewed
-cs hypothesis delete <HYPOTHESIS_ID>             # delete a generated hypothesis
+### Hypotheses
+```bash
+cs hypothesis generate <GOAL_ID> [--max N] [--no-exploratory]
+cs hypothesis list <GOAL_ID> [--status generated|reviewed|...] [--type conservative|exploratory]
+cs hypothesis show <HYPOTHESIS_ID>
+cs hypothesis review <HYPOTHESIS_ID>
+cs hypothesis delete <HYPOTHESIS_ID>
+```
 
-# Generate and manage experiments
-cs experiment generate <GOAL_ID>                 # generate from scored approaches
-cs experiment generate <GOAL_ID> --approach <ID> # generate for specific approach
-cs experiment generate <GOAL_ID> --hypothesis <ID> # generate from hypothesis
-cs experiment list <GOAL_ID>                     # list all experiments
-cs experiment list <GOAL_ID> --status reviewed   # filter by status
-cs experiment show <EXPERIMENT_ID>               # show full details
-cs experiment review <EXPERIMENT_ID>             # transition to reviewed
-cs experiment approve <EXPERIMENT_ID>            # transition to approved
-cs experiment export <EXPERIMENT_ID>             # export as YAML (default)
-cs experiment export <EXPERIMENT_ID> --format python  # export as Python config
-cs experiment score <EXPERIMENT_ID> <GOAL_ID>    # score experiment quality
-cs experiment delete <EXPERIMENT_ID>             # delete a generated experiment
+### Experiments
+```bash
+cs experiment generate <GOAL_ID> [--approach <ID>] [--hypothesis <ID>] [--max N]
+cs experiment list <GOAL_ID> [--status generated|reviewed|approved|...] [--type simulation|measurement|hybrid]
+cs experiment show <EXPERIMENT_ID>
+cs experiment review <EXPERIMENT_ID>
+cs experiment score <EXPERIMENT_ID> <GOAL_ID>
+cs experiment export <EXPERIMENT_ID> [--format yaml|python]
+cs experiment delete <EXPERIMENT_ID>
+```
 
-# Review and approve experiments
-cs approval pending                              # list experiments awaiting approval
-cs approval pending --goal <GOAL_ID>             # filter by goal
-cs approval approve <EXPERIMENT_ID> <GOAL_ID>    # approve (stores YAML handoff)
-cs approval approve <EXPERIMENT_ID> <GOAL_ID> --reviewer <ID> --reason "..."
-cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "..."   # supersedes experiment
-cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."  # returns to generated
-cs approval history <EXPERIMENT_ID> <GOAL_ID>    # chronological decision log
-cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>  # create editable copy
+### Approval
+```bash
+cs approval pending [--goal <GOAL_ID>]
+cs approval approve <EXPERIMENT_ID> <GOAL_ID> [--reviewer <ID>] [--reason "..."]
+cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "..."
+cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."
+cs approval history <EXPERIMENT_ID> <GOAL_ID>
+cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>
 ```
 
 ## API Endpoints
