@@ -27,10 +27,16 @@ from coscientist.schemas.hypothesis import (
     HypothesisStatusEnum,
     HypothesisTypeEnum,
 )
+from coscientist.schemas.experiment import (
+    ExperimentGenerateRequest,
+    ExperimentStatusEnum,
+    ExperimentTypeEnum,
+)
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approach as approach_svc
+from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
 from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import ontology as ontology_svc
@@ -44,12 +50,14 @@ ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
 approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
 score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach cards")
 hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards")
+experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(approach_app, name="approach")
 app.add_typer(score_app, name="score")
 app.add_typer(hypothesis_app, name="hypothesis")
+app.add_typer(experiment_app, name="experiment")
 
 console = Console()
 
@@ -674,5 +682,162 @@ def hypothesis_delete(
     try:
         hypothesis_svc.delete(db, hypothesis_id)
         console.print(f"[red]Hypothesis {hypothesis_id[:8]}… deleted[/red]")
+    finally:
+        db.close()
+
+
+# --- Experiment commands ---
+
+
+@experiment_app.command("generate")
+def experiment_generate(
+    goal_id: str = typer.Argument(...),
+    approach: Optional[str] = typer.Option(None, "--approach", "-a", help="Specific approach ID"),
+    hypothesis: Optional[str] = typer.Option(None, "--hypothesis", "-h", help="Hypothesis ID"),
+    max_experiments: int = typer.Option(10, "--max", "-m"),
+    include_measurement: bool = typer.Option(False, "--include-measurement"),
+):
+    """Generate experiment cards from scored approaches."""
+    db = _get_session()
+    try:
+        request = ExperimentGenerateRequest(
+            approach_ids=[approach] if approach else None,
+            hypothesis_id=hypothesis,
+            include_measurement=include_measurement,
+            max_experiments=max_experiments,
+        )
+        result = experiment_svc.generate_experiments(db, goal_id, request)
+        console.print(f"[green]Generation run {result.generation_run_id[:8]}… complete[/green]")
+        console.print(f"  Experiments created: {result.experiments_created}")
+        console.print(f"  Simulation: {result.simulation_count}")
+        console.print(f"  Measurement: {result.measurement_count}")
+        console.print(f"  Duplicates skipped: {result.experiments_skipped_duplicate}")
+        for e in result.experiments:
+            console.print(f"  - {e.name} ({e.experiment_type.value}) sweep={e.parameter_sweep_count}")
+    finally:
+        db.close()
+
+
+@experiment_app.command("list")
+def experiment_list(
+    goal_id: str = typer.Argument(...),
+    status: Optional[ExperimentStatusEnum] = typer.Option(None, "--status", "-s"),
+    exp_type: Optional[ExperimentTypeEnum] = typer.Option(None, "--type", "-t"),
+):
+    """List experiment cards for a goal."""
+    db = _get_session()
+    try:
+        items, total = experiment_svc.list_experiments(
+            db, goal_id, status=status, experiment_type=exp_type,
+        )
+        table = Table(title=f"Experiment Cards ({total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Type")
+        table.add_column("Status", style="green")
+        table.add_column("Approaches", justify="right")
+        table.add_column("Sweep", justify="right")
+        for e in items:
+            table.add_row(
+                e.id[:8] + "…",
+                e.name,
+                e.experiment_type.value,
+                e.status.value,
+                str(len(e.approach_ids)),
+                str(e.parameter_sweep_count or 0),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@experiment_app.command("show")
+def experiment_show(experiment_id: str = typer.Argument(...)):
+    """Show full details of an experiment card."""
+    db = _get_session()
+    try:
+        result = experiment_svc.get(db, experiment_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@experiment_app.command("review")
+def experiment_review(experiment_id: str = typer.Argument(...)):
+    """Transition experiment card to 'reviewed' status."""
+    db = _get_session()
+    try:
+        result = experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.reviewed)
+        console.print(f"[green]Experiment {experiment_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@experiment_app.command("approve")
+def experiment_approve(experiment_id: str = typer.Argument(...)):
+    """Transition experiment card to 'approved' status."""
+    db = _get_session()
+    try:
+        result = experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.approved)
+        console.print(f"[green]Experiment {experiment_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@experiment_app.command("delete")
+def experiment_delete(
+    experiment_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a generated experiment card."""
+    if not yes:
+        typer.confirm(f"Delete experiment {experiment_id}?", abort=True)
+    db = _get_session()
+    try:
+        experiment_svc.delete(db, experiment_id)
+        console.print(f"[red]Experiment {experiment_id[:8]}… deleted[/red]")
+    finally:
+        db.close()
+
+
+@experiment_app.command("export")
+def experiment_export(
+    experiment_id: str = typer.Argument(...),
+    fmt: str = typer.Option("yaml", "--format", "-f", help="Export format: yaml or python"),
+):
+    """Export experiment card as YAML or Python config."""
+    db = _get_session()
+    try:
+        result = experiment_svc.export_experiment(db, experiment_id, fmt)
+        console.print(result.content)
+    finally:
+        db.close()
+
+
+@experiment_app.command("score")
+def experiment_score(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Score an experiment card against the experiment rubric."""
+    db = _get_session()
+    try:
+        result = experiment_svc.score_experiment(db, experiment_id, goal_id)
+        table = Table(title=f"Experiment Score: {experiment_id[:8]}…")
+        table.add_column("Dimension")
+        table.add_column("Score", justify="right")
+        table.add_column("Weight", justify="right")
+        table.add_column("Weighted", justify="right")
+        table.add_column("Rationale", max_width=50)
+        for d in result.dimensions:
+            table.add_row(
+                d.dimension.value,
+                f"{d.score:.3f}",
+                f"{d.weight:.2f}",
+                f"{d.weighted_score:.4f}",
+                d.rationale,
+            )
+        console.print(table)
+        console.print(f"[bold]Total score: {result.total_score:.4f}[/bold]")
     finally:
         db.close()

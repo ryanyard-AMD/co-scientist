@@ -11,7 +11,8 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Approach Forge     (CS-EPIC-APPROACH)
          ├── Rubric Scoring     (CS-EPIC-SCORE)
          ├── Hypothesis Gen    (CS-EPIC-HYPOTHESIS)
-         ├── Experiment Design  (CS-EPIC-EXPERIMENT) [planned]
+         ├── Experiment Design  (CS-EPIC-EXPERIMENT)
+         ├── Human Approval     (CS-EPIC-APPROVAL)   [planned]
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
@@ -86,6 +87,21 @@ Generates HypothesisCards — proposed combinations of 2+ scored approaches — 
 - Deduplication against existing hypotheses by sorted approach ID sets
 - Each hypothesis includes rationale, assumptions, expected benefits, failure modes, and required experiments
 
+### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
+
+Generates ExperimentCards — structured experiment proposals from approach cards and/or hypothesis cards — with objectives, baselines, parameter sweeps, validation criteria, and exportable specs.
+
+- **ExperimentCard** with 7-state lifecycle: `generated` → `reviewed` → `approved` → `running` → `completed` / `failed` → `superseded`
+- Dual source linking: `approach_ids` for direct approach experiments + optional `hypothesis_id` for hypothesis-driven experiments
+- Algorithmic generation: single-approach validation experiments + comparative pairwise experiments
+- PSZ-specific parameter sweeps: speaker count, listener shift, reverberation condition, frequency bands, calibration error
+- Baseline selection from `domain.RELATED_METHODS` + universal `delay_and_sum_beamforming` baseline
+- Validation criteria derived from goal success criteria (operator-aware: `>=` → `_min`, `<=` → `_max`)
+- Cost/runtime estimation from parameter sweep cardinality (configurable thresholds)
+- 10-dimension experiment rubric scoring: hypothesis clarity, device relevance, baseline quality, metric quality, reproducibility, information gain, cost/time, failure informativeness, robustness coverage, artifact quality
+- YAML and Python config export without external dependencies
+- Deduplication against existing experiments by approach ID sets
+
 ## Quick Start
 
 ```bash
@@ -134,6 +150,20 @@ cs hypothesis list <GOAL_ID> --type exploratory  # filter by type
 cs hypothesis show <HYPOTHESIS_ID>               # show full details
 cs hypothesis review <HYPOTHESIS_ID>             # transition to reviewed
 cs hypothesis delete <HYPOTHESIS_ID>             # delete a generated hypothesis
+
+# Generate and manage experiments
+cs experiment generate <GOAL_ID>                 # generate from scored approaches
+cs experiment generate <GOAL_ID> --approach <ID> # generate for specific approach
+cs experiment generate <GOAL_ID> --hypothesis <ID> # generate from hypothesis
+cs experiment list <GOAL_ID>                     # list all experiments
+cs experiment list <GOAL_ID> --status reviewed   # filter by status
+cs experiment show <EXPERIMENT_ID>               # show full details
+cs experiment review <EXPERIMENT_ID>             # transition to reviewed
+cs experiment approve <EXPERIMENT_ID>            # transition to approved
+cs experiment export <EXPERIMENT_ID>             # export as YAML (default)
+cs experiment export <EXPERIMENT_ID> --format python  # export as Python config
+cs experiment score <EXPERIMENT_ID> <GOAL_ID>    # score experiment quality
+cs experiment delete <EXPERIMENT_ID>             # delete a generated experiment
 ```
 
 ## API Endpoints
@@ -198,6 +228,20 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/hypotheses/{hid}/transition` | Transition hypothesis status |
 | DELETE | `/goals/{id}/hypotheses/{hid}` | Delete a generated hypothesis |
 
+### Experiments
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/experiments/generate` | Generate experiment proposals from scored approaches or hypotheses |
+| POST | `/goals/{id}/experiments` | Create a manual experiment card |
+| GET | `/goals/{id}/experiments` | List experiments (filter by status, type) |
+| GET | `/goals/{id}/experiments/{eid}` | Get experiment card details |
+| PATCH | `/goals/{id}/experiments/{eid}` | Update experiment card fields |
+| POST | `/goals/{id}/experiments/{eid}/transition` | Transition experiment status |
+| POST | `/goals/{id}/experiments/{eid}/score` | Score experiment against 10-dimension rubric |
+| GET | `/goals/{id}/experiments/{eid}/export` | Export experiment spec as YAML or Python config |
+| DELETE | `/goals/{id}/experiments/{eid}` | Delete a generated experiment |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -237,6 +281,10 @@ Environment variables (prefix `CS_`):
 | `CS_HYPOTHESIS_MAX_PER_RUN` | `20` | Max hypotheses generated per run |
 | `CS_HYPOTHESIS_COMPLEMENTARY_HIGH` | `0.6` | Threshold for "high" dimension score in complementarity check |
 | `CS_HYPOTHESIS_COMPLEMENTARY_LOW` | `0.4` | Threshold for "low" dimension score in complementarity check |
+| `CS_EXPERIMENT_MAX_PER_RUN` | `10` | Max experiments generated per run |
+| `CS_EXPERIMENT_SWEEP_COST_LOW` | `100` | Sweep cardinality at or below this → low cost/low runtime |
+| `CS_EXPERIMENT_SWEEP_COST_MEDIUM` | `500` | Sweep cardinality at or below this → low cost/medium runtime |
+| `CS_EXPERIMENT_SWEEP_COST_HIGH` | `2000` | Sweep cardinality at or below this → medium cost/medium runtime |
 
 ## Development
 
@@ -264,26 +312,30 @@ src/coscientist/
 │   ├── ontology.py        # OntologyTerm, OntologyRelationship ORM
 │   ├── approach.py        # ApproachCard ORM
 │   ├── score.py           # RubricScore ORM
-│   └── hypothesis.py      # HypothesisCard ORM
+│   ├── hypothesis.py      # HypothesisCard ORM
+│   └── experiment.py      # ExperimentCard ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
 │   ├── ontology.py        # Ontology request/response schemas
 │   ├── approach.py        # Approach request/response schemas
 │   ├── score.py           # Score request/response schemas
-│   └── hypothesis.py      # Hypothesis request/response schemas
+│   ├── hypothesis.py      # Hypothesis request/response schemas
+│   └── experiment.py      # Experiment request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
 │   ├── ontology.py        # Ontology CRUD, merge, relationships
 │   ├── approach.py        # Approach generation, CRUD, merge
 │   ├── score.py           # Rubric scoring, comparison, Pareto
-│   └── hypothesis.py      # Hypothesis generation, compatibility, CRUD
+│   ├── hypothesis.py      # Hypothesis generation, compatibility, CRUD
+│   └── experiment.py      # Experiment generation, scoring, export, CRUD
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
     ├── ontology.py        # Ontology API endpoints
     ├── approach.py        # Approach API endpoints
     ├── score.py           # Score API endpoints
-    └── hypothesis.py      # Hypothesis API endpoints
+    ├── hypothesis.py      # Hypothesis API endpoints
+    └── experiment.py      # Experiment API endpoints
 ```
