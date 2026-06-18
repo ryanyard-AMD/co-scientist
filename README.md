@@ -12,7 +12,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Rubric Scoring     (CS-EPIC-SCORE)
          ├── Hypothesis Gen    (CS-EPIC-HYPOTHESIS)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT)
-         ├── Human Approval     (CS-EPIC-APPROVAL)   [planned]
+         ├── Human Approval     (CS-EPIC-APPROVAL)
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
@@ -86,6 +86,17 @@ Generates HypothesisCards — proposed combinations of 2+ scored approaches — 
 - Deterministic generation from rubric scores, ontology relationships, and hardware overlap
 - Deduplication against existing hypotheses by sorted approach ID sets
 - Each hypothesis includes rationale, assumptions, expected benefits, failure modes, and required experiments
+
+### CS-EPIC-APPROVAL: Human Approval and Execution Handoff
+
+Immutable audit trail for experiment approval decisions, with gated status transitions and duplicate management.
+
+- **ApprovalDecision** — immutable audit record (no `updated_at`): decision (approve/reject/request_edit), reviewer_id, reason, resource_flags, created_at
+- Three decision types drive experiment status as a side effect: `approve` → `approved`, `reject` → `superseded`, `request_edit` → back to `generated` (bypasses public state machine)
+- Automatic resource flag inference: `high_cost`, `gpu`, `treble` inferred from experiment card fields; reviewer can override
+- On approve with no reason: YAML export stored automatically as handoff payload
+- `list_pending()` surfaces all `reviewed` experiments, optionally filtered by goal
+- `duplicate_experiment()` creates an editable copy (status=`generated`, name+" (copy)") with no decisions
 
 ### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
 
@@ -164,6 +175,16 @@ cs experiment export <EXPERIMENT_ID>             # export as YAML (default)
 cs experiment export <EXPERIMENT_ID> --format python  # export as Python config
 cs experiment score <EXPERIMENT_ID> <GOAL_ID>    # score experiment quality
 cs experiment delete <EXPERIMENT_ID>             # delete a generated experiment
+
+# Review and approve experiments
+cs approval pending                              # list experiments awaiting approval
+cs approval pending --goal <GOAL_ID>             # filter by goal
+cs approval approve <EXPERIMENT_ID> <GOAL_ID>    # approve (stores YAML handoff)
+cs approval approve <EXPERIMENT_ID> <GOAL_ID> --reviewer <ID> --reason "..."
+cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "..."   # supersedes experiment
+cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."  # returns to generated
+cs approval history <EXPERIMENT_ID> <GOAL_ID>    # chronological decision log
+cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>  # create editable copy
 ```
 
 ## API Endpoints
@@ -242,6 +263,17 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/experiments/{eid}/export` | Export experiment spec as YAML or Python config |
 | DELETE | `/goals/{id}/experiments/{eid}` | Delete a generated experiment |
 
+### Approval
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/goals/{id}/experiments/pending` | List experiments in `reviewed` status |
+| POST | `/goals/{id}/experiments/{eid}/approve` | Approve experiment (→ approved, stores YAML handoff) |
+| POST | `/goals/{id}/experiments/{eid}/reject` | Reject experiment (→ superseded) |
+| POST | `/goals/{id}/experiments/{eid}/request-edit` | Request edits (→ generated) |
+| POST | `/goals/{id}/experiments/{eid}/duplicate` | Duplicate as editable copy |
+| GET | `/goals/{id}/experiments/{eid}/decisions` | List chronological decision history |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -313,7 +345,8 @@ src/coscientist/
 │   ├── approach.py        # ApproachCard ORM
 │   ├── score.py           # RubricScore ORM
 │   ├── hypothesis.py      # HypothesisCard ORM
-│   └── experiment.py      # ExperimentCard ORM
+│   ├── experiment.py      # ExperimentCard ORM
+│   └── approval.py        # ApprovalDecision ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -321,7 +354,8 @@ src/coscientist/
 │   ├── approach.py        # Approach request/response schemas
 │   ├── score.py           # Score request/response schemas
 │   ├── hypothesis.py      # Hypothesis request/response schemas
-│   └── experiment.py      # Experiment request/response schemas
+│   ├── experiment.py      # Experiment request/response schemas
+│   └── approval.py        # Approval request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -329,7 +363,8 @@ src/coscientist/
 │   ├── approach.py        # Approach generation, CRUD, merge
 │   ├── score.py           # Rubric scoring, comparison, Pareto
 │   ├── hypothesis.py      # Hypothesis generation, compatibility, CRUD
-│   └── experiment.py      # Experiment generation, scoring, export, CRUD
+│   ├── experiment.py      # Experiment generation, scoring, export, CRUD
+│   └── approval.py        # Approval decisions, pending queue, duplicate
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -337,5 +372,6 @@ src/coscientist/
     ├── approach.py        # Approach API endpoints
     ├── score.py           # Score API endpoints
     ├── hypothesis.py      # Hypothesis API endpoints
-    └── experiment.py      # Experiment API endpoints
+    ├── experiment.py      # Experiment API endpoints
+    └── approval.py        # Approval API endpoints
 ```

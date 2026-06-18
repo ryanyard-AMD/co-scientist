@@ -35,6 +35,7 @@ from coscientist.schemas.experiment import (
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
+from coscientist.services import approval as approval_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
@@ -51,6 +52,7 @@ approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
 score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach cards")
 hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards")
 experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards")
+approval_app = typer.Typer(no_args_is_help=True, help="Approve, reject, or request edits on experiments")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -58,6 +60,7 @@ app.add_typer(approach_app, name="approach")
 app.add_typer(score_app, name="score")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(approval_app, name="approval")
 
 console = Console()
 
@@ -839,5 +842,145 @@ def experiment_score(
             )
         console.print(table)
         console.print(f"[bold]Total score: {result.total_score:.4f}[/bold]")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Approval commands
+# ---------------------------------------------------------------------------
+
+@approval_app.command("pending")
+def approval_pending(
+    goal_id: str | None = typer.Option(None, "--goal", help="Filter by goal ID"),
+):
+    """List experiments awaiting approval (status=reviewed)."""
+    from coscientist.schemas.approval import ApprovalDecisionCreate, ApprovalDecisionEnum
+    db = _get_session()
+    try:
+        experiments = approval_svc.list_pending(db, goal_id=goal_id)
+        table = Table(title="Pending Experiments")
+        table.add_column("ID")
+        table.add_column("Name")
+        table.add_column("Goal")
+        table.add_column("Type")
+        table.add_column("Cost")
+        for e in experiments:
+            table.add_row(e.id[:8] + "…", e.name, e.workspace_id[:8] + "…", e.experiment_type.value, e.estimated_cost)
+        console.print(table)
+        console.print(f"[bold]{len(experiments)} experiment(s) pending approval[/bold]")
+    finally:
+        db.close()
+
+
+@approval_app.command("approve")
+def approval_approve(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    reviewer_id: str | None = typer.Option(None, "--reviewer"),
+    reason: str | None = typer.Option(None, "--reason"),
+):
+    """Approve an experiment (transitions to approved, stores YAML handoff)."""
+    from coscientist.schemas.approval import ApprovalDecisionCreate, ApprovalDecisionEnum
+    db = _get_session()
+    try:
+        body = ApprovalDecisionCreate(
+            decision=ApprovalDecisionEnum.approve,
+            reviewer_id=reviewer_id,
+            reason=reason,
+        )
+        decision = approval_svc.record_decision(db, experiment_id, goal_id, body)
+        console.print(f"[green]Approved[/green] experiment {experiment_id[:8]}… → [bold]approved[/bold]")
+        console.print(f"Decision ID: {decision.id}")
+    finally:
+        db.close()
+
+
+@approval_app.command("reject")
+def approval_reject(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    reason: str = typer.Option(..., "--reason", help="Required reason for rejection"),
+    reviewer_id: str | None = typer.Option(None, "--reviewer"),
+):
+    """Reject an experiment (transitions to superseded)."""
+    from coscientist.schemas.approval import ApprovalDecisionCreate, ApprovalDecisionEnum
+    db = _get_session()
+    try:
+        body = ApprovalDecisionCreate(
+            decision=ApprovalDecisionEnum.reject,
+            reviewer_id=reviewer_id,
+            reason=reason,
+        )
+        decision = approval_svc.record_decision(db, experiment_id, goal_id, body)
+        console.print(f"[red]Rejected[/red] experiment {experiment_id[:8]}… → [bold]superseded[/bold]")
+        console.print(f"Decision ID: {decision.id}")
+    finally:
+        db.close()
+
+
+@approval_app.command("request-edit")
+def approval_request_edit(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    reason: str = typer.Option(..., "--reason", help="Required reason for requesting edits"),
+    reviewer_id: str | None = typer.Option(None, "--reviewer"),
+):
+    """Request edits on an experiment (transitions back to generated)."""
+    from coscientist.schemas.approval import ApprovalDecisionCreate, ApprovalDecisionEnum
+    db = _get_session()
+    try:
+        body = ApprovalDecisionCreate(
+            decision=ApprovalDecisionEnum.request_edit,
+            reviewer_id=reviewer_id,
+            reason=reason,
+        )
+        decision = approval_svc.record_decision(db, experiment_id, goal_id, body)
+        console.print(f"[yellow]Edit requested[/yellow] for experiment {experiment_id[:8]}… → [bold]generated[/bold]")
+        console.print(f"Decision ID: {decision.id}")
+    finally:
+        db.close()
+
+
+@approval_app.command("history")
+def approval_history(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Show chronological decision history for an experiment."""
+    db = _get_session()
+    try:
+        result = approval_svc.list_decisions(db, experiment_id, goal_id)
+        table = Table(title=f"Decision History: {experiment_id[:8]}…")
+        table.add_column("ID")
+        table.add_column("Decision")
+        table.add_column("Reviewer")
+        table.add_column("Reason", max_width=50)
+        table.add_column("Created")
+        for d in result.items:
+            table.add_row(
+                d.id[:8] + "…",
+                d.decision.value,
+                d.reviewer_id or "—",
+                (d.reason or "—")[:80],
+                d.created_at.strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
+        console.print(f"[bold]{result.total} decision(s)[/bold]")
+    finally:
+        db.close()
+
+
+@approval_app.command("duplicate")
+def approval_duplicate(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Create an editable copy of an experiment (new card with status=generated)."""
+    db = _get_session()
+    try:
+        result = approval_svc.duplicate_experiment(db, experiment_id, goal_id)
+        console.print(f"[green]Duplicated[/green] {result.original_id[:8]}… → {result.new_id[:8]}…")
+        console.print(f"New experiment: [bold]{result.new_experiment.name}[/bold] (status=generated)")
     finally:
         db.close()

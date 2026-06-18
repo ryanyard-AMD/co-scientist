@@ -4,7 +4,8 @@ from fastapi import FastAPI
 
 from coscientist.config import settings
 from coscientist.database import Base, engine
-from coscientist.models import approach, evidence, experiment, hypothesis, score  # noqa: F401 — registers ORM models
+from coscientist.models import approval, approach, evidence, experiment, hypothesis, score  # noqa: F401 — registers ORM models
+from coscientist.routers import approval as approval_router
 from coscientist.routers import approach as approach_router
 from coscientist.routers import experiment as experiment_router
 from coscientist.routers import goal as goal_router
@@ -29,6 +30,7 @@ app = FastAPI(
 app.include_router(score_router.router, prefix=settings.api_prefix)
 app.include_router(approach_router.router, prefix=settings.api_prefix)
 app.include_router(goal_router.router, prefix=settings.api_prefix)
+app.include_router(approval_router.router, prefix=settings.api_prefix)
 app.include_router(experiment_router.router, prefix=settings.api_prefix)
 app.include_router(hypothesis_router.router, prefix=settings.api_prefix)
 app.include_router(ontology_router.router, prefix=settings.api_prefix)
