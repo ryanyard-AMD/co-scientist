@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     scout_weak_threshold: int = 1
     scout_sparse_threshold: int = 3
     approach_min_evidence: int = 2
+    hypothesis_max_per_run: int = 20
+    hypothesis_complementary_high: float = 0.6
+    hypothesis_complementary_low: float = 0.4
 
 
 settings = Settings()

@@ -10,6 +10,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Research Scout     (CS-EPIC-SCOUT)
          ├── Approach Forge     (CS-EPIC-APPROACH)
          ├── Rubric Scoring     (CS-EPIC-SCORE)
+         ├── Hypothesis Gen    (CS-EPIC-HYPOTHESIS)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT) [planned]
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
@@ -72,6 +73,19 @@ Transparent, evidence-linked scoring system for evaluating and comparing approac
 - Per-dimension comparison rankings across all scored approaches
 - Pareto frontier analysis: identifies non-dominated approaches
 
+### CS-EPIC-HYPOTHESIS: Hypothesis and Combination Generation
+
+Generates HypothesisCards — proposed combinations of 2+ scored approaches — with compatibility analysis, rationale, and testability artifacts.
+
+- **HypothesisCard** with 4-state lifecycle: `generated` → `reviewed` → `experiment_proposed` → `superseded`
+- Two hypothesis types: `conservative` (both high-scoring, no conflicts) and `exploratory` (complementary strengths, may have flagged conflicts)
+- Pairwise compatibility analysis: shared hardware, conflicting assumptions, complementary rubric dimensions, ontology relationships
+- Assumption conflict detection via negation patterns ("does not require", "no ", "without ")
+- Complementary dimension detection using configurable thresholds (high ≥ 0.6, low ≤ 0.4)
+- Deterministic generation from rubric scores, ontology relationships, and hardware overlap
+- Deduplication against existing hypotheses by sorted approach ID sets
+- Each hypothesis includes rationale, assumptions, expected benefits, failure modes, and required experiments
+
 ## Quick Start
 
 ```bash
@@ -111,6 +125,15 @@ cs score run <GOAL_ID> --profile robustness     # score with alternate weight pr
 cs score show <APPROACH_ID>                     # show dimension scores
 cs score compare <GOAL_ID>                      # ranked comparison table
 cs score pareto <GOAL_ID>                       # Pareto-optimal set
+
+# Generate and manage hypotheses
+cs hypothesis generate <GOAL_ID>                 # generate from scored approaches
+cs hypothesis generate <GOAL_ID> --no-exploratory  # conservative only
+cs hypothesis list <GOAL_ID>                     # list all hypotheses
+cs hypothesis list <GOAL_ID> --type exploratory  # filter by type
+cs hypothesis show <HYPOTHESIS_ID>               # show full details
+cs hypothesis review <HYPOTHESIS_ID>             # transition to reviewed
+cs hypothesis delete <HYPOTHESIS_ID>             # delete a generated hypothesis
 ```
 
 ## API Endpoints
@@ -163,6 +186,18 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/approaches/pareto` | Pareto frontier analysis |
 | POST | `/goals/{id}/approaches/{aid}/rescore` | Rescore with different weight profile |
 
+### Hypotheses
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/hypotheses/generate` | Generate hypothesis combinations from scored approaches |
+| POST | `/goals/{id}/hypotheses` | Create a manual hypothesis |
+| GET | `/goals/{id}/hypotheses` | List hypotheses (filter by status, type) |
+| GET | `/goals/{id}/hypotheses/{hid}` | Get hypothesis details |
+| PATCH | `/goals/{id}/hypotheses/{hid}` | Update hypothesis fields |
+| POST | `/goals/{id}/hypotheses/{hid}/transition` | Transition hypothesis status |
+| DELETE | `/goals/{id}/hypotheses/{hid}` | Delete a generated hypothesis |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -199,6 +234,9 @@ Environment variables (prefix `CS_`):
 | `CS_SCOUT_SPARSE_THRESHOLD` | `3` | Warn if fewer papers than this |
 | `CS_APPROACH_MIN_EVIDENCE` | `2` | Min evidence records to generate an approach |
 | `CS_SCORE_WEIGHT_PROFILE` | `default` | Default weight profile (default, fastest_prototype, scientific_novelty, robustness, product_feasibility) |
+| `CS_HYPOTHESIS_MAX_PER_RUN` | `20` | Max hypotheses generated per run |
+| `CS_HYPOTHESIS_COMPLEMENTARY_HIGH` | `0.6` | Threshold for "high" dimension score in complementarity check |
+| `CS_HYPOTHESIS_COMPLEMENTARY_LOW` | `0.4` | Threshold for "low" dimension score in complementarity check |
 
 ## Development
 
@@ -225,23 +263,27 @@ src/coscientist/
 │   ├── evidence.py        # EvidenceRecord ORM
 │   ├── ontology.py        # OntologyTerm, OntologyRelationship ORM
 │   ├── approach.py        # ApproachCard ORM
-│   └── score.py           # RubricScore ORM
+│   ├── score.py           # RubricScore ORM
+│   └── hypothesis.py      # HypothesisCard ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
 │   ├── ontology.py        # Ontology request/response schemas
 │   ├── approach.py        # Approach request/response schemas
-│   └── score.py           # Score request/response schemas
+│   ├── score.py           # Score request/response schemas
+│   └── hypothesis.py      # Hypothesis request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
 │   ├── ontology.py        # Ontology CRUD, merge, relationships
 │   ├── approach.py        # Approach generation, CRUD, merge
-│   └── score.py           # Rubric scoring, comparison, Pareto
+│   ├── score.py           # Rubric scoring, comparison, Pareto
+│   └── hypothesis.py      # Hypothesis generation, compatibility, CRUD
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
     ├── ontology.py        # Ontology API endpoints
     ├── approach.py        # Approach API endpoints
-    └── score.py           # Score API endpoints
+    ├── score.py           # Score API endpoints
+    └── hypothesis.py      # Hypothesis API endpoints
 ```

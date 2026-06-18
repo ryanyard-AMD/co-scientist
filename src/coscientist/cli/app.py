@@ -22,11 +22,17 @@ from coscientist.schemas.approach import (
     ApproachMergeRequest,
     ApproachStatusEnum,
 )
+from coscientist.schemas.hypothesis import (
+    HypothesisGenerateRequest,
+    HypothesisStatusEnum,
+    HypothesisTypeEnum,
+)
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approach as approach_svc
 from coscientist.services import goal as svc
+from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import ontology as ontology_svc
 from coscientist.services import score as score_svc
 from coscientist.services import scout as scout_svc
@@ -37,11 +43,13 @@ scout_app = typer.Typer(no_args_is_help=True, help="Scout evidence for research 
 ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
 approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
 score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach cards")
+hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(approach_app, name="approach")
 app.add_typer(score_app, name="score")
+app.add_typer(hypothesis_app, name="hypothesis")
 
 console = Console()
 
@@ -566,5 +574,105 @@ def score_pareto(goal_id: str = typer.Argument(...)):
             console.print(f"[yellow]Dominated ({len(result.dominated)}):[/yellow]")
             for a in result.dominated:
                 console.print(f"  {a.approach_name} ({a.method_family}) final={a.final_score:.4f}")
+    finally:
+        db.close()
+
+
+# --- Hypothesis commands ---
+
+
+@hypothesis_app.command("generate")
+def hypothesis_generate(
+    goal_id: str = typer.Argument(...),
+    max_hypotheses: int = typer.Option(20, "--max", "-m"),
+    no_exploratory: bool = typer.Option(False, "--no-exploratory", help="Skip exploratory hypotheses"),
+):
+    """Generate hypothesis cards from scored approaches."""
+    db = _get_session()
+    try:
+        request = HypothesisGenerateRequest(
+            include_exploratory=not no_exploratory,
+            max_hypotheses=max_hypotheses,
+        )
+        result = hypothesis_svc.generate_hypotheses(db, goal_id, request)
+        console.print(f"[green]Generation run {result.generation_run_id[:8]}… complete[/green]")
+        console.print(f"  Hypotheses created: {result.hypotheses_created}")
+        console.print(f"  Conservative: {result.conservative_count}")
+        console.print(f"  Exploratory: {result.exploratory_count}")
+        console.print(f"  Duplicates skipped: {result.hypotheses_skipped_duplicate}")
+        for h in result.hypotheses:
+            conflict = " [CONFLICTS]" if h.has_conflicts else ""
+            console.print(f"  - {h.name} ({h.hypothesis_type.value}){conflict}")
+    finally:
+        db.close()
+
+
+@hypothesis_app.command("list")
+def hypothesis_list(
+    goal_id: str = typer.Argument(...),
+    status: Optional[HypothesisStatusEnum] = typer.Option(None, "--status", "-s"),
+    hyp_type: Optional[HypothesisTypeEnum] = typer.Option(None, "--type", "-t"),
+):
+    """List hypothesis cards for a goal."""
+    db = _get_session()
+    try:
+        items, total = hypothesis_svc.list_hypotheses(
+            db, goal_id, status=status, hypothesis_type=hyp_type,
+        )
+        table = Table(title=f"Hypothesis Cards ({total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Type")
+        table.add_column("Status", style="green")
+        table.add_column("Conflicts")
+        table.add_column("Approaches", justify="right")
+        for h in items:
+            table.add_row(
+                h.id[:8] + "…",
+                h.name,
+                h.hypothesis_type.value,
+                h.status.value,
+                "Yes" if h.has_conflicts else "No",
+                str(len(h.approach_ids)),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@hypothesis_app.command("show")
+def hypothesis_show(hypothesis_id: str = typer.Argument(...)):
+    """Show full details of a hypothesis card."""
+    db = _get_session()
+    try:
+        result = hypothesis_svc.get(db, hypothesis_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@hypothesis_app.command("review")
+def hypothesis_review(hypothesis_id: str = typer.Argument(...)):
+    """Transition hypothesis card to 'reviewed' status."""
+    db = _get_session()
+    try:
+        result = hypothesis_svc.transition(db, hypothesis_id, HypothesisStatusEnum.reviewed)
+        console.print(f"[green]Hypothesis {hypothesis_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@hypothesis_app.command("delete")
+def hypothesis_delete(
+    hypothesis_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a generated hypothesis card."""
+    if not yes:
+        typer.confirm(f"Delete hypothesis {hypothesis_id}?", abort=True)
+    db = _get_session()
+    try:
+        hypothesis_svc.delete(db, hypothesis_id)
+        console.print(f"[red]Hypothesis {hypothesis_id[:8]}… deleted[/red]")
     finally:
         db.close()
