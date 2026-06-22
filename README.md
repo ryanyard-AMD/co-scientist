@@ -13,6 +13,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Hypothesis Gen    (CS-EPIC-HYPOTHESIS)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT)
          ├── Human Approval     (CS-EPIC-APPROVAL)
+         ├── Experiment Validation (CS-EPIC-VALIDATION)
          └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
@@ -97,6 +98,18 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 - On approve with no reason: YAML export stored automatically as handoff payload
 - `list_pending()` surfaces all `reviewed` experiments, optionally filtered by goal
 - `duplicate_experiment()` creates an editable copy (status=`generated`, name+" (copy)") with no decisions
+
+### CS-EPIC-VALIDATION: Agent-Driven Experiment Validation
+
+Closes the experiment feedback loop by ingesting measured results, evaluating them against pass conditions via a Claude Sonnet 4.6 agent, and driving automated status transitions on experiments and approach cards.
+
+- **ValidationResult** — immutable audit record (no `updated_at`): decision (validated/refuted), confidence, reasoning, per-criterion results, refinement suggestions, measured metrics, artifact paths, model used
+- `POST /{eid}/results` accepts measured metrics (and optional artifact paths) from any source: Experiment Runner, MLflow script, or manual submission
+- Claude Sonnet 4.6 agent receives full context — experiment spec, pass conditions, measured values, approach card, goal success criteria — and returns structured JSON with per-criterion pass/fail evaluation
+- Automated side effects on validation: experiment `running → completed` (validated) or `running → failed` (refuted)
+- Automated side effects on approach: `experiment_proposed → tested → validated` or `tested → refuted`; maturity advanced to `simulated` (simulation) or `measured` (measurement/hybrid); maturity never downgraded
+- Single `db.commit()` at end of orchestration — no nested commits across status transitions
+- Refinement suggestions populated when refuted to guide next iteration
 
 ### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
 
@@ -235,6 +248,28 @@ cs approval history <EXPERIMENT_ID> <GOAL_ID>   # chronological decision log
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' status
 ```
 
+### 8. Submit results and validate
+
+Once an experiment is `running`, submit measured metrics to trigger automated validation.
+
+```bash
+cs validation submit <EXPERIMENT_ID> <GOAL_ID> \
+  --metrics '{"acoustic_contrast": 18.5, "latency": 8.2}'
+
+# Optional: attach artifact paths and notes
+cs validation submit <EXPERIMENT_ID> <GOAL_ID> \
+  --metrics '{"acoustic_contrast": 18.5}' \
+  --artifacts '{"mlflow_run": "runs:/abc123"}' \
+  --notes "Measured at 1kHz with 2 speakers"
+
+cs validation show <EXPERIMENT_ID> <GOAL_ID>   # full result with per-criterion breakdown
+cs validation list <GOAL_ID>                   # all results for the goal
+
+# After validation the approach automatically transitions:
+cs approach list <GOAL_ID> --status validated  # if all criteria passed
+cs approach list <GOAL_ID> --status refuted    # if any criterion failed
+```
+
 ## Command Reference
 
 ### Goals
@@ -308,6 +343,13 @@ cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "..."
 cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."
 cs approval history <EXPERIMENT_ID> <GOAL_ID>
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>
+```
+
+### Validation
+```bash
+cs validation submit <EXPERIMENT_ID> <GOAL_ID> --metrics '{"metric": value}' [--artifacts '{"key": "path"}'] [--notes "..."]
+cs validation show <EXPERIMENT_ID> <GOAL_ID>
+cs validation list <GOAL_ID>
 ```
 
 ## API Endpoints
@@ -397,6 +439,14 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/experiments/{eid}/duplicate` | Duplicate as editable copy |
 | GET | `/goals/{id}/experiments/{eid}/decisions` | List chronological decision history |
 
+### Validation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/experiments/{eid}/results` | Submit measured metrics; triggers agent validation |
+| GET | `/goals/{id}/experiments/{eid}/results` | Get latest validation result (404 if none) |
+| GET | `/goals/{id}/experiments/results` | List all validation results for a goal |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -440,6 +490,8 @@ Environment variables (prefix `CS_`):
 | `CS_EXPERIMENT_SWEEP_COST_LOW` | `100` | Sweep cardinality at or below this → low cost/low runtime |
 | `CS_EXPERIMENT_SWEEP_COST_MEDIUM` | `500` | Sweep cardinality at or below this → low cost/medium runtime |
 | `CS_EXPERIMENT_SWEEP_COST_HIGH` | `2000` | Sweep cardinality at or below this → medium cost/medium runtime |
+| `CS_VALIDATION_MODEL` | `claude-sonnet-4-6` | Claude model used for experiment validation agent |
+| `CS_ANTHROPIC_API_KEY` | | Anthropic API key for the validation agent |
 
 ## Development
 
@@ -469,7 +521,8 @@ src/coscientist/
 │   ├── score.py           # RubricScore ORM
 │   ├── hypothesis.py      # HypothesisCard ORM
 │   ├── experiment.py      # ExperimentCard ORM
-│   └── approval.py        # ApprovalDecision ORM
+│   ├── approval.py        # ApprovalDecision ORM
+│   └── validation.py      # ValidationResult ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -478,7 +531,8 @@ src/coscientist/
 │   ├── score.py           # Score request/response schemas
 │   ├── hypothesis.py      # Hypothesis request/response schemas
 │   ├── experiment.py      # Experiment request/response schemas
-│   └── approval.py        # Approval request/response schemas
+│   ├── approval.py        # Approval request/response schemas
+│   └── validation.py      # Validation request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -487,7 +541,8 @@ src/coscientist/
 │   ├── score.py           # Rubric scoring, comparison, Pareto
 │   ├── hypothesis.py      # Hypothesis generation, compatibility, CRUD
 │   ├── experiment.py      # Experiment generation, scoring, export, CRUD
-│   └── approval.py        # Approval decisions, pending queue, duplicate
+│   ├── approval.py        # Approval decisions, pending queue, duplicate
+│   └── validation.py      # Agent-driven result ingestion and validation
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -496,5 +551,6 @@ src/coscientist/
     ├── score.py           # Score API endpoints
     ├── hypothesis.py      # Hypothesis API endpoints
     ├── experiment.py      # Experiment API endpoints
-    └── approval.py        # Approval API endpoints
+    ├── approval.py        # Approval API endpoints
+    └── validation.py      # Validation API endpoints
 ```

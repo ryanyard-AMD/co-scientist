@@ -36,6 +36,7 @@ from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approval as approval_svc
+from coscientist.services import validation as validation_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
@@ -53,6 +54,7 @@ score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach c
 hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards")
 experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards")
 approval_app = typer.Typer(no_args_is_help=True, help="Approve, reject, or request edits on experiments")
+validation_app = typer.Typer(no_args_is_help=True, help="Submit experiment results and view validation outcomes")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -61,6 +63,7 @@ app.add_typer(score_app, name="score")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(approval_app, name="approval")
+app.add_typer(validation_app, name="validation")
 
 console = Console()
 
@@ -985,5 +988,107 @@ def approval_duplicate(
         result = approval_svc.duplicate_experiment(db, experiment_id, goal_id)
         console.print(f"[green]Duplicated[/green] {result.original_id[:8]}… → {result.new_id[:8]}…")
         console.print(f"New experiment: [bold]{result.new_experiment.name}[/bold] (status=generated)")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Validation commands
+# ---------------------------------------------------------------------------
+
+@validation_app.command("submit")
+def validation_submit(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    metrics: str = typer.Option(..., "--metrics", "-m", help="JSON dict of metric name→value, e.g. '{\"acoustic_contrast\": 18.5}'"),
+    artifacts: Optional[str] = typer.Option(None, "--artifacts", "-a", help="JSON dict of artifact type→path"),
+    notes: Optional[str] = typer.Option(None, "--notes", "-n", help="Optional experimenter notes"),
+):
+    """Submit measured results and trigger the Claude validation agent."""
+    from coscientist.schemas.validation import ExperimentResultSubmission
+    db = _get_session()
+    try:
+        measured = json.loads(metrics)
+        artifact_paths = json.loads(artifacts) if artifacts else None
+        submission = ExperimentResultSubmission(
+            measured_metrics=measured,
+            artifact_paths=artifact_paths,
+            notes=notes,
+        )
+        result = validation_svc.submit_results(db, experiment_id, goal_id, submission)
+        decision_color = "green" if result.decision.value == "validated" else "red"
+        console.print(f"[{decision_color}]Decision: {result.decision.value.upper()}[/{decision_color}]")
+        console.print(f"Confidence: {result.confidence:.2f}")
+        console.print(f"Reasoning: {result.reasoning}")
+        if result.criterion_results:
+            table = Table(title="Criterion Results")
+            table.add_column("Criterion")
+            table.add_column("Measured")
+            table.add_column("Target")
+            table.add_column("Operator")
+            table.add_column("Unit")
+            table.add_column("Passed")
+            for cr in result.criterion_results:
+                passed_str = "[green]Yes[/green]" if cr.passed else "[red]No[/red]"
+                table.add_row(
+                    cr.name,
+                    str(cr.measured) if cr.measured is not None else "N/A",
+                    str(cr.target),
+                    cr.operator,
+                    cr.unit,
+                    passed_str,
+                )
+            console.print(table)
+        if result.refinement_suggestions:
+            console.print("[yellow]Refinement suggestions:[/yellow]")
+            for s in result.refinement_suggestions:
+                console.print(f"  - {s}")
+    finally:
+        db.close()
+
+
+@validation_app.command("show")
+def validation_show(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Show the validation result for an experiment."""
+    db = _get_session()
+    try:
+        result = validation_svc.get_result(db, experiment_id, goal_id)
+        if result is None:
+            console.print(f"[yellow]No validation result found for experiment {experiment_id}[/yellow]")
+            raise typer.Exit(code=1)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@validation_app.command("list")
+def validation_list(
+    goal_id: str = typer.Argument(...),
+):
+    """List all validation results for a goal."""
+    db = _get_session()
+    try:
+        result = validation_svc.list_results(db, goal_id)
+        table = Table(title=f"Validation Results ({result.total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Experiment")
+        table.add_column("Approach")
+        table.add_column("Decision", style="bold")
+        table.add_column("Confidence", justify="right")
+        table.add_column("Created")
+        for r in result.items:
+            decision_color = "green" if r.decision.value == "validated" else "red"
+            table.add_row(
+                r.id,
+                r.experiment_id,
+                r.approach_id,
+                f"[{decision_color}]{r.decision.value}[/{decision_color}]",
+                f"{r.confidence:.2f}",
+                r.created_at.strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
     finally:
         db.close()

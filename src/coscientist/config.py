@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     experiment_sweep_cost_low: int = 100
     experiment_sweep_cost_medium: int = 500
     experiment_sweep_cost_high: int = 2000
+    validation_model: str = "claude-sonnet-4-6"
+    anthropic_api_key: str | None = None
 
 
 settings = Settings()
