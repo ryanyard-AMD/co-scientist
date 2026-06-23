@@ -37,12 +37,18 @@ from coscientist.schemas.device import (
     DeviceConceptStatusEnum,
     DeviceConceptTransitionRequest,
 )
+from coscientist.schemas.roadmap import (
+    RoadmapLaneEnum,
+    RoadmapStatusEnum,
+    RoadmapTransitionRequest,
+)
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
 from coscientist.services import device as device_svc
+from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
@@ -62,6 +68,7 @@ experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards
 approval_app = typer.Typer(no_args_is_help=True, help="Approve, reject, or request edits on experiments")
 validation_app = typer.Typer(no_args_is_help=True, help="Submit experiment results and view validation outcomes")
 device_app = typer.Typer(no_args_is_help=True, help="Generate and review candidate device concepts")
+roadmap_app = typer.Typer(no_args_is_help=True, help="Generate and manage the research roadmap")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -72,6 +79,7 @@ app.add_typer(experiment_app, name="experiment")
 app.add_typer(approval_app, name="approval")
 app.add_typer(validation_app, name="validation")
 app.add_typer(device_app, name="device")
+app.add_typer(roadmap_app, name="roadmap")
 
 console = Console()
 
@@ -1231,5 +1239,99 @@ def device_export(
     try:
         result = device_svc.export_device(db, device_id, goal_id, format)
         console.print(result.content)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Roadmap commands
+# ---------------------------------------------------------------------------
+
+@roadmap_app.command("generate")
+def roadmap_generate(goal_id: str = typer.Argument(...)):
+    """Generate next-best research actions for a goal via agent."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.generate(db, goal_id)
+        if result.total == 0:
+            console.print("[yellow]No roadmap items generated — ensure the goal has at least one approach.[/yellow]")
+            return
+        console.print(f"[green]Generation run {result.generation_run_id[:8]}… — {result.total} items[/green]")
+        table = Table(title=f"Research Roadmap ({result.total} items)")
+        table.add_column("Rank", justify="right")
+        table.add_column("Lane", style="cyan")
+        table.add_column("Title")
+        table.add_column("Cost")
+        table.add_column("Info Gain")
+        table.add_column("Status", style="green")
+        for item in result.items:
+            table.add_row(
+                str(item.priority_rank),
+                item.lane.value,
+                item.title,
+                item.estimated_cost,
+                item.estimated_information_gain,
+                item.status.value,
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@roadmap_app.command("list")
+def roadmap_list(
+    goal_id: str = typer.Argument(...),
+    lane: Optional[RoadmapLaneEnum] = typer.Option(None, "--lane", "-l"),
+    status: Optional[RoadmapStatusEnum] = typer.Option(None, "--status", "-s"),
+):
+    """List roadmap items for a goal, optionally filtered by lane or status."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.get_roadmap(db, goal_id, lane=lane, status=status)
+        table = Table(title=f"Research Roadmap ({result.total} items)")
+        table.add_column("Rank", justify="right")
+        table.add_column("Lane", style="cyan")
+        table.add_column("Title")
+        table.add_column("Cost")
+        table.add_column("Info Gain")
+        table.add_column("Status", style="green")
+        for item in result.items:
+            table.add_row(
+                str(item.priority_rank),
+                item.lane.value,
+                item.title,
+                item.estimated_cost,
+                item.estimated_information_gain,
+                item.status.value,
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@roadmap_app.command("show")
+def roadmap_show(
+    item_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Show full details of a roadmap item."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.get_item(db, item_id, goal_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@roadmap_app.command("complete")
+def roadmap_complete(
+    item_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Transition a roadmap item to 'completed'."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.transition_item(db, item_id, goal_id, RoadmapStatusEnum.completed)
+        console.print(f"[green]Roadmap item {item_id[:8]}… is now {result.status.value}[/green]")
     finally:
         db.close()

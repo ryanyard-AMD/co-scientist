@@ -16,6 +16,7 @@ from coscientist.schemas.experiment import (
     ExperimentTypeEnum,
 )
 from coscientist.services import experiment as svc
+from coscientist.services import roadmap as roadmap_svc
 
 router = APIRouter(prefix="/goals/{goal_id}/experiments", tags=["experiments"])
 
@@ -70,7 +71,10 @@ def transition_experiment(
     body: ExperimentStatusUpdate,
     db: Session = Depends(get_db),
 ):
-    return svc.transition(db, experiment_id, body.status)
+    result = svc.transition(db, experiment_id, body.status)
+    if body.status in (ExperimentStatusEnum.completed, ExperimentStatusEnum.failed):
+        roadmap_svc.retire_for_experiment(db, experiment_id, goal_id)
+    return result
 
 
 @router.post("/{experiment_id}/score", response_model=ExperimentScoreResponse)
