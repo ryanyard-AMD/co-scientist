@@ -14,7 +14,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Experiment Design  (CS-EPIC-EXPERIMENT)
          ├── Human Approval     (CS-EPIC-APPROVAL)
          ├── Experiment Validation (CS-EPIC-VALIDATION)
-         └── Device Synthesis   (CS-EPIC-DEVICE)     [planned]
+         └── Device Synthesis   (CS-EPIC-DEVICE)
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
          └── Experiment Runner — containerized execution, MLflow tracking
@@ -110,6 +110,19 @@ Closes the experiment feedback loop by ingesting measured results, evaluating th
 - Automated side effects on approach: `experiment_proposed → tested → validated` or `tested → refuted`; maturity advanced to `simulated` (simulation) or `measured` (measurement/hybrid); maturity never downgraded
 - Single `db.commit()` at end of orchestration — no nested commits across status transitions
 - Refinement suggestions populated when refuted to guide next iteration
+
+### CS-EPIC-DEVICE: Candidate Device Concept Synthesis
+
+Closes the research-to-device loop by synthesising validated approach cards — with their rubric scores, experiments, and validation results — into actionable candidate device architectures via a Claude Sonnet 4.6 agent.
+
+- **DeviceConceptCard** with 3-state lifecycle: `generated` → `reviewed` → `superseded`
+- Claude Sonnet 4.6 Device Integrator Agent receives full context — goal constraints, validated approaches with rubric scores, hardware requirements, experiments, and validation outcomes — and proposes one device concept per viable form factor (desktop_bar, headrest, monitor_speaker_array, etc.)
+- Each card stores form factor, use case, acoustic architecture (control stack, calibration, simulation backing), hardware spec (speakers, microphones, compute), and expected performance as structured JSON
+- Full traceability: `approach_ids`, `experiment_ids`, `validation_result_ids` link back to all source artefacts
+- `unresolved_risks` and `next_steps` fields turn each concept into an actionable research roadmap
+- Side-by-side comparison across ≥2 concepts: form factor, maturity, approach count, risk count, next step count
+- Export as markdown (human-readable handoff with all sections) or JSON
+- Maturity inherited from weakest contributing approach
 
 ### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
 
@@ -270,6 +283,25 @@ cs approach list <GOAL_ID> --status validated  # if all criteria passed
 cs approach list <GOAL_ID> --status refuted    # if any criterion failed
 ```
 
+### 9. Synthesise device concepts
+
+With validated approaches in hand, generate candidate device architectures.
+
+```bash
+cs device generate <GOAL_ID>                        # agent proposes one concept per form factor
+cs device list <GOAL_ID>                            # copy DEVICE_IDs
+cs device show <DEVICE_ID> <GOAL_ID>                # full structured card
+
+# Compare two or more concepts side by side:
+cs device compare <DEVICE_ID_1> <DEVICE_ID_2> --goal <GOAL_ID>
+
+# Export for stakeholder handoff:
+cs device export <DEVICE_ID> <GOAL_ID>              # markdown (default)
+cs device export <DEVICE_ID> <GOAL_ID> --format json
+
+cs device review <DEVICE_ID> <GOAL_ID>              # mark as reviewed
+```
+
 ## Command Reference
 
 ### Goals
@@ -350,6 +382,16 @@ cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>
 cs validation submit <EXPERIMENT_ID> <GOAL_ID> --metrics '{"metric": value}' [--artifacts '{"key": "path"}'] [--notes "..."]
 cs validation show <EXPERIMENT_ID> <GOAL_ID>
 cs validation list <GOAL_ID>
+```
+
+### Device
+```bash
+cs device generate <GOAL_ID> [--approach <ID>...]
+cs device list <GOAL_ID> [--status generated|reviewed|superseded]
+cs device show <DEVICE_ID> <GOAL_ID>
+cs device review <DEVICE_ID> <GOAL_ID>
+cs device compare <DEVICE_ID>... --goal <GOAL_ID>
+cs device export <DEVICE_ID> <GOAL_ID> [--format markdown|json]
 ```
 
 ## API Endpoints
@@ -447,6 +489,18 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/experiments/{eid}/results` | Get latest validation result (404 if none) |
 | GET | `/goals/{id}/experiments/results` | List all validation results for a goal |
 
+### Device
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/devices/generate` | Generate device concepts via agent from validated approaches |
+| GET | `/goals/{id}/devices` | List device concept cards (filter by status) |
+| GET | `/goals/{id}/devices/compare?ids=id1,id2` | Side-by-side comparison of ≥2 concepts |
+| GET | `/goals/{id}/devices/{did}` | Get device concept card details |
+| POST | `/goals/{id}/devices/{did}/transition` | Transition device concept status |
+| GET | `/goals/{id}/devices/{did}/export` | Export as markdown or JSON |
+| DELETE | `/goals/{id}/devices/{did}` | Delete a generated device concept |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -522,7 +576,8 @@ src/coscientist/
 │   ├── hypothesis.py      # HypothesisCard ORM
 │   ├── experiment.py      # ExperimentCard ORM
 │   ├── approval.py        # ApprovalDecision ORM
-│   └── validation.py      # ValidationResult ORM
+│   ├── validation.py      # ValidationResult ORM
+│   └── device.py          # DeviceConceptCard ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -532,6 +587,7 @@ src/coscientist/
 │   ├── hypothesis.py      # Hypothesis request/response schemas
 │   ├── experiment.py      # Experiment request/response schemas
 │   ├── approval.py        # Approval request/response schemas
+│   ├── device.py          # Device concept request/response schemas
 │   └── validation.py      # Validation request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
@@ -542,7 +598,8 @@ src/coscientist/
 │   ├── hypothesis.py      # Hypothesis generation, compatibility, CRUD
 │   ├── experiment.py      # Experiment generation, scoring, export, CRUD
 │   ├── approval.py        # Approval decisions, pending queue, duplicate
-│   └── validation.py      # Agent-driven result ingestion and validation
+│   ├── validation.py      # Agent-driven result ingestion and validation
+│   └── device.py          # Agent-driven device concept synthesis, compare, export
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -552,5 +609,6 @@ src/coscientist/
     ├── hypothesis.py      # Hypothesis API endpoints
     ├── experiment.py      # Experiment API endpoints
     ├── approval.py        # Approval API endpoints
-    └── validation.py      # Validation API endpoints
+    ├── validation.py      # Validation API endpoints
+    └── device.py          # Device concept API endpoints
 ```

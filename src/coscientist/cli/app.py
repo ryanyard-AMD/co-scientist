@@ -32,11 +32,17 @@ from coscientist.schemas.experiment import (
     ExperimentStatusEnum,
     ExperimentTypeEnum,
 )
+from coscientist.schemas.device import (
+    DeviceConceptGenerateRequest,
+    DeviceConceptStatusEnum,
+    DeviceConceptTransitionRequest,
+)
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
+from coscientist.services import device as device_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
@@ -55,6 +61,7 @@ hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards
 experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards")
 approval_app = typer.Typer(no_args_is_help=True, help="Approve, reject, or request edits on experiments")
 validation_app = typer.Typer(no_args_is_help=True, help="Submit experiment results and view validation outcomes")
+device_app = typer.Typer(no_args_is_help=True, help="Generate and review candidate device concepts")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -64,6 +71,7 @@ app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(approval_app, name="approval")
 app.add_typer(validation_app, name="validation")
+app.add_typer(device_app, name="device")
 
 console = Console()
 
@@ -1090,5 +1098,138 @@ def validation_list(
                 r.created_at.strftime("%Y-%m-%d %H:%M"),
             )
         console.print(table)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Device commands
+# ---------------------------------------------------------------------------
+
+@device_app.command("generate")
+def device_generate(
+    goal_id: str = typer.Argument(...),
+    approach: Optional[list[str]] = typer.Option(None, "--approach", "-a", help="Approach IDs to use (default: all validated)"),
+):
+    """Generate candidate device concepts from validated approaches via agent."""
+    db = _get_session()
+    try:
+        request = DeviceConceptGenerateRequest(approach_ids=approach or [])
+        result = device_svc.generate(db, goal_id, request)
+        if result.generated == 0:
+            console.print("[yellow]No device concepts generated. Ensure the goal has validated or scored approaches.[/yellow]")
+            return
+        table = Table(title=f"Generated Device Concepts ({result.generated}) — run {result.generation_run_id[:8]}")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Form Factor")
+        table.add_column("Maturity")
+        table.add_column("Risks", justify="right")
+        table.add_column("Next Steps", justify="right")
+        for c in result.items:
+            table.add_row(
+                c.id,
+                c.name,
+                c.form_factor.type,
+                c.maturity.value,
+                str(len(c.unresolved_risks)),
+                str(len(c.next_steps)),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@device_app.command("list")
+def device_list(
+    goal_id: str = typer.Argument(...),
+    status: Optional[DeviceConceptStatusEnum] = typer.Option(None, "--status", "-s"),
+):
+    """List device concept cards for a goal."""
+    db = _get_session()
+    try:
+        result = device_svc.list_devices(db, goal_id, status)
+        table = Table(title=f"Device Concepts ({result.total} total)")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Form Factor")
+        table.add_column("Maturity")
+        table.add_column("Status")
+        table.add_column("Approaches", justify="right")
+        for c in result.items:
+            status_color = {"generated": "white", "reviewed": "green", "superseded": "dim"}.get(c.status.value, "white")
+            table.add_row(
+                c.id,
+                c.name,
+                c.form_factor.type,
+                c.maturity.value,
+                f"[{status_color}]{c.status.value}[/{status_color}]",
+                str(len(c.approach_ids)),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@device_app.command("show")
+def device_show(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Show full details of a device concept card."""
+    db = _get_session()
+    try:
+        result = device_svc.get(db, device_id, goal_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@device_app.command("review")
+def device_review(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """Transition a device concept to 'reviewed'."""
+    db = _get_session()
+    try:
+        result = device_svc.transition(db, device_id, goal_id, DeviceConceptStatusEnum.reviewed)
+        console.print(f"[green]Device concept {device_id} transitioned to '{result.status.value}'.[/green]")
+    finally:
+        db.close()
+
+
+@device_app.command("compare")
+def device_compare(
+    device_ids: list[str] = typer.Argument(..., help="Two or more device IDs to compare"),
+    goal_id: str = typer.Option(..., "--goal", "-g", help="Goal ID"),
+):
+    """Compare multiple device concepts side by side."""
+    db = _get_session()
+    try:
+        result = device_svc.compare(db, goal_id, list(device_ids))
+        table = Table(title="Device Concept Comparison")
+        table.add_column("Dimension", style="bold")
+        for concept in result.concepts:
+            table.add_column(concept.name[:30], style="cyan")
+        for dim in result.dimensions:
+            row = [dim] + [concept.values.get(dim, "") for concept in result.concepts]
+            table.add_row(*row)
+        console.print(table)
+    finally:
+        db.close()
+
+
+@device_app.command("export")
+def device_export(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    format: str = typer.Option("markdown", "--format", "-f", help="Export format: markdown or json"),
+):
+    """Export a device concept card as markdown or JSON."""
+    db = _get_session()
+    try:
+        result = device_svc.export_device(db, device_id, goal_id, format)
+        console.print(result.content)
     finally:
         db.close()
