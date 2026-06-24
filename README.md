@@ -6,15 +6,16 @@ An agent-based co-scientist system that accelerates research-to-device synthesis
 
 ```
 Layer 4: Co-Scientist (this project, port 8001)
-         ├── Goal Workspace    (CS-EPIC-GOAL)
-         ├── Research Scout     (CS-EPIC-SCOUT)
-         ├── Approach Forge     (CS-EPIC-APPROACH)
-         ├── Rubric Scoring     (CS-EPIC-SCORE)
-         ├── Hypothesis Gen    (CS-EPIC-HYPOTHESIS)
-         ├── Experiment Design  (CS-EPIC-EXPERIMENT)
-         ├── Human Approval     (CS-EPIC-APPROVAL)
+         ├── Goal Workspace        (CS-EPIC-GOAL)
+         ├── Research Scout        (CS-EPIC-SCOUT)
+         ├── Approach Forge        (CS-EPIC-APPROACH)
+         ├── Rubric Scoring        (CS-EPIC-SCORE)
+         ├── Hypothesis Gen        (CS-EPIC-HYPOTHESIS)
+         ├── Experiment Design     (CS-EPIC-EXPERIMENT)
+         ├── Human Approval        (CS-EPIC-APPROVAL)
          ├── Experiment Validation (CS-EPIC-VALIDATION)
-         └── Device Synthesis   (CS-EPIC-DEVICE)
+         ├── Device Synthesis      (CS-EPIC-DEVICE)
+         └── Research Roadmap      (CS-EPIC-ROADMAP)
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
          └── Experiment Runner — containerized execution, MLflow tracking
@@ -123,6 +124,18 @@ Closes the research-to-device loop by synthesising validated approach cards — 
 - Side-by-side comparison across ≥2 concepts: form factor, maturity, approach count, risk count, next step count
 - Export as markdown (human-readable handoff with all sections) or JSON
 - Maturity inherited from weakest contributing approach
+
+### CS-EPIC-ROADMAP: Research Roadmap and Next-Best Experiment Planning
+
+Synthesises the full state of a research goal — approaches, experiments, validation outcomes, device concepts, and rubric scores — into a ranked, lane-sorted roadmap of recommended next actions via a Claude Sonnet 4.6 Research Program Manager Agent.
+
+- **ResearchRoadmapItem** with 3-state lifecycle: `open` → `completed` | `superseded`
+- Three research lanes: `conservative` (low-risk near-term validation), `exploratory` (higher-risk higher-upside novel combinations), `device_prototype` (hardware and integration steps)
+- Agent assigns `priority_score` (0–1) by weighing estimated information gain, device relevance, and cost; items returned ranked highest-first within a generation run
+- Agent explicitly identifies evidence gaps per approach and surfaces "run scout for X method family" items
+- Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed
+- Idempotent generation: each `POST /generate` creates a fresh `generation_run_id` batch; prior items remain in DB with their original status for audit
+- Full traceability: each item links back to `source_approach_ids`, `source_experiment_id`, and/or `source_device_id`
 
 ### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
 
@@ -302,6 +315,22 @@ cs device export <DEVICE_ID> <GOAL_ID> --format json
 cs device review <DEVICE_ID> <GOAL_ID>              # mark as reviewed
 ```
 
+### 10. Generate and manage the research roadmap
+
+With approaches, experiments, and device concepts in place, generate a ranked view of what to do next.
+
+```bash
+cs roadmap generate <GOAL_ID>                        # agent produces 3–15 prioritised items
+cs roadmap list <GOAL_ID>                            # all items, sorted by priority score
+cs roadmap list <GOAL_ID> --lane conservative        # filter by lane
+cs roadmap list <GOAL_ID> --status open              # only open items
+
+cs roadmap show <ITEM_ID> <GOAL_ID>                  # full details with rationale and sources
+cs roadmap complete <ITEM_ID> <GOAL_ID>              # manually mark an item as completed
+```
+
+After completing or failing an experiment, linked roadmap items retire automatically — no manual step needed.
+
 ## Command Reference
 
 ### Goals
@@ -392,6 +421,14 @@ cs device show <DEVICE_ID> <GOAL_ID>
 cs device review <DEVICE_ID> <GOAL_ID>
 cs device compare <DEVICE_ID>... --goal <GOAL_ID>
 cs device export <DEVICE_ID> <GOAL_ID> [--format markdown|json]
+```
+
+### Roadmap
+```bash
+cs roadmap generate <GOAL_ID>
+cs roadmap list <GOAL_ID> [--lane conservative|exploratory|device_prototype] [--status open|completed|superseded]
+cs roadmap show <ITEM_ID> <GOAL_ID>
+cs roadmap complete <ITEM_ID> <GOAL_ID>
 ```
 
 ## API Endpoints
@@ -501,6 +538,15 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/devices/{did}/export` | Export as markdown or JSON |
 | DELETE | `/goals/{id}/devices/{did}` | Delete a generated device concept |
 
+### Roadmap
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/roadmap/generate` | Generate ranked roadmap items via agent |
+| GET | `/goals/{id}/roadmap` | List roadmap items (filter by lane, status) |
+| GET | `/goals/{id}/roadmap/{rid}` | Get roadmap item details |
+| POST | `/goals/{id}/roadmap/{rid}/transition` | Transition item status (open → completed \| superseded) |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -577,7 +623,8 @@ src/coscientist/
 │   ├── experiment.py      # ExperimentCard ORM
 │   ├── approval.py        # ApprovalDecision ORM
 │   ├── validation.py      # ValidationResult ORM
-│   └── device.py          # DeviceConceptCard ORM
+│   ├── device.py          # DeviceConceptCard ORM
+│   └── roadmap.py         # ResearchRoadmapItem ORM
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -587,8 +634,9 @@ src/coscientist/
 │   ├── hypothesis.py      # Hypothesis request/response schemas
 │   ├── experiment.py      # Experiment request/response schemas
 │   ├── approval.py        # Approval request/response schemas
+│   ├── validation.py      # Validation request/response schemas
 │   ├── device.py          # Device concept request/response schemas
-│   └── validation.py      # Validation request/response schemas
+│   └── roadmap.py         # Roadmap request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -599,7 +647,8 @@ src/coscientist/
 │   ├── experiment.py      # Experiment generation, scoring, export, CRUD
 │   ├── approval.py        # Approval decisions, pending queue, duplicate
 │   ├── validation.py      # Agent-driven result ingestion and validation
-│   └── device.py          # Agent-driven device concept synthesis, compare, export
+│   ├── device.py          # Agent-driven device concept synthesis, compare, export
+│   └── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -610,5 +659,6 @@ src/coscientist/
     ├── experiment.py      # Experiment API endpoints
     ├── approval.py        # Approval API endpoints
     ├── validation.py      # Validation API endpoints
-    └── device.py          # Device concept API endpoints
+    ├── device.py          # Device concept API endpoints
+    └── roadmap.py         # Roadmap API endpoints
 ```
