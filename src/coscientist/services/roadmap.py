@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -22,6 +23,7 @@ from coscientist.schemas.roadmap import (
     RoadmapStatusEnum,
 )
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     RoadmapStatusEnum.open: {RoadmapStatusEnum.completed, RoadmapStatusEnum.superseded},
@@ -60,7 +62,7 @@ def _get_or_404(db: Session, item_id: str, goal_id: str) -> ResearchRoadmapItem:
     return item
 
 
-def _run_roadmap_agent(goal, context: dict) -> list[AgentRoadmapItem]:
+def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[AgentRoadmapItem]:
     success_criteria = (
         json.loads(goal.success_criteria) if isinstance(goal.success_criteria, str) else []
     )
@@ -111,14 +113,27 @@ def _run_roadmap_agent(goal, context: dict) -> list[AgentRoadmapItem]:
     )
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
         max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
 
     raw = message.content[0].text.strip()
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal_id,
+        service="roadmap",
+        action="generate_roadmap",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=raw[:512],
+    )
     try:
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -214,14 +229,15 @@ def _build_context(db: Session, goal_id: str) -> dict:
 
 
 def generate(db: Session, goal_id: str) -> ResearchRoadmapListResponse:
-    goal = goal_svc.get(db, goal_id)  # raises 404 if not found
+    goal_svc.raise_if_restricted(db, goal_id)
+    goal = goal_svc.get(db, goal_id)
 
     context = _build_context(db, goal_id)
 
     if not context["approaches"]:
         return ResearchRoadmapListResponse(items=[], total=0, generation_run_id=None)
 
-    agent_items = _run_roadmap_agent(goal, context)
+    agent_items = _run_roadmap_agent(db, goal_id, goal, context)
 
     generation_run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)

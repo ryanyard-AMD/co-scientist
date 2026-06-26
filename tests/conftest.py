@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 import coscientist.database as db_module
 from coscientist.database import Base, get_db
 from coscientist.main import app
-from coscientist.models import approval, approach, device, evidence, experiment, hypothesis, ontology, roadmap, score, validation  # noqa: F401 — ensure tables created
+from coscientist.models import approval, approach, device, evidence, experiment, governance, hypothesis, ontology, roadmap, score, validation  # noqa: F401 — ensure tables created
 from coscientist.clients.retrieval import (
     ChunkResult,
     DocumentMetadata,

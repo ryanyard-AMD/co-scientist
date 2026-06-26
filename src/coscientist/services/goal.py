@@ -38,6 +38,7 @@ def _to_response(goal: ResearchGoal) -> GoalResponse:
         success_criteria=criteria,
         device_constraints=constraints,
         status=GoalStatusEnum(goal.status),
+        is_restricted=goal.is_restricted,
         workspace_id=goal.workspace_id,
         created_at=goal.created_at,
         updated_at=goal.updated_at,
@@ -64,6 +65,7 @@ def create(db: Session, data: GoalCreate) -> GoalResponse:
             data.device_constraints.model_dump_json() if data.device_constraints else None
         ),
         status=GoalStatusEnum.draft,
+        is_restricted=data.is_restricted,
         workspace_id=goal_id,
         created_at=now,
         updated_at=now,
@@ -76,6 +78,13 @@ def create(db: Session, data: GoalCreate) -> GoalResponse:
 
 def get(db: Session, goal_id: str) -> GoalResponse:
     return _to_response(_get_or_404(db, goal_id))
+
+
+def raise_if_restricted(db: Session, goal_id: str) -> GoalResponse:
+    goal = _get_or_404(db, goal_id)
+    if goal.is_restricted:
+        raise HTTPException(status_code=403, detail=f"Goal {goal_id!r} is restricted; agent actions are disabled")
+    return _to_response(goal)
 
 
 def list_goals(
@@ -105,6 +114,8 @@ def update(db: Session, goal_id: str, data: GoalUpdate) -> GoalResponse:
         goal.success_criteria = json.dumps([c.model_dump() for c in data.success_criteria])
     if data.device_constraints is not None:
         goal.device_constraints = data.device_constraints.model_dump_json()
+    if data.is_restricted is not None:
+        goal.is_restricted = data.is_restricted
     goal.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(goal)

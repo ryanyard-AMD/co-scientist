@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Index, String, Text, func
+from sqlalchemy import Boolean, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from coscientist.database import Base
@@ -20,6 +20,7 @@ class ResearchGoal(Base):
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list
     device_constraints: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON obj
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    is_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     workspace_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow, onupdate=_utcnow)

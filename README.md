@@ -15,7 +15,8 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Human Approval        (CS-EPIC-APPROVAL)
          ├── Experiment Validation (CS-EPIC-VALIDATION)
          ├── Device Synthesis      (CS-EPIC-DEVICE)
-         └── Research Roadmap      (CS-EPIC-ROADMAP)
+         ├── Research Roadmap      (CS-EPIC-ROADMAP)
+         └── Agent Governance      (CS-EPIC-GOVERNANCE)
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
          └── Experiment Runner — containerized execution, MLflow tracking
@@ -151,6 +152,16 @@ Generates ExperimentCards — structured experiment proposals from approach card
 - 10-dimension experiment rubric scoring: hypothesis clarity, device relevance, baseline quality, metric quality, reproducibility, information gain, cost/time, failure informativeness, robustness coverage, artifact quality
 - YAML and Python config export without external dependencies
 - Deduplication against existing experiments by approach ID sets
+
+### CS-EPIC-GOVERNANCE: Agent Orchestration and Governance
+
+Adds an immutable audit trail over every agent-driven Claude call and a corpus/experiment permission model that can disable agent actions per goal.
+
+- **AgentActionLog** — append-only audit record (no `updated_at`, no delete endpoint): service, action, model used, prompt/completion token counts, elapsed ms, response summary (first 512 chars), and error string when the call raised
+- Every instrumented agent (validation, device, roadmap) records one log row per Claude call via `log_agent_call()`, which `flush`es into the caller's existing transaction — the row is persisted atomically with the primary artefact at no extra commit
+- `log_agent_call()` never raises: logging failures are swallowed and printed to stderr so audit instrumentation can never break the primary workflow
+- Queryable via `GET /goals/{id}/agent-logs` (filter by service) and `GET /goals/{id}/agent-logs/{log_id}`, or the `cs logs` CLI
+- **Permission model**: `is_restricted` flag on `ResearchGoal` (toggled via `PATCH /goals/{id}`). When set, `raise_if_restricted()` at the top of each generate service returns 403 — blocking validation, device, and roadmap agent actions while leaving read endpoints intact
 
 ## Setup
 
@@ -331,6 +342,20 @@ cs roadmap complete <ITEM_ID> <GOAL_ID>              # manually mark an item as 
 
 After completing or failing an experiment, linked roadmap items retire automatically — no manual step needed.
 
+### 11. Inspect agent logs and restrict a goal
+
+Every agent-driven Claude call (validation, device, roadmap) is logged for audit.
+
+```bash
+cs logs list <GOAL_ID>                          # all agent calls, newest first
+cs logs list <GOAL_ID> --service roadmap         # filter by service
+cs logs show <LOG_ID> <GOAL_ID>                  # full record as JSON
+
+# Restrict a goal to disable all agent actions (generate endpoints return 403):
+curl -X PATCH localhost:8001/co-scientist/goals/<GOAL_ID> \
+  -H "Content-Type: application/json" -d '{"is_restricted": true}'
+```
+
 ## Command Reference
 
 ### Goals
@@ -429,6 +454,12 @@ cs roadmap generate <GOAL_ID>
 cs roadmap list <GOAL_ID> [--lane conservative|exploratory|device_prototype] [--status open|completed|superseded]
 cs roadmap show <ITEM_ID> <GOAL_ID>
 cs roadmap complete <ITEM_ID> <GOAL_ID>
+```
+
+### Logs
+```bash
+cs logs list <GOAL_ID> [--service validation|device|roadmap] [--limit N]
+cs logs show <LOG_ID> <GOAL_ID>
 ```
 
 ## API Endpoints
@@ -547,6 +578,15 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/roadmap/{rid}` | Get roadmap item details |
 | POST | `/goals/{id}/roadmap/{rid}/transition` | Transition item status (open → completed \| superseded) |
 
+### Governance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/goals/{id}/agent-logs` | List agent action logs (filter by service) |
+| GET | `/goals/{id}/agent-logs/{log_id}` | Get a single agent action log |
+
+Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /goals/{id}` — restricted goals return 403 from all generate endpoints (validation, device, roadmap).
+
 ### Ontology
 
 | Method | Path | Description |
@@ -624,7 +664,8 @@ src/coscientist/
 │   ├── approval.py        # ApprovalDecision ORM
 │   ├── validation.py      # ValidationResult ORM
 │   ├── device.py          # DeviceConceptCard ORM
-│   └── roadmap.py         # ResearchRoadmapItem ORM
+│   ├── roadmap.py         # ResearchRoadmapItem ORM
+│   └── governance.py      # AgentActionLog ORM (immutable audit)
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -636,7 +677,8 @@ src/coscientist/
 │   ├── approval.py        # Approval request/response schemas
 │   ├── validation.py      # Validation request/response schemas
 │   ├── device.py          # Device concept request/response schemas
-│   └── roadmap.py         # Roadmap request/response schemas
+│   ├── roadmap.py         # Roadmap request/response schemas
+│   └── governance.py      # Agent action log response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -648,7 +690,8 @@ src/coscientist/
 │   ├── approval.py        # Approval decisions, pending queue, duplicate
 │   ├── validation.py      # Agent-driven result ingestion and validation
 │   ├── device.py          # Agent-driven device concept synthesis, compare, export
-│   └── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
+│   ├── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
+│   └── governance.py      # Agent action logging, log queries, restriction checks
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -660,5 +703,6 @@ src/coscientist/
     ├── approval.py        # Approval API endpoints
     ├── validation.py      # Validation API endpoints
     ├── device.py          # Device concept API endpoints
-    └── roadmap.py         # Roadmap API endpoints
+    ├── roadmap.py         # Roadmap API endpoints
+    └── governance.py      # Agent action log API endpoints
 ```

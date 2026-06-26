@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -22,6 +23,7 @@ from coscientist.schemas.validation import (
     ValidationResultResponse,
 )
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 
 _MATURITY_ORDER = {
     ApproachMaturityEnum.theoretical.value: 0,
@@ -75,6 +77,8 @@ def _advance_maturity(approach_card: ApproachCard, experiment_type: str) -> str:
 
 
 def _run_validation_agent(
+    db: Session,
+    goal_id: str,
     experiment: ExperimentCard,
     goal,
     primary_approach: ApproachCard | None,
@@ -130,14 +134,27 @@ def _run_validation_agent(
         user_message += f"\n\n## Experimenter Notes\n{submission.notes}"
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
         max_tokens=1024,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
 
     raw_text = message.content[0].text.strip()
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal_id,
+        service="validation",
+        action="validate_experiment",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=raw_text[:512],
+    )
     try:
         parsed = json.loads(raw_text)
         return AgentValidationOutput(**parsed)
@@ -154,6 +171,7 @@ def submit_results(
     goal_id: str,
     submission: ExperimentResultSubmission,
 ) -> ValidationResultResponse:
+    goal_svc.raise_if_restricted(db, goal_id)
     card = _get_experiment_or_404(db, experiment_id, goal_id)
 
     if card.status != ExperimentStatusEnum.running.value:
@@ -170,7 +188,7 @@ def submit_results(
     primary_approach_id = approach_ids[0] if approach_ids else None
     primary_approach = db.get(ApproachCard, primary_approach_id) if primary_approach_id else None
 
-    agent_output = _run_validation_agent(card, goal, primary_approach, submission)
+    agent_output = _run_validation_agent(db, goal_id, card, goal, primary_approach, submission)
 
     now = datetime.now(timezone.utc)
     result = ValidationResult(

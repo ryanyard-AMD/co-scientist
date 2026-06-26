@@ -42,6 +42,7 @@ class GoalCreate(BaseModel):
     target_application: str
     success_criteria: list[SuccessCriterion]
     device_constraints: DeviceConstraints | None = None
+    is_restricted: bool = False
 
 
 class GoalUpdate(BaseModel):
@@ -50,6 +51,7 @@ class GoalUpdate(BaseModel):
     target_application: str | None = None
     success_criteria: list[SuccessCriterion] | None = None
     device_constraints: DeviceConstraints | None = None
+    is_restricted: bool | None = None
 
 
 class GoalStatusUpdate(BaseModel):
@@ -66,6 +68,7 @@ class GoalResponse(BaseModel):
     success_criteria: list[SuccessCriterion]
     device_constraints: DeviceConstraints | None
     status: GoalStatusEnum
+    is_restricted: bool
     workspace_id: str
     created_at: datetime
     updated_at: datetime

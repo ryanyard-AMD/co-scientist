@@ -48,6 +48,7 @@ from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
 from coscientist.services import device as device_svc
+from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
@@ -69,6 +70,7 @@ approval_app = typer.Typer(no_args_is_help=True, help="Approve, reject, or reque
 validation_app = typer.Typer(no_args_is_help=True, help="Submit experiment results and view validation outcomes")
 device_app = typer.Typer(no_args_is_help=True, help="Generate and review candidate device concepts")
 roadmap_app = typer.Typer(no_args_is_help=True, help="Generate and manage the research roadmap")
+logs_app = typer.Typer(no_args_is_help=True, help="View agent action audit logs")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -80,6 +82,7 @@ app.add_typer(approval_app, name="approval")
 app.add_typer(validation_app, name="validation")
 app.add_typer(device_app, name="device")
 app.add_typer(roadmap_app, name="roadmap")
+app.add_typer(logs_app, name="logs")
 
 console = Console()
 
@@ -1333,5 +1336,57 @@ def roadmap_complete(
     try:
         result = roadmap_svc.transition_item(db, item_id, goal_id, RoadmapStatusEnum.completed)
         console.print(f"[green]Roadmap item {item_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@logs_app.command("list")
+def logs_list(
+    goal_id: str = typer.Argument(..., help="Goal ID"),
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Filter by service (validation, device, roadmap)"),
+    limit: int = typer.Option(50, "--limit", "-l"),
+):
+    """List agent action audit logs for a goal."""
+    db = _get_session()
+    try:
+        result = governance_svc.list_logs(db, goal_id, service=service, limit=limit)
+        if result.total == 0:
+            console.print("[yellow]No agent action logs found.[/yellow]")
+            return
+        table = Table(title=f"Agent Action Logs ({result.total})", show_lines=False)
+        table.add_column("ID", style="dim", width=10)
+        table.add_column("Service", style="cyan")
+        table.add_column("Action", style="white")
+        table.add_column("Model", style="dim")
+        table.add_column("Prompt tk", justify="right")
+        table.add_column("Compl tk", justify="right")
+        table.add_column("Elapsed ms", justify="right")
+        table.add_column("Created", style="dim")
+        for log in result.items:
+            table.add_row(
+                log.id[:8] + "…",
+                log.service,
+                log.action,
+                log.model_used,
+                str(log.prompt_tokens or "—"),
+                str(log.completion_tokens or "—"),
+                str(log.elapsed_ms or "—"),
+                log.created_at.strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
+@logs_app.command("show")
+def logs_show(
+    log_id: str = typer.Argument(..., help="Log entry ID"),
+    goal_id: str = typer.Argument(..., help="Goal ID"),
+):
+    """Show full details of an agent action log entry."""
+    db = _get_session()
+    try:
+        result = governance_svc.get_log(db, log_id, goal_id)
+        console.print_json(result.model_dump_json(indent=2))
     finally:
         db.close()

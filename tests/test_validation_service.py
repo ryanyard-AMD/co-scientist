@@ -443,6 +443,8 @@ def test_run_validation_agent_sends_correct_context(db_session):
     })
     mock_message = MagicMock()
     mock_message.content = [MagicMock(text=mock_response_text)]
+    mock_message.usage.input_tokens = 100
+    mock_message.usage.output_tokens = 50
 
     with mock_patch("coscientist.services.validation.anthropic.Anthropic") as MockAnthropic:
         MockAnthropic.return_value.messages.create.return_value = mock_message
@@ -450,7 +452,7 @@ def test_run_validation_agent_sends_correct_context(db_session):
         submission = ExperimentResultSubmission(
             measured_metrics={"acoustic_contrast": 18.5, "latency": 8.2},
         )
-        output = _run_validation_agent(exp_card, goal_resp, approach_card, submission)
+        output = _run_validation_agent(db_session, goal.id, exp_card, goal_resp, approach_card, submission)
 
         call_kwargs = MockAnthropic.return_value.messages.create.call_args.kwargs
         user_content = call_kwargs["messages"][0]["content"]

@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -30,6 +31,7 @@ from coscientist.schemas.device import (
     UseCase,
 )
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     DeviceConceptStatusEnum.generated: {
@@ -128,6 +130,8 @@ def _build_approach_context(
 
 
 def _run_device_agent(
+    db: Session,
+    goal_id: str,
     goal,
     approaches_context: list[dict],
 ) -> list[AgentDeviceConceptItem]:
@@ -172,14 +176,27 @@ def _run_device_agent(
     )
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
         max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
 
     raw = message.content[0].text.strip()
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal_id,
+        service="device",
+        action="generate_device_concepts",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=raw[:512],
+    )
     try:
         data = json.loads(raw)
         if not isinstance(data, list):
@@ -197,7 +214,8 @@ def generate(
     goal_id: str,
     request: DeviceConceptGenerateRequest,
 ) -> DeviceConceptGenerateResponse:
-    goal = goal_svc.get(db, goal_id)  # raises 404 if not found
+    goal_svc.raise_if_restricted(db, goal_id)
+    goal = goal_svc.get(db, goal_id)
 
     # Load approaches: validated first, then scored if explicitly requested
     stmt = select(ApproachCard).where(ApproachCard.workspace_id == goal_id)
@@ -246,7 +264,7 @@ def generate(
         for a in approaches
     ]
 
-    agent_concepts = _run_device_agent(goal, approaches_context)
+    agent_concepts = _run_device_agent(db, goal_id, goal, approaches_context)
 
     generation_run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
