@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Experiments — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Experiment Cards</h1>
+<p class="muted">{{ total }} experiment(s). Open one to review and modify its spec.</p>
+
+{% if experiments %}
+<table>
+  <thead>
+    <tr><th>Name</th><th>Type</th><th>Status</th><th>Cost</th><th>Runtime</th><th>Sweep</th></tr>
+  </thead>
+  <tbody>
+    {% for e in experiments %}
+    <tr>
+      <td><a href="/ui/goals/{{ goal.id }}/experiments/{{ e.id }}">{{ e.name }}</a><div class="small muted">{{ e.objective[:120] }}{% if e.objective|length > 120 %}…{% endif %}</div></td>
+      <td>{{ e.experiment_type.value }}</td>
+      <td><span class="badge {{ e.status.value }}">{{ e.status.value }}</span></td>
+      <td>{{ e.estimated_cost }}</td>
+      <td>{{ e.estimated_runtime }}</td>
+      <td>{{ e.parameter_sweep_count if e.parameter_sweep_count is not none else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No experiments yet. Run <code>cs experiment generate {{ goal.id }}</code>.</div>
+{% endif %}
+{% endblock %}

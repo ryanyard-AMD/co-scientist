@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Error {{ status_code }} — Co-Scientist{% endblock %}
+{% block content %}
+<h1>Error {{ status_code }}</h1>
+<p class="muted">{{ detail }}</p>
+<p><a href="/ui/goals">← Back to goals</a></p>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Evidence — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Evidence</h1>
+<p class="muted">{{ total }} record(s) retrieved for this goal.</p>
+
+{% if evidence %}
+<table>
+  <thead>
+    <tr><th>Title</th><th>Year</th><th>Section</th><th>Methods</th><th>Strength</th><th>Score</th></tr>
+  </thead>
+  <tbody>
+    {% for e in evidence %}
+    <tr>
+      <td>{{ e.title }}<div class="small muted">{{ e.chunk_text[:140] }}{% if e.chunk_text|length > 140 %}…{% endif %}</div></td>
+      <td>{{ e.year or "—" }}</td>
+      <td class="small">{{ e.section_title or "—" }}{% if e.page_number %} p.{{ e.page_number }}{% endif %}</td>
+      <td class="small">{{ e.method_families|join(", ") or "—" }}</td>
+      <td><span class="badge">{{ e.evidence_strength.value }}</span></td>
+      <td>{{ "%.2f"|format(e.score) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No evidence yet. Run <code>cs scout run {{ goal.id }}</code>.</div>
+{% endif %}
+{% endblock %}

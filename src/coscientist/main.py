@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from coscientist.config import settings
 from coscientist.database import Base, engine
@@ -17,6 +18,8 @@ from coscientist.routers import roadmap as roadmap_router
 from coscientist.routers import score as score_router
 from coscientist.routers import scout as scout_router
 from coscientist.routers import validation as validation_router
+from coscientist.web import routes as web_routes
+from coscientist.web.templates import STATIC_DIR
 
 
 @asynccontextmanager
@@ -43,6 +46,9 @@ app.include_router(experiment_router.router, prefix=settings.api_prefix)
 app.include_router(hypothesis_router.router, prefix=settings.api_prefix)
 app.include_router(ontology_router.router, prefix=settings.api_prefix)
 app.include_router(scout_router.router, prefix=settings.api_prefix)
+
+app.include_router(web_routes.router)
+app.mount("/ui/static", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
 
 
 @app.get(f"{settings.api_prefix}/health")

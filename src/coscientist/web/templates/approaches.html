@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Approaches — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Approach Cards</h1>
+<p class="muted">{{ total }} approach(es). Inspect, approve, reject, score, or merge.</p>
+
+{% if approaches %}
+<div class="cards" id="approach-list">
+  {% for a in approaches %}
+    {% include "partials/approach_card.html" %}
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <h3>Merge approaches</h3>
+  <p class="small muted">Fold a source card into a target card (source becomes superseded).</p>
+  <form hx-post="/ui/goals/{{ goal.id }}/approaches/merge" hx-target="body" hx-swap="outerHTML">
+    <div class="row">
+      <div style="flex:1">
+        <label>Source approach</label>
+        <select name="source_approach_id">
+          {% for a in approaches %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div style="flex:1">
+        <label>Target approach</label>
+        <select name="target_approach_id">
+          {% for a in approaches %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:0.6rem"><button type="submit">Merge</button></div>
+  </form>
+</div>
+{% else %}
+<div class="empty">No approaches yet. Run <code>cs approach generate {{ goal.id }}</code>.</div>
+{% endif %}
+{% endblock %}

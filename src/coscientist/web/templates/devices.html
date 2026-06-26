@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Devices — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Device Concepts</h1>
+<p class="muted">{{ total }} candidate concept(s).</p>
+
+{% if devices %}
+{% for d in devices %}
+<div class="panel">
+  <div class="row">
+    <h3 style="margin:0">{{ d.name }}</h3>
+    <div class="spacer"></div>
+    <span class="badge {{ d.status.value }}">{{ d.status.value }}</span>
+    <span class="badge">{{ d.maturity.value }}</span>
+  </div>
+  {% if d.description %}<p class="small">{{ d.description }}</p>{% endif %}
+  <p class="small muted">Form factor: {{ d.form_factor.type or "—" }} · {{ d.form_factor.placement or "" }}</p>
+  {% if d.acoustic_architecture.control_stack %}
+  <h4 class="small">Control stack</h4>
+  <ul class="tight">{% for s in d.acoustic_architecture.control_stack %}<li>{{ s }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if d.unresolved_risks %}
+  <h4 class="small">Unresolved risks</h4>
+  <ul class="tight">{% for r in d.unresolved_risks %}<li>{{ r }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if d.next_steps %}
+  <h4 class="small">Next steps</h4>
+  <ul class="tight">{% for s in d.next_steps %}<li>{{ s }}</li>{% endfor %}</ul>
+  {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="empty">No device concepts yet. Run <code>cs device generate {{ goal.id }}</code>.</div>
+{% endif %}
+{% endblock %}

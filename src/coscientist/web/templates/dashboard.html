@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ goal.name }} — Co-Scientist{% endblock %}
+{% block content %}
+<div class="row">
+  <h1>{{ goal.name }}</h1>
+  <span class="badge {{ goal.status.value }}">{{ goal.status.value }}</span>
+  {% if goal.is_restricted %}<span class="badge refuted">restricted</span>{% endif %}
+</div>
+{% if goal.description %}<p class="muted">{{ goal.description }}</p>{% endif %}
+
+<h2>Success Criteria</h2>
+{% if goal.success_criteria %}
+<ul class="tight">
+  {% for c in goal.success_criteria %}
+  <li>{{ c.name }} {{ c.operator }} {{ c.target }} {{ c.unit }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">None defined.</p>
+{% endif %}
+
+<h2>Workspace</h2>
+<div class="cards">
+  <div class="card">
+    <h3>Evidence</h3>
+    <div class="stat">{{ counts.evidence }}</div>
+    <a href="/ui/goals/{{ goal.id }}/evidence">View evidence →</a>
+  </div>
+  <div class="card">
+    <h3>Approaches</h3>
+    <div class="stat">{{ counts.approaches }}</div>
+    <a href="/ui/goals/{{ goal.id }}/approaches">Review approaches →</a>
+  </div>
+  <div class="card">
+    <h3>Experiments</h3>
+    <div class="stat">{{ counts.experiments }}</div>
+    <a href="/ui/goals/{{ goal.id }}/experiments">Edit experiments →</a>
+  </div>
+  <div class="card">
+    <h3>Validation</h3>
+    <div class="stat">{{ counts.validation }}</div>
+    <a href="/ui/goals/{{ goal.id }}/validation">View results →</a>
+  </div>
+  <div class="card">
+    <h3>Devices</h3>
+    <div class="stat">{{ counts.devices }}</div>
+    <a href="/ui/goals/{{ goal.id }}/devices">View concepts →</a>
+  </div>
+  <div class="card">
+    <h3>Roadmap</h3>
+    <div class="stat">{{ counts.roadmap }}</div>
+    <a href="/ui/goals/{{ goal.id }}/roadmap">View roadmap →</a>
+  </div>
+</div>
+{% endblock %}

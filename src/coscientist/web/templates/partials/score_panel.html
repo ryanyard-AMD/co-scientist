@@ -1,0 +1,38 @@
+<div id="score-panel">
+  {% if score %}
+  <div class="row">
+    <h3 style="margin:0">Rubric Score</h3>
+    <div class="spacer"></div>
+    <span class="badge scored">final {{ "%.3f"|format(score.final_score) }}</span>
+  </div>
+  <p class="small muted">total {{ "%.3f"|format(score.total_score) }} · risk penalty {{ "%.3f"|format(score.risk_penalty) }} · run {{ score.scoring_run_id }}</p>
+  <table>
+    <thead>
+      <tr><th>Dimension</th><th>Score</th><th>Weight</th><th>Rationale</th><th>Evidence</th></tr>
+    </thead>
+    <tbody>
+      {% for d in score.dimensions %}
+      <tr>
+        <td>{{ d.dimension.value }}{% if d.low_confidence %} <span class="badge warn">low conf</span>{% endif %}</td>
+        <td>
+          {{ "%.2f"|format(d.score) }}
+          <div class="dim-bar"><span style="width: {{ (d.score * 100)|round|int }}%"></span></div>
+        </td>
+        <td class="small">{{ "%.2f"|format(d.weight) }}</td>
+        <td class="small">{{ d.rationale }}</td>
+        <td class="small muted">{{ d.evidence_ids|join(", ") if d.evidence_ids else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="row">
+    <h3 style="margin:0">Rubric Score</h3>
+    <div class="spacer"></div>
+  </div>
+  <p class="muted">Not scored yet.</p>
+  <button class="primary"
+          hx-post="/ui/goals/{{ goal.id }}/approaches/{{ approach.id }}/score"
+          hx-target="#score-panel" hx-swap="outerHTML">Run scoring</button>
+  {% endif %}
+</div>

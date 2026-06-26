@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Goals — Co-Scientist{% endblock %}
+{% block content %}
+<h1>Research Goals</h1>
+<p class="muted">Select a goal to open its workspace.</p>
+
+{% if goals %}
+<table>
+  <thead>
+    <tr><th>Name</th><th>Application</th><th>Status</th><th>Restricted</th><th>Created</th></tr>
+  </thead>
+  <tbody>
+    {% for g in goals %}
+    <tr>
+      <td><a href="/ui/goals/{{ g.id }}">{{ g.name }}</a></td>
+      <td>{{ g.target_application }}</td>
+      <td><span class="badge {{ g.status.value }}">{{ g.status.value }}</span></td>
+      <td>{{ "yes" if g.is_restricted else "no" }}</td>
+      <td class="small muted">{{ g.created_at.strftime("%Y-%m-%d") }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No goals yet. Create one with <code>cs goal create</code>.</div>
+{% endif %}
+{% endblock %}

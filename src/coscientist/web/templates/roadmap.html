@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Roadmap — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Research Roadmap</h1>
+<p class="muted">{{ total }} item(s), ranked by priority.</p>
+
+{% if items %}
+<table>
+  <thead>
+    <tr><th>#</th><th>Title</th><th>Lane</th><th>Priority</th><th>Status</th><th>Cost</th><th>Info gain</th></tr>
+  </thead>
+  <tbody>
+    {% for i in items %}
+    <tr>
+      <td>{{ i.priority_rank }}</td>
+      <td>{{ i.title }}<div class="small muted">{{ i.rationale[:140] }}{% if i.rationale|length > 140 %}…{% endif %}</div></td>
+      <td><span class="badge">{{ i.lane.value }}</span></td>
+      <td>{{ "%.2f"|format(i.priority_score) }}</td>
+      <td><span class="badge {{ i.status.value }}">{{ i.status.value }}</span></td>
+      <td>{{ i.estimated_cost }}</td>
+      <td>{{ i.estimated_information_gain }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No roadmap items yet. Run <code>cs roadmap generate {{ goal.id }}</code>.</div>
+{% endif %}
+{% endblock %}

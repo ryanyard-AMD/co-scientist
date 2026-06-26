@@ -1,0 +1,16 @@
+<div class="card" id="approach-{{ a.id }}">
+  <div class="row">
+    <h3 style="margin:0"><a href="/ui/goals/{{ goal.id }}/approaches/{{ a.id }}">{{ a.name }}</a></h3>
+    <div class="spacer"></div>
+    <span class="badge {{ a.status.value }}">{{ a.status.value }}</span>
+  </div>
+  <p class="small muted">{{ a.method_family }} · {{ a.maturity.value }}</p>
+  {% if a.mechanism_summary %}<p class="small">{{ a.mechanism_summary[:160] }}{% if a.mechanism_summary|length > 160 %}…{% endif %}</p>{% endif %}
+  <div class="row" style="margin-top:0.5rem">
+    <button hx-post="/ui/goals/{{ goal.id }}/approaches/{{ a.id }}/review"
+            hx-target="#approach-{{ a.id }}" hx-swap="outerHTML">Approve</button>
+    <button class="danger" hx-post="/ui/goals/{{ goal.id }}/approaches/{{ a.id }}/reject"
+            hx-target="#approach-{{ a.id }}" hx-swap="outerHTML">Reject</button>
+    <a class="btn" href="/ui/goals/{{ goal.id }}/approaches/{{ a.id }}">Inspect &amp; score</a>
+  </div>
+</div>

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ approach.name }} — Co-Scientist{% endblock %}
+{% block content %}
+<p class="small"><a href="/ui/goals/{{ goal.id }}/approaches">← Approaches</a></p>
+<div class="row">
+  <h1>{{ approach.name }}</h1>
+  <span class="badge {{ approach.status.value }}">{{ approach.status.value }}</span>
+  <span class="badge">{{ approach.maturity.value }}</span>
+</div>
+<p class="muted">{{ approach.method_family }} · {{ approach.domain }}</p>
+
+<div class="row" style="margin:0.5rem 0">
+  <button hx-post="/ui/goals/{{ goal.id }}/approaches/{{ approach.id }}/review"
+          hx-target="#status-badge" hx-swap="none"
+          hx-on::after-request="window.location.reload()">Approve</button>
+  <button class="danger" hx-post="/ui/goals/{{ goal.id }}/approaches/{{ approach.id }}/reject"
+          hx-on::after-request="window.location.reload()">Reject</button>
+</div>
+
+<h2>Score Explanation</h2>
+{% include "partials/score_panel.html" %}
+
+<h2>Details</h2>
+{% if approach.problem_fit %}<h3>Problem fit</h3><p>{{ approach.problem_fit }}</p>{% endif %}
+{% if approach.mechanism_summary %}<h3>Mechanism</h3><p>{{ approach.mechanism_summary }}</p>{% endif %}
+
+{% if approach.key_assumptions %}<h3>Key assumptions</h3><ul class="tight">{% for k in approach.key_assumptions %}<li>{{ k }}</li>{% endfor %}</ul>{% endif %}
+{% if approach.reported_metrics %}
+<h3>Reported metrics</h3>
+<ul class="tight">{% for m in approach.reported_metrics %}<li>{{ m.metric_name }}: {{ m.value }}{{ " " ~ m.unit if m.unit }} <span class="badge">{{ m.evidence_type.value }}</span></li>{% endfor %}</ul>
+{% endif %}
+{% if approach.hardware_requirements %}<h3>Hardware</h3><ul class="tight">{% for h in approach.hardware_requirements %}<li>{{ h }}</li>{% endfor %}</ul>{% endif %}
+{% if approach.risks_and_limitations %}<h3>Risks</h3><ul class="tight">{% for r in approach.risks_and_limitations %}<li>{{ r.description }}{% if r.severity %} <span class="badge">{{ r.severity }}</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
+
+<h3>Evidence citations</h3>
+{% if approach.evidence_links %}
+<ul class="tight">
+  {% for l in approach.evidence_links %}
+  <li class="small">{{ l.claim_field }} ← {{ l.evidence_id }} <span class="badge">{{ l.evidence_type.value }}</span>{% if l.confidence is not none %} ({{ "%.2f"|format(l.confidence) }}){% endif %}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No evidence links.</p>
+{% endif %}
+
+<h2>Edit</h2>
+<div class="panel">
+  <form hx-post="/ui/goals/{{ goal.id }}/approaches/{{ approach.id }}" hx-target="body" hx-swap="outerHTML">
+    <label>Name</label>
+    <input name="name" value="{{ approach.name }}">
+    <label>Problem fit</label>
+    <textarea name="problem_fit">{{ approach.problem_fit or "" }}</textarea>
+    <label>Mechanism summary</label>
+    <textarea name="mechanism_summary">{{ approach.mechanism_summary or "" }}</textarea>
+    <label>Device relevance</label>
+    <textarea name="device_relevance">{{ approach.device_relevance or "" }}</textarea>
+    <div class="row" style="margin-top:0.6rem"><button class="primary" type="submit">Save changes</button></div>
+  </form>
+</div>
+{% endblock %}

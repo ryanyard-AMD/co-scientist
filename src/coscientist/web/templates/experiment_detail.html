@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ experiment.name }} — Co-Scientist{% endblock %}
+{% block content %}
+<p class="small"><a href="/ui/goals/{{ goal.id }}/experiments">← Experiments</a></p>
+<div class="row">
+  <h1>{{ experiment.name }}</h1>
+  <span class="badge {{ experiment.status.value }}">{{ experiment.status.value }}</span>
+  <span class="badge">{{ experiment.experiment_type.value }}</span>
+</div>
+
+{% if saved %}<div class="flash">Changes saved.</div>{% endif %}
+
+<h2>Editor</h2>
+<div class="panel">
+  <form hx-post="/ui/goals/{{ goal.id }}/experiments/{{ experiment.id }}" hx-target="body" hx-swap="outerHTML">
+    <label>Name</label>
+    <input name="name" value="{{ experiment.name }}">
+    <label>Objective</label>
+    <textarea name="objective">{{ experiment.objective }}</textarea>
+    <label>Hypothesis</label>
+    <textarea name="hypothesis_text">{{ experiment.hypothesis_text }}</textarea>
+    <label>Baseline methods (comma-separated)</label>
+    <input name="baseline_methods" value="{{ experiment.baseline_methods|join(', ') }}">
+    <label>Metrics (comma-separated)</label>
+    <input name="metrics" value="{{ experiment.metrics|join(', ') }}">
+    <div class="row">
+      <div style="flex:1">
+        <label>Estimated cost</label>
+        <select name="estimated_cost">
+          {% for opt in ["low","medium","high"] %}<option value="{{ opt }}" {{ "selected" if experiment.estimated_cost == opt }}>{{ opt }}</option>{% endfor %}
+        </select>
+      </div>
+      <div style="flex:1">
+        <label>Estimated runtime</label>
+        <select name="estimated_runtime">
+          {% for opt in ["low","medium","high"] %}<option value="{{ opt }}" {{ "selected" if experiment.estimated_runtime == opt }}>{{ opt }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:0.6rem"><button class="primary" type="submit">Save changes</button></div>
+  </form>
+</div>
+
+<h2>Spec</h2>
+<h3>Independent variables</h3>
+{% if experiment.independent_variables %}
+<ul class="tight">{% for k, v in experiment.independent_variables.items() %}<li>{{ k }}: {{ v|join(", ") }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">None.</p>{% endif %}
+
+<h3>Validation pass conditions</h3>
+{% if experiment.validation.pass_conditions %}
+<ul class="tight">{% for k, v in experiment.validation.pass_conditions.items() %}<li>{{ k }}: {{ v }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">None.</p>{% endif %}
+
+<h2>Export</h2>
+<div class="row">
+  <a class="btn" href="/ui/goals/{{ goal.id }}/experiments/{{ experiment.id }}/export?fmt=yaml">YAML</a>
+  <a class="btn" href="/ui/goals/{{ goal.id }}/experiments/{{ experiment.id }}/export?fmt=python">Python</a>
+</div>
+{% if export_content %}
+<pre>{{ export_content }}</pre>
+{% endif %}
+{% endblock %}

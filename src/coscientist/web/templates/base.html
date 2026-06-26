@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Co-Scientist{% endblock %}</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/ui/goals">Co-Scientist</a>
+    {% if goal is defined and goal %}
+    <nav>
+      <a href="/ui/goals/{{ goal.id }}">Dashboard</a>
+      <a href="/ui/goals/{{ goal.id }}/evidence">Evidence</a>
+      <a href="/ui/goals/{{ goal.id }}/approaches">Approaches</a>
+      <a href="/ui/goals/{{ goal.id }}/experiments">Experiments</a>
+      <a href="/ui/goals/{{ goal.id }}/validation">Validation</a>
+      <a href="/ui/goals/{{ goal.id }}/devices">Devices</a>
+      <a href="/ui/goals/{{ goal.id }}/roadmap">Roadmap</a>
+    </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

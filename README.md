@@ -16,7 +16,8 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Experiment Validation (CS-EPIC-VALIDATION)
          ├── Device Synthesis      (CS-EPIC-DEVICE)
          ├── Research Roadmap      (CS-EPIC-ROADMAP)
-         └── Agent Governance      (CS-EPIC-GOVERNANCE)
+         ├── Agent Governance      (CS-EPIC-GOVERNANCE)
+         └── Web UI                (CS-EPIC-UI)
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
          └── Experiment Runner — containerized execution, MLflow tracking
@@ -163,6 +164,19 @@ Adds an immutable audit trail over every agent-driven Claude call and a corpus/e
 - Queryable via `GET /goals/{id}/agent-logs` (filter by service) and `GET /goals/{id}/agent-logs/{log_id}`, or the `cs logs` CLI
 - **Permission model**: `is_restricted` flag on `ResearchGoal` (toggled via `PATCH /goals/{id}`). When set, `raise_if_restricted()` at the top of each generate service returns 403 — blocking validation, device, and roadmap agent actions while leaving read endpoints intact
 
+### CS-EPIC-UI: Web User Interface
+
+A server-rendered web UI for reviewing, editing, scoring, and curating already-generated artefacts — the first graphical alternative to the `cs` CLI and raw REST calls.
+
+- **Stack**: Jinja2 templates + [HTMX](https://htmx.org) (loaded from CDN), mounted on the existing FastAPI app under `/ui`. No Node toolchain, no build step, one hand-written CSS file
+- **Thin adapter**: every route calls the existing service functions via `Depends(get_db)` and renders their Pydantic responses — no new business logic, DB models, or migrations
+- **Workspace dashboard** (`/ui/goals/{id}`): goal summary plus counts and links for evidence, approaches, experiments, validation, devices, and roadmap
+- **Approach review**: inspect, edit, approve, reject, merge, and score approach cards; approve/reject/score actions return HTML partials that HTMX swaps in place
+- **Score explanation panel**: per-dimension score, weight, rationale, and evidence citations (algorithmic scoring — no Claude call)
+- **Experiment editor**: review and modify generated experiment specs, with YAML/Python export
+- **Read-only views** for validation results, device concept cards, and the research roadmap
+- All UI flows are deterministic (zero Claude calls); generation triggers remain in the CLI/API
+
 ## Setup
 
 ```bash
@@ -178,6 +192,14 @@ uvicorn coscientist.main:app --reload --port 8001
 ```
 
 The CLI (`cs`) talks directly to the database — the API server is only needed if you want to hit the REST endpoints directly.
+
+## Web UI
+
+```bash
+uvicorn coscientist.main:app --reload --port 8001
+```
+
+Then visit `http://localhost:8001/ui` (redirects to the goal picker). Pick a goal to open its dashboard, then drill into Approaches to review, edit, approve/reject, merge, and score cards in place, or into Experiments to edit specs and export YAML/Python. Validation, Devices, and Roadmap are read-only views. The UI reviews already-generated artefacts; use the CLI to run the generation steps below first.
 
 ## End-to-End Workflow
 
@@ -705,4 +727,9 @@ src/coscientist/
     ├── device.py          # Device concept API endpoints
     ├── roadmap.py         # Roadmap API endpoints
     └── governance.py      # Agent action log API endpoints
+└── web/
+    ├── routes.py          # /ui routes (thin adapter over services)
+    ├── templates.py       # shared Jinja2Templates instance
+    ├── templates/         # Jinja2 templates (base, pages, partials)
+    └── static/app.css     # hand-written stylesheet
 ```
