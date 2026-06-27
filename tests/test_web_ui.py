@@ -259,3 +259,14 @@ def test_evidence_page_ok(client):
     goal = _create_goal(client)
     resp = client.get(f"/ui/goals/{goal['id']}/evidence")
     assert resp.status_code == 200
+
+
+def test_evaluation_page_ok(client, db_session):
+    goal = _create_goal(client)
+    _seed_approach(db_session, goal["id"])
+    _seed_experiment(db_session, goal["id"])
+    resp = client.get(f"/ui/goals/{goal['id']}/evaluation")
+    assert resp.status_code == 200
+    body = resp.text.lower()
+    assert "grounding" in body
+    assert "acceptance" in body

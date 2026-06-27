@@ -12,6 +12,7 @@ from coscientist.schemas.approach import (
 from coscientist.schemas.experiment import ExperimentCardUpdate
 from coscientist.services import approach as approach_svc
 from coscientist.services import device as device_svc
+from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import roadmap as roadmap_svc
@@ -362,6 +363,18 @@ def roadmap_page(request: Request, goal_id: str, db: Session = Depends(get_db)):
         request,
         "roadmap.html",
         {"goal": goal, "items": result.items, "total": result.total},
+    )
+
+
+@router.get("/goals/{goal_id}/evaluation", response_class=HTMLResponse)
+def evaluation_page(request: Request, goal_id: str, db: Session = Depends(get_db)):
+    try:
+        goal = goal_svc.get(db, goal_id)
+        report = evaluation_svc.get_report(db, goal_id)
+    except HTTPException as exc:
+        return _error(request, exc)
+    return templates.TemplateResponse(
+        request, "evaluation.html", {"goal": goal, "report": report}
     )
 
 

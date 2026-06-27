@@ -17,7 +17,8 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Device Synthesis      (CS-EPIC-DEVICE)
          ├── Research Roadmap      (CS-EPIC-ROADMAP)
          ├── Agent Governance      (CS-EPIC-GOVERNANCE)
-         └── Web UI                (CS-EPIC-UI)
+         ├── Web UI                (CS-EPIC-UI)
+         └── Evaluation Metrics    (CS-EPIC-EVALUATION)
               │
 Layer 2: ├── Retrieval API (port 8000) — Neo4j knowledge graph, vector search
          └── Experiment Runner — containerized execution, MLflow tracking
@@ -176,6 +177,17 @@ A server-rendered web UI for reviewing, editing, scoring, and curating already-g
 - **Experiment editor**: review and modify generated experiment specs, with YAML/Python export
 - **Read-only views** for validation results, device concept cards, and the research roadmap
 - All UI flows are deterministic (zero Claude calls); generation triggers remain in the CLI/API
+
+### CS-EPIC-EVALUATION: Observability, Evaluation & Quality Metrics
+
+A read-only metrics layer that computes the quality targets from PRD §20 over the artefacts already in the workspace. No new DB models, migrations, or Claude calls — every metric is derived deterministically from existing state.
+
+- **Approach Card usefulness** (CS-EVAL-001): usefulness rate from the approach lifecycle (reviewed/scored/.../validated vs superseded/refuted; target ≥ 75%) plus evidence traceability (cards with ≥ 1 evidence link; target 100%)
+- **Evidence grounding** (CS-EVAL-002): per claim-bearing field, classify as grounded (a `direct` evidence link), inferred (only `inferred` links), or unsupported (content but no link). Reports grounding rate (target ≥ 90%), unsupported claim rate (target ≤ 5%), and the list of unsupported claims for diagnosis
+- **Experiment quality** (CS-EVAL-003): acceptance rate from experiment status (reviewed/approved/running/completed vs superseded; target ≥ 70%) and spec validity (specs that pass schema validation; target ≥ 85%)
+- Each metric reports raw counts, the rate, the PRD target, and a pass/fail gate. Empty workspaces are not failing gates
+- Exposed via `GET /co-scientist/goals/{id}/evaluation[/...]`, the `cs eval` CLI group, and the `/ui/goals/{id}/evaluation` page
+- P1 stories (pipeline observability, time-saved/satisfaction, user feedback capture) are out of scope for the MVP — they require a feedback store and instrumentation hooks
 
 ## Setup
 
@@ -484,6 +496,14 @@ cs logs list <GOAL_ID> [--service validation|device|roadmap] [--limit N]
 cs logs show <LOG_ID> <GOAL_ID>
 ```
 
+### Evaluation
+```bash
+cs eval approaches <GOAL_ID>    # usefulness + evidence traceability (CS-EVAL-001)
+cs eval grounding <GOAL_ID>     # evidence grounding + unsupported claim rate (CS-EVAL-002)
+cs eval experiments <GOAL_ID>   # acceptance rate + spec validity (CS-EVAL-003)
+cs eval report <GOAL_ID>        # full report as JSON
+```
+
 ## API Endpoints
 
 All endpoints are prefixed with `/co-scientist`.
@@ -609,6 +629,15 @@ All endpoints are prefixed with `/co-scientist`.
 
 Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /goals/{id}` — restricted goals return 403 from all generate endpoints (validation, device, roadmap).
 
+### Evaluation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/goals/{id}/evaluation` | Full evaluation report (all three metric blocks) |
+| GET | `/goals/{id}/evaluation/approach-usefulness` | Approach usefulness + traceability (CS-EVAL-001) |
+| GET | `/goals/{id}/evaluation/evidence-grounding` | Evidence grounding + unsupported claim rate (CS-EVAL-002) |
+| GET | `/goals/{id}/evaluation/experiment-quality` | Experiment acceptance + spec validity (CS-EVAL-003) |
+
 ### Ontology
 
 | Method | Path | Description |
@@ -700,7 +729,8 @@ src/coscientist/
 │   ├── validation.py      # Validation request/response schemas
 │   ├── device.py          # Device concept request/response schemas
 │   ├── roadmap.py         # Roadmap request/response schemas
-│   └── governance.py      # Agent action log response schemas
+│   ├── governance.py      # Agent action log response schemas
+│   └── evaluation.py      # Evaluation metric response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -713,7 +743,8 @@ src/coscientist/
 │   ├── validation.py      # Agent-driven result ingestion and validation
 │   ├── device.py          # Agent-driven device concept synthesis, compare, export
 │   ├── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
-│   └── governance.py      # Agent action logging, log queries, restriction checks
+│   ├── governance.py      # Agent action logging, log queries, restriction checks
+│   └── evaluation.py      # Quality metrics over existing artefacts (read-only)
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -726,7 +757,8 @@ src/coscientist/
     ├── validation.py      # Validation API endpoints
     ├── device.py          # Device concept API endpoints
     ├── roadmap.py         # Roadmap API endpoints
-    └── governance.py      # Agent action log API endpoints
+    ├── governance.py      # Agent action log API endpoints
+    └── evaluation.py      # Evaluation metrics API endpoints
 └── web/
     ├── routes.py          # /ui routes (thin adapter over services)
     ├── templates.py       # shared Jinja2Templates instance

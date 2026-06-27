@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Evaluation — {{ goal.name }}{% endblock %}
+{% macro gate(meets) %}<span class="badge {{ 'validated' if meets else 'refuted' }}">{{ "pass" if meets else "fail" }}</span>{% endmacro %}
+{% block content %}
+<h1>Evaluation &amp; Quality Metrics</h1>
+<p class="muted">PRD §20 targets, computed over current artifacts.</p>
+
+{% set au = report.approach_usefulness %}
+<div class="panel">
+  <h3 style="margin-top:0">Approach Cards <span class="muted small">CS-EVAL-001 · {{ au.total }} cards</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Usefulness</td><td>{{ "%.0f%%"|format(au.usefulness_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(au.usefulness_target * 100) }}</td><td>{{ gate(au.usefulness_meets_target) }}</td></tr>
+      <tr><td>Traceability</td><td>{{ "%.0f%%"|format(au.traceability_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(au.traceability_target * 100) }}</td><td>{{ gate(au.traceability_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">useful {{ au.useful_count }} · discarded {{ au.discarded_count }} · pending {{ au.pending_count }} · traceable {{ au.traceable_count }}</p>
+</div>
+
+{% set eg = report.evidence_grounding %}
+<div class="panel">
+  <h3 style="margin-top:0">Evidence Grounding <span class="muted small">CS-EVAL-002 · {{ eg.total_claims }} claims</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Grounding</td><td>{{ "%.0f%%"|format(eg.grounding_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(eg.grounding_target * 100) }}</td><td>{{ gate(eg.grounding_meets_target) }}</td></tr>
+      <tr><td>Unsupported claim rate</td><td>{{ "%.0f%%"|format(eg.unsupported_rate * 100) }}</td><td>≤ {{ "%.0f%%"|format(eg.unsupported_target * 100) }}</td><td>{{ gate(eg.unsupported_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">grounded {{ eg.grounded }} · inferred {{ eg.inferred }} · unsupported {{ eg.unsupported }}</p>
+  {% if eg.unsupported_claims %}
+  <h4 class="small">Unsupported claims</h4>
+  <table>
+    <thead><tr><th>Approach</th><th>Claim field</th></tr></thead>
+    <tbody>{% for c in eg.unsupported_claims %}<tr><td>{{ c.approach_name }}</td><td>{{ c.claim_field }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% endif %}
+</div>
+
+{% set eq = report.experiment_quality %}
+<div class="panel">
+  <h3 style="margin-top:0">Experiments <span class="muted small">CS-EVAL-003 · {{ eq.total }} experiments</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Acceptance</td><td>{{ "%.0f%%"|format(eq.acceptance_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(eq.acceptance_target * 100) }}</td><td>{{ gate(eq.acceptance_meets_target) }}</td></tr>
+      <tr><td>Spec validity</td><td>{{ "%.0f%%"|format(eq.validity_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(eq.validity_target * 100) }}</td><td>{{ gate(eq.validity_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">accepted {{ eq.accepted_count }} · discarded {{ eq.discarded_count }} · failed {{ eq.failed_count }} · pending {{ eq.pending_count }}</p>
+</div>
+{% endblock %}

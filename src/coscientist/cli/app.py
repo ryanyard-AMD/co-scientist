@@ -48,6 +48,7 @@ from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
 from coscientist.services import device as device_svc
+from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import approach as approach_svc
@@ -71,6 +72,7 @@ validation_app = typer.Typer(no_args_is_help=True, help="Submit experiment resul
 device_app = typer.Typer(no_args_is_help=True, help="Generate and review candidate device concepts")
 roadmap_app = typer.Typer(no_args_is_help=True, help="Generate and manage the research roadmap")
 logs_app = typer.Typer(no_args_is_help=True, help="View agent action audit logs")
+eval_app = typer.Typer(no_args_is_help=True, help="Evaluation and quality metrics")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -83,6 +85,7 @@ app.add_typer(validation_app, name="validation")
 app.add_typer(device_app, name="device")
 app.add_typer(roadmap_app, name="roadmap")
 app.add_typer(logs_app, name="logs")
+app.add_typer(eval_app, name="eval")
 
 console = Console()
 
@@ -1387,6 +1390,126 @@ def logs_show(
     db = _get_session()
     try:
         result = governance_svc.get_log(db, log_id, goal_id)
+        console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+# --- Evaluation commands ---
+
+
+def _gate(meets: bool) -> str:
+    return "[green]PASS[/green]" if meets else "[red]FAIL[/red]"
+
+
+@eval_app.command("approaches")
+def eval_approaches(goal_id: str = typer.Argument(...)):
+    """Approach Card usefulness and evidence traceability metrics (CS-EVAL-001)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.approach_usefulness(db, goal_id)
+        table = Table(title=f"Approach Usefulness ({m.total} cards)")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Usefulness",
+            f"{m.usefulness_rate:.0%}",
+            f"≥{m.usefulness_target:.0%}",
+            _gate(m.usefulness_meets_target),
+        )
+        table.add_row(
+            "Traceability",
+            f"{m.traceability_rate:.0%}",
+            f"≥{m.traceability_target:.0%}",
+            _gate(m.traceability_meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"useful={m.useful_count} discarded={m.discarded_count} "
+            f"pending={m.pending_count} traceable={m.traceable_count}"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("grounding")
+def eval_grounding(goal_id: str = typer.Argument(...)):
+    """Evidence grounding and unsupported claim rate (CS-EVAL-002)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.evidence_grounding(db, goal_id)
+        table = Table(title=f"Evidence Grounding ({m.total_claims} claims)")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Grounding",
+            f"{m.grounding_rate:.0%}",
+            f"≥{m.grounding_target:.0%}",
+            _gate(m.grounding_meets_target),
+        )
+        table.add_row(
+            "Unsupported",
+            f"{m.unsupported_rate:.0%}",
+            f"≤{m.unsupported_target:.0%}",
+            _gate(m.unsupported_meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"grounded={m.grounded} inferred={m.inferred} unsupported={m.unsupported}"
+        )
+        if m.unsupported_claims:
+            unsupported = Table(title="Unsupported claims")
+            unsupported.add_column("Approach")
+            unsupported.add_column("Claim field")
+            for c in m.unsupported_claims:
+                unsupported.add_row(c.approach_name, c.claim_field)
+            console.print(unsupported)
+    finally:
+        db.close()
+
+
+@eval_app.command("experiments")
+def eval_experiments(goal_id: str = typer.Argument(...)):
+    """Experiment proposal acceptance and spec validity (CS-EVAL-003)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.experiment_quality(db, goal_id)
+        table = Table(title=f"Experiment Quality ({m.total} experiments)")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Acceptance",
+            f"{m.acceptance_rate:.0%}",
+            f"≥{m.acceptance_target:.0%}",
+            _gate(m.acceptance_meets_target),
+        )
+        table.add_row(
+            "Spec validity",
+            f"{m.validity_rate:.0%}",
+            f"≥{m.validity_target:.0%}",
+            _gate(m.validity_meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"accepted={m.accepted_count} discarded={m.discarded_count} "
+            f"failed={m.failed_count} pending={m.pending_count}"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("report")
+def eval_report(goal_id: str = typer.Argument(...)):
+    """Full evaluation report (CS-EVAL-001/002/003) as JSON."""
+    db = _get_session()
+    try:
+        result = evaluation_svc.get_report(db, goal_id)
         console.print_json(result.model_dump_json(indent=2))
     finally:
         db.close()

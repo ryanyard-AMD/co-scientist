@@ -8,6 +8,7 @@ from coscientist.database import Base, engine
 from coscientist.models import approval, approach, device, evidence, experiment, governance, hypothesis, roadmap, score, validation  # noqa: F401 — registers ORM models
 from coscientist.routers import approval as approval_router
 from coscientist.routers import device as device_router
+from coscientist.routers import evaluation as evaluation_router
 from coscientist.routers import governance as governance_router
 from coscientist.routers import approach as approach_router
 from coscientist.routers import experiment as experiment_router
@@ -46,6 +47,7 @@ app.include_router(experiment_router.router, prefix=settings.api_prefix)
 app.include_router(hypothesis_router.router, prefix=settings.api_prefix)
 app.include_router(ontology_router.router, prefix=settings.api_prefix)
 app.include_router(scout_router.router, prefix=settings.api_prefix)
+app.include_router(evaluation_router.router, prefix=settings.api_prefix)
 
 app.include_router(web_routes.router)
 app.mount("/ui/static", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
