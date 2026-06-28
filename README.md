@@ -44,6 +44,7 @@ Evidence retrieval layer that queries the retrieval API and organizes literature
 - Detects insufficient evidence with configurable thresholds and suggests related methods
 - Distinguishes primary vs. incidental method mentions
 - Full traceability: every evidence record links to paper, section, page, chunk, and source
+- **Optional Claude synthesis** (`--synthesize`): per method family, a Claude agent reads the retrieved chunks and produces a grounded synthesis (narrative, key findings, reported metrics, hardware requirements, failure modes, open questions). Pure RAG — the agent may cite only the `evidence_id`s it was given, and any invented citation is stripped before persistence, so evidence-grounding audits stay valid. Off by default; requires `CS_ANTHROPIC_API_KEY`.
 
 ### CS-EPIC-ONTOLOGY: PSZ Semantic Layer
 
@@ -233,8 +234,10 @@ cs goal activate <GOAL_ID>
 
 ```bash
 cs scout run <GOAL_ID>
+cs scout run <GOAL_ID> --synthesize             # also run Claude synthesis per method family
 cs scout summary <GOAL_ID>          # check evidence counts and sparsity warnings
 cs scout evidence <GOAL_ID> --group-by method   # review method families found
+cs scout synthesis <GOAL_ID>                    # read the per-family Claude syntheses
 ```
 
 ### 3. Generate and review approach cards
@@ -436,9 +439,10 @@ cs goal delete <GOAL_ID>
 
 ### Scout
 ```bash
-cs scout run <GOAL_ID>
+cs scout run <GOAL_ID> [--method METHOD] [--top-k N] [--synthesize]
 cs scout evidence <GOAL_ID> [--group-by method|metric|hardware|failure_mode]
 cs scout summary <GOAL_ID>
+cs scout synthesis <GOAL_ID> [--method METHOD] [--scout-run RUN_ID]
 ```
 
 ### Ontology
@@ -569,6 +573,7 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/scout/evidence` | List evidence records |
 | GET | `/goals/{id}/scout/evidence/groups` | Grouped evidence view |
 | GET | `/goals/{id}/scout/evidence/summary` | Summary stats and warnings |
+| GET | `/goals/{id}/scout/syntheses` | Claude per-family evidence syntheses |
 | GET | `/goals/{id}/scout/evidence/{eid}` | Single evidence record |
 
 ### Approaches

@@ -219,6 +219,9 @@ def scout_run(
     goal_id: str = typer.Argument(...),
     method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
     top_k: int = typer.Option(20, "--top-k", "-k"),
+    synthesize: bool = typer.Option(
+        False, "--synthesize", help="Run Claude synthesis per method family"
+    ),
 ):
     """Run scout evidence retrieval for a goal."""
     db = _get_session()
@@ -226,12 +229,15 @@ def scout_run(
         request = ScoutRunRequest(
             method_families=[method] if method else None,
             top_k=top_k,
+            synthesize=synthesize,
         )
         result = scout_svc.run_scout(db, goal_id, request)
         console.print(f"[green]Scout run {result.scout_run_id[:8]}… complete[/green]")
         console.print(f"  Evidence records: {result.summary.total_evidence}")
         console.print(f"  Papers found: {result.summary.total_papers}")
         console.print(f"  Methods found: {', '.join(result.summary.method_families_found) or 'none'}")
+        if result.syntheses:
+            console.print(f"  Syntheses: {len(result.syntheses)} method families synthesized")
         console.print(
             f"  Strong: {result.summary.strong_evidence_count}, "
             f"Weak: {result.summary.weak_evidence_count}"
@@ -314,6 +320,40 @@ def scout_summary(goal_id: str = typer.Argument(...)):
     try:
         summary = scout_svc.get_summary(db, goal_id)
         console.print_json(summary.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@scout_app.command("synthesis")
+def scout_synthesis(
+    goal_id: str = typer.Argument(...),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
+    scout_run_id: Optional[str] = typer.Option(None, "--scout-run", "-s"),
+):
+    """Show Claude-generated evidence syntheses for a goal."""
+    db = _get_session()
+    try:
+        syntheses = scout_svc.get_syntheses(
+            db, goal_id, scout_run_id=scout_run_id, method_family=method
+        )
+        if not syntheses:
+            console.print("[yellow]No syntheses found. Run `scout run --synthesize` first.[/yellow]")
+            return
+        for s in syntheses:
+            console.print(
+                f"\n[bold cyan]{s.method_family}[/bold cyan] "
+                f"({s.evidence_count} records, {s.paper_count} papers, "
+                f"{len(s.cited_evidence_ids)} citations)"
+            )
+            console.print(s.synthesis_text)
+            if s.key_findings:
+                console.print("[bold]Key findings:[/bold]")
+                for f in s.key_findings:
+                    console.print(f"  - {f}")
+            if s.open_questions:
+                console.print("[bold]Open questions:[/bold]")
+                for q in s.open_questions:
+                    console.print(f"  - {q}")
     finally:
         db.close()
 

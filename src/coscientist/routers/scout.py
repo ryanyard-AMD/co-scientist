@@ -6,6 +6,7 @@ from coscientist.schemas.scout import (
     EvidenceGroupResponse,
     EvidenceListResponse,
     EvidenceRecordResponse,
+    EvidenceSynthesisResponse,
     ScoutResultResponse,
     ScoutRunRequest,
     ScoutSummaryStats,
@@ -58,6 +59,18 @@ def get_summary(
     db: Session = Depends(get_db),
 ):
     return svc.get_summary(db, goal_id, scout_run_id=scout_run_id)
+
+
+@router.get("/syntheses", response_model=list[EvidenceSynthesisResponse])
+def get_syntheses(
+    goal_id: str,
+    scout_run_id: str | None = Query(default=None),
+    method_family: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return svc.get_syntheses(
+        db, goal_id, scout_run_id=scout_run_id, method_family=method_family
+    )
 
 
 @router.get("/evidence/{evidence_id}", response_model=EvidenceRecordResponse)

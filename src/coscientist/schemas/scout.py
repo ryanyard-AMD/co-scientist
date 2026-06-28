@@ -24,6 +24,7 @@ class ScoutRunRequest(BaseModel):
     method_families: list[str] | None = None
     top_k: int = Field(default=20, ge=1, le=100)
     filters: ScoutFilterRequest | None = None
+    synthesize: bool = False
 
 
 class EvidenceRecordResponse(BaseModel):
@@ -95,12 +96,51 @@ class ScoutSummaryStats(BaseModel):
     warnings: list[SparsityWarning]
 
 
+class ReportedMetric(BaseModel):
+    name: str
+    value: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class AgentSynthesisOutput(BaseModel):
+    """Schema the synthesis agent must return for one method family."""
+
+    synthesis_text: str
+    key_findings: list[str] = Field(default_factory=list)
+    reported_metrics: list[ReportedMetric] = Field(default_factory=list)
+    hardware_requirements: list[str] = Field(default_factory=list)
+    failure_modes: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    cited_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class EvidenceSynthesisResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    workspace_id: str
+    scout_run_id: str
+    method_family: str
+    synthesis_text: str
+    key_findings: list[str]
+    reported_metrics: list[ReportedMetric]
+    hardware_requirements: list[str]
+    failure_modes: list[str]
+    open_questions: list[str]
+    cited_evidence_ids: list[str]
+    evidence_count: int
+    paper_count: int
+    model_used: str
+    created_at: datetime
+
+
 class ScoutResultResponse(BaseModel):
     scout_run_id: str
     goal_id: str
     evidence_count: int
     groups: EvidenceGroupResponse
     summary: ScoutSummaryStats
+    syntheses: list[EvidenceSynthesisResponse] = Field(default_factory=list)
 
 
 class EvidenceListResponse(BaseModel):

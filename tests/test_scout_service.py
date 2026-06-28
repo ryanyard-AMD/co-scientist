@@ -159,3 +159,83 @@ def test_get_summary_empty(db_session):
     goal = _create_goal(db_session)
     summary = scout_svc.get_summary(db_session, goal.id)
     assert summary.total_evidence == 0
+
+
+# --- Claude synthesis at scout stage ---
+
+from unittest.mock import patch
+
+from coscientist.config import settings
+from coscientist.schemas.scout import AgentSynthesisOutput, ReportedMetric
+
+
+def _fake_synthesis(db, goal_id, method_family, records):
+    # cite the first real record plus one invented id (must be stripped)
+    return AgentSynthesisOutput(
+        synthesis_text=f"Synthesis of {method_family}.",
+        key_findings=["finding one"],
+        reported_metrics=[
+            ReportedMetric(
+                name="acoustic_contrast",
+                value="20 dB",
+                evidence_ids=[records[0].id, "invented-metric-id"],
+            )
+        ],
+        hardware_requirements=["loudspeaker array"],
+        failure_modes=["reverberation"],
+        open_questions=["robustness?"],
+        cited_evidence_ids=[records[0].id, "invented-id"],
+    )
+
+
+def test_synthesize_persists_rows(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis):
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+    assert len(result.syntheses) > 0
+    fetched = scout_svc.get_syntheses(db_session, goal.id)
+    assert len(fetched) == len(result.syntheses)
+    assert all(s.synthesis_text.startswith("Synthesis of") for s in fetched)
+
+
+def test_synthesis_strips_invented_citations(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis):
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+    for s in result.syntheses:
+        assert "invented-id" not in s.cited_evidence_ids
+        for m in s.reported_metrics:
+            assert "invented-metric-id" not in m.evidence_ids
+
+
+def test_synthesize_false_is_noop(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis) as agent:
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=False), retrieval_client=mock
+        )
+    assert result.syntheses == []
+    assert agent.call_count == 0
+    assert scout_svc.get_syntheses(db_session, goal.id) == []
+
+
+def test_synthesize_without_api_key_skips(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis) as agent:
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+    assert result.syntheses == []
+    assert agent.call_count == 0

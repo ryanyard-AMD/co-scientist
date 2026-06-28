@@ -1,8 +1,10 @@
 import json
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import anthropic
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,12 +23,16 @@ from coscientist.domain import (
 )
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.ontology import OntologyTerm
+from coscientist.models.synthesis import EvidenceSynthesis
 from coscientist.schemas.scout import (
+    AgentSynthesisOutput,
     EvidenceGroupItem,
     EvidenceGroupResponse,
     EvidenceListResponse,
     EvidenceRecordResponse,
     EvidenceStrengthEnum,
+    EvidenceSynthesisResponse,
+    ReportedMetric,
     ScoutResultResponse,
     ScoutRunRequest,
     ScoutSummaryStats,
@@ -34,6 +40,7 @@ from coscientist.schemas.scout import (
 )
 from coscientist.schemas.ontology import OntologyCategoryEnum
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 from coscientist.services import ontology as ontology_svc
 
 
@@ -206,6 +213,160 @@ def _load_ontology_terms(db: Session):
     return all_terms, method_terms, related_map
 
 
+def _synthesis_to_response(row: EvidenceSynthesis) -> EvidenceSynthesisResponse:
+    return EvidenceSynthesisResponse(
+        id=row.id,
+        workspace_id=row.workspace_id,
+        scout_run_id=row.scout_run_id,
+        method_family=row.method_family,
+        synthesis_text=row.synthesis_text,
+        key_findings=json.loads(row.key_findings) if row.key_findings else [],
+        reported_metrics=[
+            ReportedMetric(**m) for m in json.loads(row.reported_metrics)
+        ] if row.reported_metrics else [],
+        hardware_requirements=json.loads(row.hardware_requirements) if row.hardware_requirements else [],
+        failure_modes=json.loads(row.failure_modes) if row.failure_modes else [],
+        open_questions=json.loads(row.open_questions) if row.open_questions else [],
+        cited_evidence_ids=json.loads(row.cited_evidence_ids),
+        evidence_count=row.evidence_count,
+        paper_count=row.paper_count,
+        model_used=row.model_used,
+        created_at=row.created_at,
+    )
+
+
+def _run_synthesis_agent(
+    db: Session,
+    goal_id: str,
+    method_family: str,
+    records: list[EvidenceRecord],
+) -> AgentSynthesisOutput:
+    """Ask Claude to synthesize one method family's evidence.
+
+    Pure RAG: the model sees only the supplied chunks and may cite only their
+    evidence_ids. Citations to ids outside the supplied set are stripped by the
+    caller before persistence, preserving downstream grounding integrity.
+    """
+    system_prompt = (
+        "You are a scientific evidence synthesis agent. You are given retrieved "
+        "literature chunks for ONE method family. Synthesize them into a grounded "
+        "summary. You MUST respond with valid JSON only — no prose, no markdown fences. "
+        "Cite ONLY the evidence_id values provided below; never invent ids. Every "
+        "reported metric and finding must trace to chunks you were given. "
+        "The JSON must conform to this schema:\n"
+        "{\n"
+        '  "synthesis_text": "<narrative grounded in the chunks>",\n'
+        '  "key_findings": ["<str>", ...],\n'
+        '  "reported_metrics": [{"name": "<str>", "value": "<str>", '
+        '"evidence_ids": ["<id>", ...]}],\n'
+        '  "hardware_requirements": ["<str>", ...],\n'
+        '  "failure_modes": ["<str>", ...],\n'
+        '  "open_questions": ["<str>", ...],\n'
+        '  "cited_evidence_ids": ["<id>", ...]\n'
+        "}\n"
+        "cited_evidence_ids must list every evidence_id you relied on."
+    )
+
+    chunk_blocks = []
+    for rec in records:
+        chunk_blocks.append(
+            f"### evidence_id: {rec.id}\n"
+            f"Title: {rec.title}"
+            + (f" ({rec.year})" if rec.year else "")
+            + "\n"
+            + (f"Section: {rec.section_title}\n" if rec.section_title else "")
+            + f"Text: {rec.chunk_text[:1500]}"
+        )
+    user_message = (
+        f"## Method family\n{method_family}\n\n"
+        f"## Goal\n{goal_id}\n\n"
+        f"## Evidence chunks ({len(records)})\n"
+        + "\n\n".join(chunk_blocks)
+        + "\n\nSynthesize the evidence above for this method family."
+    )
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
+    message = client.messages.create(
+        model=settings.validation_model,
+        max_tokens=2048,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    raw_text = message.content[0].text.strip()
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal_id,
+        service="scout",
+        action="synthesize_evidence",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=raw_text[:512],
+    )
+    try:
+        parsed = json.loads(raw_text)
+        return AgentSynthesisOutput(**parsed)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Synthesis agent returned invalid JSON: {exc}",
+        )
+
+
+def _synthesize_groups(
+    db: Session,
+    goal_id: str,
+    scout_run_id: str,
+    records: list[EvidenceRecord],
+    groups: EvidenceGroupResponse,
+) -> list[EvidenceSynthesis]:
+    record_by_id = {r.id: r for r in records}
+    now = datetime.now(timezone.utc)
+    rows: list[EvidenceSynthesis] = []
+
+    for group in groups.groups:
+        group_records = [record_by_id[eid] for eid in group.evidence_ids if eid in record_by_id]
+        if not group_records:
+            continue
+        valid_ids = {r.id for r in group_records}
+
+        output = _run_synthesis_agent(db, goal_id, group.group_key, group_records)
+
+        # Grounding guard: drop any citation the model invented.
+        cited = [eid for eid in output.cited_evidence_ids if eid in valid_ids]
+        clean_metrics = []
+        for m in output.reported_metrics:
+            m.evidence_ids = [eid for eid in m.evidence_ids if eid in valid_ids]
+            clean_metrics.append(m)
+
+        row = EvidenceSynthesis(
+            id=str(uuid.uuid4()),
+            workspace_id=goal_id,
+            scout_run_id=scout_run_id,
+            method_family=group.group_key,
+            synthesis_text=output.synthesis_text,
+            key_findings=json.dumps(output.key_findings),
+            reported_metrics=json.dumps([m.model_dump() for m in clean_metrics]),
+            hardware_requirements=json.dumps(output.hardware_requirements),
+            failure_modes=json.dumps(output.failure_modes),
+            open_questions=json.dumps(output.open_questions),
+            cited_evidence_ids=json.dumps(cited),
+            evidence_count=len(group_records),
+            paper_count=group.paper_count,
+            model_used=settings.validation_model,
+            created_at=now,
+        )
+        db.add(row)
+        rows.append(row)
+
+    db.commit()
+    return rows
+
+
 def run_scout(
     db: Session,
     goal_id: str,
@@ -364,12 +525,18 @@ def run_scout(
         warnings=warnings,
     )
 
+    syntheses: list[EvidenceSynthesisResponse] = []
+    if request.synthesize and settings.anthropic_api_key and all_records:
+        rows = _synthesize_groups(db, goal_id, scout_run_id, all_records, groups)
+        syntheses = [_synthesis_to_response(r) for r in rows]
+
     return ScoutResultResponse(
         scout_run_id=scout_run_id,
         goal_id=goal_id,
         evidence_count=len(all_records),
         groups=groups,
         summary=summary,
+        syntheses=syntheses,
     )
 
 
@@ -427,6 +594,24 @@ def get_evidence_by_id(
     if record is None or record.workspace_id != goal_id:
         raise HTTPException(status_code=404, detail=f"Evidence {evidence_id!r} not found")
     return _to_response(record)
+
+
+def get_syntheses(
+    db: Session,
+    goal_id: str,
+    *,
+    scout_run_id: str | None = None,
+    method_family: str | None = None,
+) -> list[EvidenceSynthesisResponse]:
+    goal_svc.get(db, goal_id)
+
+    q = select(EvidenceSynthesis).where(EvidenceSynthesis.workspace_id == goal_id)
+    if scout_run_id:
+        q = q.where(EvidenceSynthesis.scout_run_id == scout_run_id)
+    if method_family:
+        q = q.where(EvidenceSynthesis.method_family == method_family)
+    rows = db.scalars(q.order_by(EvidenceSynthesis.method_family)).all()
+    return [_synthesis_to_response(r) for r in rows]
 
 
 def get_evidence_groups(
