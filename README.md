@@ -319,9 +319,37 @@ cs approval history <EXPERIMENT_ID> <GOAL_ID>   # chronological decision log
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' status
 ```
 
-### 8. Submit results and validate
+### 8. Run on the real simulator (automated)
 
-Once an experiment is `running`, submit measured metrics to trigger automated validation.
+An approved experiment can be executed against the [repro](../experiment) runner, which drives
+real PSZ acoustic simulators. This replaces hand-typing metrics: co-scientist submits a spec to
+repro, polls the run to completion, pulls `metrics.json`, translates the simulator's native
+metric keys to co-scientist canonical names, transitions the experiment to `running`, and feeds
+the measured values straight into the validation agent.
+
+```bash
+# Prerequisite: the repro API must be serving (default http://localhost:8003)
+#   in the repro project:  repro serve
+
+cs experiment run <EXPERIMENT_ID> <GOAL_ID>             # run → validate in one step
+cs experiment run <EXPERIMENT_ID> <GOAL_ID> --timeout 900 --json
+```
+
+The simulator is chosen by the primary approach's method family:
+
+| method family | repro simulator | native → canonical metrics |
+|---|---|---|
+| acoustic_contrast_control, beamforming, pressure_matching, null_steering | `vast_simulate.py` | `oAC_best_dB`→`acoustic_contrast_db`; `nsde_achieved_dB`→`bright_zone_error` |
+
+Configure the endpoint via `CS_REPRO_URL` / `CS_REPRO_API_KEY` (see `config.py`). If no
+simulator is registered for the method family — or the run produces no translatable metrics —
+the command fails with a clear message and leaves the experiment `approved`; it never fabricates
+results. Fall back to the manual path (step 9) in that case.
+
+### 9. Submit results manually and validate
+
+Once an experiment is `running`, submit measured metrics to trigger automated validation. (When
+using the automated runner in step 8 this happens for you.)
 
 ```bash
 cs validation submit <EXPERIMENT_ID> <GOAL_ID> \
@@ -341,7 +369,7 @@ cs approach list <GOAL_ID> --status validated  # if all criteria passed
 cs approach list <GOAL_ID> --status refuted    # if any criterion failed
 ```
 
-### 9. Synthesise device concepts
+### 10. Synthesise device concepts
 
 With validated approaches in hand, generate candidate device architectures.
 
@@ -360,7 +388,7 @@ cs device export <DEVICE_ID> <GOAL_ID> --format json
 cs device review <DEVICE_ID> <GOAL_ID>              # mark as reviewed
 ```
 
-### 10. Generate and manage the research roadmap
+### 11. Generate and manage the research roadmap
 
 With approaches, experiments, and device concepts in place, generate a ranked view of what to do next.
 
@@ -376,7 +404,7 @@ cs roadmap complete <ITEM_ID> <GOAL_ID>              # manually mark an item as 
 
 After completing or failing an experiment, linked roadmap items retire automatically — no manual step needed.
 
-### 11. Inspect agent logs and restrict a goal
+### 12. Inspect agent logs and restrict a goal
 
 Every agent-driven Claude call (validation, device, roadmap) is logged for audit.
 
@@ -450,6 +478,7 @@ cs experiment generate <GOAL_ID> [--approach <ID>] [--hypothesis <ID>] [--max N]
 cs experiment list <GOAL_ID> [--status generated|reviewed|approved|...] [--type simulation|measurement|hybrid]
 cs experiment show <EXPERIMENT_ID>
 cs experiment review <EXPERIMENT_ID>
+cs experiment run <EXPERIMENT_ID> <GOAL_ID> [--timeout SECONDS] [--json]
 cs experiment score <EXPERIMENT_ID> <GOAL_ID>
 cs experiment export <EXPERIMENT_ID> [--format yaml|python]
 cs experiment delete <EXPERIMENT_ID>
@@ -704,6 +733,7 @@ src/coscientist/
 ├── main.py                # FastAPI app with lifespan
 ├── cli/app.py             # Typer CLI (cs goal/scout/ontology/approach commands)
 ├── clients/retrieval.py   # httpx client for retrieval API
+├── clients/repro.py       # httpx client for the repro experiment runner (:8003)
 ├── models/
 │   ├── goal.py            # ResearchGoal ORM
 │   ├── evidence.py        # EvidenceRecord ORM
@@ -730,7 +760,8 @@ src/coscientist/
 │   ├── device.py          # Device concept request/response schemas
 │   ├── roadmap.py         # Roadmap request/response schemas
 │   ├── governance.py      # Agent action log response schemas
-│   └── evaluation.py      # Evaluation metric response schemas
+│   ├── evaluation.py      # Evaluation metric response schemas
+│   └── runner.py          # Runner result schema (repro integration)
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -744,7 +775,8 @@ src/coscientist/
 │   ├── device.py          # Agent-driven device concept synthesis, compare, export
 │   ├── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
 │   ├── governance.py      # Agent action logging, log queries, restriction checks
-│   └── evaluation.py      # Quality metrics over existing artefacts (read-only)
+│   ├── evaluation.py      # Quality metrics over existing artefacts (read-only)
+│   └── runner.py          # Runs experiments on repro, translates metrics, validates
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints

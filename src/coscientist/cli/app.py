@@ -51,6 +51,7 @@ from coscientist.services import device as device_svc
 from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
+from coscientist.services import runner as runner_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as svc
@@ -811,6 +812,36 @@ def experiment_approve(experiment_id: str = typer.Argument(...)):
     try:
         result = experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.approved)
         console.print(f"[green]Experiment {experiment_id[:8]}… is now {result.status.value}[/green]")
+    finally:
+        db.close()
+
+
+@experiment_app.command("run")
+def experiment_run(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    timeout: Optional[float] = typer.Option(None, "--timeout", "-t", help="Seconds to wait for the repro run"),
+    json_out: bool = typer.Option(False, "--json", help="Print raw JSON result"),
+):
+    """Run an approved experiment on the repro simulator and validate real metrics."""
+    db = _get_session()
+    try:
+        result = runner_svc.run_experiment(db, experiment_id, goal_id, timeout=timeout)
+        if json_out:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+        console.print(f"[green]Ran {result.simulator} → run {result.run_id[:8]}… ({result.repro_status})[/green]")
+        if result.measured_metrics:
+            table = Table(title="Measured Metrics (canonical)")
+            table.add_column("Metric")
+            table.add_column("Value", justify="right")
+            for name, value in result.measured_metrics.items():
+                table.add_row(name, f"{value:.4g}")
+            console.print(table)
+        v = result.validation
+        decision_color = "green" if v.decision.value == "validated" else "red"
+        console.print(f"[{decision_color}]Validation: {v.decision.value.upper()}[/{decision_color}] (confidence {v.confidence:.2f})")
+        console.print(f"Reasoning: {v.reasoning}")
     finally:
         db.close()
 

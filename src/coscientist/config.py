@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     experiment_sweep_cost_high: int = 2000
     validation_model: str = "claude-sonnet-4-6"
     anthropic_api_key: str | None = None
+    repro_url: str = "http://localhost:8003"
+    repro_api_key: str | None = None
+    repro_poll_interval: float = 2.0
+    repro_run_timeout: float = 600.0
 
 
 settings = Settings()
