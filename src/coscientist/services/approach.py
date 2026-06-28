@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
 from coscientist.models.evidence import EvidenceRecord
+from coscientist.models.synthesis import EvidenceSynthesis
 from coscientist.schemas.approach import (
     ApproachCardCreate,
     ApproachCardResponse,
@@ -192,6 +193,29 @@ def delete(db: Session, approach_id: str) -> None:
     db.commit()
 
 
+def _derive_maturity(evidence_list: list[EvidenceRecord]) -> str:
+    all_text = " ".join(r.chunk_text.lower() for r in evidence_list)
+    if "validated" in all_text or "field trial" in all_text:
+        return "validated"
+    if "measured" in all_text or "experiment" in all_text:
+        return "measured"
+    if "simulation" in all_text or "simulated" in all_text:
+        return "simulated"
+    return "theoretical"
+
+
+def _derive_device_relevance(goal: GoalResponse) -> str | None:
+    if not goal.device_constraints:
+        return None
+    dc = goal.device_constraints
+    parts = []
+    if dc.form_factor:
+        parts.append(f"Form factor: {dc.form_factor}")
+    if dc.speaker_count:
+        parts.append(f"Speaker count: {dc.speaker_count}")
+    return "; ".join(parts) if parts else None
+
+
 def _synthesize_card(
     method_family: str,
     evidence_list: list[EvidenceRecord],
@@ -274,15 +298,7 @@ def _synthesize_card(
             "confidence": best.confidence,
         })
 
-    all_text = " ".join(r.chunk_text.lower() for r in evidence_list)
-    if "validated" in all_text or "field trial" in all_text:
-        maturity = "validated"
-    elif "measured" in all_text or "experiment" in all_text:
-        maturity = "measured"
-    elif "simulation" in all_text or "simulated" in all_text:
-        maturity = "simulated"
-    else:
-        maturity = "theoretical"
+    maturity = _derive_maturity(evidence_list)
 
     problem_fit = f"Applies {name} to {goal.target_application.replace('_', ' ')}"
     evidence_links.append({
@@ -292,15 +308,7 @@ def _synthesize_card(
         "confidence": best.confidence,
     })
 
-    device_relevance = None
-    if goal.device_constraints:
-        dc = goal.device_constraints
-        parts = []
-        if dc.form_factor:
-            parts.append(f"Form factor: {dc.form_factor}")
-        if dc.speaker_count:
-            parts.append(f"Speaker count: {dc.speaker_count}")
-        device_relevance = "; ".join(parts) if parts else None
+    device_relevance = _derive_device_relevance(goal)
 
     evidence_links.append({
         "evidence_id": best.id,
@@ -327,6 +335,118 @@ def _synthesize_card(
         evidence_links=json.dumps(evidence_links),
         status="generated",
         maturity=maturity,
+        generation_run_id=generation_run_id,
+        merged_into_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _synthesize_card_from_synthesis(
+    method_family: str,
+    evidence_list: list[EvidenceRecord],
+    synthesis: EvidenceSynthesis,
+    goal: GoalResponse,
+    generation_run_id: str,
+    now: datetime,
+) -> ApproachCard:
+    card_id = str(uuid.uuid4())
+    name = method_family.replace("_", " ").title()
+
+    valid_ids = {e.id for e in evidence_list}
+    conf_by_id = {e.id: e.confidence for e in evidence_list}
+    best = max([e for e in evidence_list if e.is_primary_method] or evidence_list, key=lambda e: e.score)
+
+    cited_raw = json.loads(synthesis.cited_evidence_ids) if synthesis.cited_evidence_ids else []
+    cited_ids = [eid for eid in cited_raw if eid in valid_ids]
+    fallback_id = cited_ids[0] if cited_ids else best.id
+
+    evidence_links: list[dict] = []
+
+    def _link(field: str, eid: str) -> None:
+        evidence_links.append({
+            "evidence_id": eid,
+            "evidence_type": "direct",
+            "claim_field": field,
+            "confidence": conf_by_id.get(eid),
+        })
+
+    mechanism_summary = synthesis.synthesis_text
+    for eid in cited_ids:
+        _link("mechanism_summary", eid)
+
+    metrics: list[dict] = []
+    syn_metrics = json.loads(synthesis.reported_metrics) if synthesis.reported_metrics else []
+    for m in syn_metrics:
+        m_ids = [eid for eid in m.get("evidence_ids", []) if eid in valid_ids]
+        src_id = m_ids[0] if m_ids else fallback_id
+        metrics.append({
+            "metric_name": m["name"],
+            "value": m.get("value"),
+            "unit": None,
+            "source_evidence_id": src_id,
+            "confidence": conf_by_id.get(src_id),
+            "evidence_type": "direct",
+        })
+        for eid in m_ids:
+            _link("reported_metrics", eid)
+
+    hw_set: set[str] = set(json.loads(synthesis.hardware_requirements) if synthesis.hardware_requirements else [])
+    for rec in evidence_list:
+        hw_set.update(json.loads(rec.hardware_assumptions) if rec.hardware_assumptions else [])
+    if hw_set:
+        for eid in cited_ids:
+            _link("hardware_requirements", eid)
+
+    failure_modes = json.loads(synthesis.failure_modes) if synthesis.failure_modes else []
+    risks: list[dict] = []
+    for fm in failure_modes:
+        risks.append({
+            "description": fm,
+            "failure_mode": fm,
+            "severity": None,
+            "evidence_id": fallback_id,
+        })
+    if risks:
+        _link("risks_and_limitations", fallback_id)
+
+    open_questions = json.loads(synthesis.open_questions) if synthesis.open_questions else []
+
+    assumptions = [f"Requires {h.replace('_', ' ')}" for h in sorted(hw_set)]
+    if assumptions:
+        evidence_links.append({
+            "evidence_id": fallback_id,
+            "evidence_type": "inferred",
+            "claim_field": "key_assumptions",
+            "confidence": conf_by_id.get(fallback_id),
+        })
+
+    problem_fit = f"Applies {name} to {goal.target_application.replace('_', ' ')}"
+    evidence_links.append({
+        "evidence_id": fallback_id,
+        "evidence_type": "inferred",
+        "claim_field": "problem_fit",
+        "confidence": conf_by_id.get(fallback_id),
+    })
+
+    return ApproachCard(
+        id=card_id,
+        workspace_id=goal.workspace_id,
+        name=name,
+        method_family=method_family,
+        domain=goal.target_application,
+        problem_fit=problem_fit,
+        mechanism_summary=mechanism_summary,
+        key_assumptions=json.dumps(assumptions),
+        reported_metrics=json.dumps(metrics),
+        hardware_requirements=json.dumps(sorted(hw_set)),
+        device_relevance=_derive_device_relevance(goal),
+        risks_and_limitations=json.dumps(risks),
+        unresolved_questions=json.dumps(open_questions),
+        suggested_experiments=json.dumps([]),
+        evidence_links=json.dumps(evidence_links),
+        status="generated",
+        maturity=_derive_maturity(evidence_list),
         generation_run_id=generation_run_id,
         merged_into_id=None,
         created_at=now,
@@ -367,6 +487,14 @@ def generate_approaches(
     min_count = request.min_evidence_count
     method_groups = {k: v for k, v in method_groups.items() if len(v) >= min_count}
 
+    syn_q = select(EvidenceSynthesis).where(EvidenceSynthesis.workspace_id == goal_id)
+    if request.scout_run_id:
+        syn_q = syn_q.where(EvidenceSynthesis.scout_run_id == request.scout_run_id)
+    # Order so the most recent synthesis per family wins on dict overwrite.
+    synthesis_by_family: dict[str, EvidenceSynthesis] = {}
+    for syn in db.scalars(syn_q.order_by(EvidenceSynthesis.created_at)).all():
+        synthesis_by_family[syn.method_family] = syn
+
     generation_run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     created: list[ApproachCard] = []
@@ -384,13 +512,24 @@ def generate_approaches(
             skipped += 1
             continue
 
-        card = _synthesize_card(
-            method_family=method_family,
-            evidence_list=method_groups[method_family],
-            goal=goal,
-            generation_run_id=generation_run_id,
-            now=now,
-        )
+        synthesis = synthesis_by_family.get(method_family)
+        if synthesis is not None:
+            card = _synthesize_card_from_synthesis(
+                method_family=method_family,
+                evidence_list=method_groups[method_family],
+                synthesis=synthesis,
+                goal=goal,
+                generation_run_id=generation_run_id,
+                now=now,
+            )
+        else:
+            card = _synthesize_card(
+                method_family=method_family,
+                evidence_list=method_groups[method_family],
+                goal=goal,
+                generation_run_id=generation_run_id,
+                now=now,
+            )
         db.add(card)
         created.append(card)
 

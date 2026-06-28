@@ -309,6 +309,86 @@ def test_merge_approaches(db_session):
     assert merged_source.merged_into_id == target.id
 
 
+def _seed_synthesis(db, workspace_id, method_family, *, synthesis_text="Synthesized mechanism.",
+                    cited_evidence_ids=None, reported_metrics=None, hardware=None,
+                    failure_modes=None, open_questions=None, scout_run_id="sr-test"):
+    from coscientist.models.synthesis import EvidenceSynthesis
+    now = datetime.now(timezone.utc)
+    row = EvidenceSynthesis(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        scout_run_id=scout_run_id,
+        method_family=method_family,
+        synthesis_text=synthesis_text,
+        key_findings=json.dumps([]),
+        reported_metrics=json.dumps(reported_metrics or []),
+        hardware_requirements=json.dumps(hardware or []),
+        failure_modes=json.dumps(failure_modes or []),
+        open_questions=json.dumps(open_questions or []),
+        cited_evidence_ids=json.dumps(cited_evidence_ids or []),
+        evidence_count=len(cited_evidence_ids or []),
+        paper_count=0,
+        model_used="test-model",
+        created_at=now,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def test_generate_uses_synthesis_text_and_open_questions(db_session):
+    goal = _create_goal(db_session)
+    e1 = _seed_evidence(db_session, goal.id, ["beamforming"], metric_names=["acoustic_contrast_db"])
+    e2 = _seed_evidence(db_session, goal.id, ["beamforming"])
+    _seed_synthesis(
+        db_session, goal.id, "beamforming",
+        synthesis_text="Beamforming steers acoustic energy into the bright zone.",
+        cited_evidence_ids=[e1.id, e2.id],
+        reported_metrics=[{"name": "acoustic_contrast_db", "value": "20 dB", "evidence_ids": [e1.id]}],
+        open_questions=["How robust is it to head movement?"],
+    )
+
+    result = svc.generate_approaches(db_session, goal.id, ApproachGenerateRequest())
+    card = result.approaches[0]
+    assert card.mechanism_summary == "Beamforming steers acoustic energy into the bright zone."
+    assert "How robust is it to head movement?" in card.unresolved_questions
+    metric = next(m for m in card.reported_metrics if m.metric_name == "acoustic_contrast_db")
+    assert metric.value == "20 dB"
+    assert metric.source_evidence_id == e1.id
+
+
+def test_generate_synthesis_evidence_links_grounded(db_session):
+    goal = _create_goal(db_session)
+    e1 = _seed_evidence(db_session, goal.id, ["beamforming"])
+    e2 = _seed_evidence(db_session, goal.id, ["beamforming"])
+    # cite a real id plus an invented one that must never appear in links
+    _seed_synthesis(
+        db_session, goal.id, "beamforming",
+        cited_evidence_ids=[e1.id, "invented-id"],
+        reported_metrics=[{"name": "contrast", "value": "10", "evidence_ids": [e2.id, "ghost"]}],
+    )
+
+    result = svc.generate_approaches(db_session, goal.id, ApproachGenerateRequest())
+    card = result.approaches[0]
+    link_ids = {el.evidence_id for el in card.evidence_links}
+    assert "invented-id" not in link_ids
+    assert "ghost" not in link_ids
+    assert link_ids <= {e1.id, e2.id}
+    assert e1.id in link_ids
+
+
+def test_generate_falls_back_to_algorithmic_without_synthesis(db_session):
+    goal = _create_goal(db_session)
+    _seed_evidence(db_session, goal.id, ["beamforming"], text="acoustic contrast control method")
+    _seed_evidence(db_session, goal.id, ["beamforming"], text="another chunk")
+    # no synthesis seeded -> algorithmic path uses raw chunk text as mechanism_summary
+
+    result = svc.generate_approaches(db_session, goal.id, ApproachGenerateRequest())
+    card = result.approaches[0]
+    assert card.mechanism_summary in ("acoustic contrast control method", "another chunk")
+
+
 def test_merge_cross_workspace_rejected(db_session):
     goal1 = _create_goal(db_session)
     goal2 = _create_goal(db_session)
