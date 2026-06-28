@@ -6,6 +6,7 @@ dist/
 build/
 .env
 *.db
+*.db.bak
 *.db-journal
 .pytest_cache/
 .coverage
