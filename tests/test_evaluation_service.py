@@ -234,3 +234,84 @@ def test_unknown_goal_raises_404(db_session):
     with pytest.raises(HTTPException) as exc:
         svc.approach_usefulness(db_session, "does-not-exist")
     assert exc.value.status_code == 404
+
+
+# --- CS-EVAL-005 productivity ---
+
+
+def _log_agent_call(db, workspace_id, *, error=None):
+    from coscientist.models.governance import AgentActionLog
+
+    db.add(
+        AgentActionLog(
+            id=str(uuid.uuid4()),
+            workspace_id=workspace_id,
+            service="approach",
+            action="generate",
+            model_used="test-model",
+            error=error,
+        )
+    )
+    db.commit()
+
+
+def _feedback(db, workspace_id, *, is_positive):
+    from coscientist.schemas.feedback import FeedbackCreate, FeedbackTargetEnum
+    from coscientist.services import feedback as feedback_svc
+
+    feedback_svc.create(
+        db,
+        workspace_id,
+        FeedbackCreate(
+            target_type=FeedbackTargetEnum.approach,
+            target_id="approach-1",
+            is_positive=is_positive,
+        ),
+    )
+
+
+def test_productivity_counts_successful_agent_actions(db_session):
+    from coscientist.config import settings
+
+    gid = _make_goal(db_session)
+    _log_agent_call(db_session, gid)
+    _log_agent_call(db_session, gid)
+    _log_agent_call(db_session, gid, error="boom")  # failed calls excluded
+    m = svc.productivity(db_session, gid)
+    assert m.agent_action_count == 2
+    assert m.minutes_per_agent_action == settings.eval_minutes_per_agent_action
+    assert m.estimated_time_saved_minutes == 2 * settings.eval_minutes_per_agent_action
+    assert m.estimated_time_saved_hours == pytest.approx(
+        round(2 * settings.eval_minutes_per_agent_action / 60, 2)
+    )
+
+
+def test_productivity_satisfaction_from_feedback(db_session):
+    gid = _make_goal(db_session)
+    _feedback(db_session, gid, is_positive=True)
+    _feedback(db_session, gid, is_positive=True)
+    _feedback(db_session, gid, is_positive=False)
+    m = svc.productivity(db_session, gid)
+    assert m.positive_feedback == 2
+    assert m.total_feedback == 3
+    assert m.satisfaction_rate == pytest.approx(2 / 3)
+
+
+def test_productivity_no_feedback_rate_is_none(db_session):
+    gid = _make_goal(db_session)
+    m = svc.productivity(db_session, gid)
+    assert m.total_feedback == 0
+    assert m.satisfaction_rate is None
+
+
+def test_productivity_unknown_goal_404(db_session):
+    with pytest.raises(HTTPException) as exc:
+        svc.productivity(db_session, "does-not-exist")
+    assert exc.value.status_code == 404
+
+
+def test_get_report_includes_productivity(db_session):
+    gid = _make_goal(db_session)
+    _log_agent_call(db_session, gid)
+    report = svc.get_report(db_session, gid)
+    assert report.productivity.agent_action_count == 1

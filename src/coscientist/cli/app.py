@@ -45,10 +45,12 @@ from coscientist.schemas.roadmap import (
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
+from coscientist.schemas.feedback import FeedbackCreate, FeedbackTargetEnum
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
 from coscientist.services import device as device_svc
 from coscientist.services import evaluation as evaluation_svc
+from coscientist.services import feedback as feedback_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import runner as runner_svc
@@ -74,6 +76,7 @@ device_app = typer.Typer(no_args_is_help=True, help="Generate and review candida
 roadmap_app = typer.Typer(no_args_is_help=True, help="Generate and manage the research roadmap")
 logs_app = typer.Typer(no_args_is_help=True, help="View agent action audit logs")
 eval_app = typer.Typer(no_args_is_help=True, help="Evaluation and quality metrics")
+feedback_app = typer.Typer(no_args_is_help=True, help="Capture and view feedback on generated artifacts")
 app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
@@ -87,6 +90,7 @@ app.add_typer(device_app, name="device")
 app.add_typer(roadmap_app, name="roadmap")
 app.add_typer(logs_app, name="logs")
 app.add_typer(eval_app, name="eval")
+app.add_typer(feedback_app, name="feedback")
 
 console = Console()
 
@@ -1374,6 +1378,34 @@ def roadmap_complete(
         db.close()
 
 
+@roadmap_app.command("gaps")
+def roadmap_gaps(goal_id: str = typer.Argument(...)):
+    """Show structured evidence gaps per promising approach (CS-ROADMAP-003)."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.identify_evidence_gaps(db, goal_id)
+        if result.total == 0:
+            console.print("[green]No evidence gaps found.[/green]")
+            return
+        table = Table(title=f"Evidence Gaps ({result.total})", show_lines=True)
+        table.add_column("Approach", style="cyan")
+        table.add_column("Method family", style="dim")
+        table.add_column("Missing evidence")
+        table.add_column("Weak dimensions")
+        table.add_column("Scored")
+        for g in result.gaps:
+            table.add_row(
+                g.approach_name,
+                g.method_family,
+                ", ".join(g.missing_claim_fields) or "-",
+                ", ".join(g.weak_dimensions) or "-",
+                "no" if g.unscored else "yes",
+            )
+        console.print(table)
+    finally:
+        db.close()
+
+
 @logs_app.command("list")
 def logs_list(
     goal_id: str = typer.Argument(..., help="Goal ID"),
@@ -1537,10 +1569,84 @@ def eval_experiments(goal_id: str = typer.Argument(...)):
 
 @eval_app.command("report")
 def eval_report(goal_id: str = typer.Argument(...)):
-    """Full evaluation report (CS-EVAL-001/002/003) as JSON."""
+    """Full evaluation report (CS-EVAL-001/002/003/005) as JSON."""
     db = _get_session()
     try:
         result = evaluation_svc.get_report(db, goal_id)
         console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@eval_app.command("productivity")
+def eval_productivity(goal_id: str = typer.Argument(...)):
+    """Research time saved and user satisfaction (CS-EVAL-005)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.productivity(db, goal_id)
+        table = Table(title="Productivity")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_row("Agent actions", str(m.agent_action_count))
+        table.add_row("Est. time saved (min)", str(m.estimated_time_saved_minutes))
+        table.add_row("Est. time saved (hrs)", f"{m.estimated_time_saved_hours:.1f}")
+        sat = "n/a" if m.satisfaction_rate is None else f"{m.satisfaction_rate:.0%}"
+        table.add_row("Satisfaction", sat)
+        table.add_row("Feedback (pos/total)", f"{m.positive_feedback}/{m.total_feedback}")
+        console.print(table)
+    finally:
+        db.close()
+
+
+@feedback_app.command("add")
+def feedback_add(
+    goal_id: str = typer.Argument(...),
+    target_type: str = typer.Argument(..., help="approach|score|experiment|device|hypothesis|roadmap"),
+    target_id: str = typer.Argument(...),
+    up: bool = typer.Option(False, "--up/--down", help="Thumbs up (default down)"),
+    comment: Optional[str] = typer.Option(None, "--comment", "-c"),
+    reviewer: Optional[str] = typer.Option(None, "--reviewer"),
+):
+    """Record thumbs up/down feedback on a generated artifact (CS-EVAL-006)."""
+    db = _get_session()
+    try:
+        data = FeedbackCreate(
+            target_type=FeedbackTargetEnum(target_type),
+            target_id=target_id,
+            is_positive=up,
+            comment=comment,
+            reviewer_id=reviewer,
+        )
+        result = feedback_svc.create(db, goal_id, data)
+        vote = "up" if result.is_positive else "down"
+        console.print(f"[{vote}] feedback {result.id} on {result.target_type.value} {result.target_id}")
+    finally:
+        db.close()
+
+
+@feedback_app.command("list")
+def feedback_list(
+    goal_id: str = typer.Argument(...),
+    target_type: Optional[str] = typer.Option(None, "--type"),
+    target_id: Optional[str] = typer.Option(None, "--target"),
+):
+    """List feedback for a goal (CS-EVAL-006)."""
+    db = _get_session()
+    try:
+        tt = FeedbackTargetEnum(target_type) if target_type else None
+        result = feedback_svc.list_feedback(db, goal_id, target_type=tt, target_id=target_id)
+        table = Table(title=f"Feedback ({result.total})")
+        table.add_column("Vote")
+        table.add_column("Target type")
+        table.add_column("Target ID")
+        table.add_column("Comment")
+        for f in result.items:
+            table.add_row(
+                "up" if f.is_positive else "down",
+                f.target_type.value,
+                f.target_id,
+                f.comment or "",
+            )
+        console.print(table)
     finally:
         db.close()

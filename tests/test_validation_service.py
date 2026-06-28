@@ -8,6 +8,7 @@ import pytest
 from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
 from coscientist.models.evidence import EvidenceRecord
+from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.approach import (
     ApproachGenerateRequest,
     ApproachMaturityEnum,
@@ -23,6 +24,7 @@ from coscientist.schemas.validation import (
     AgentValidationOutput,
     CriterionResult,
     ExperimentResultSubmission,
+    ReproductionStatusEnum,
     ValidationDecisionEnum,
 )
 from coscientist.services import approach as approach_svc
@@ -421,6 +423,113 @@ def test_advance_maturity_does_not_downgrade_validated():
 # ---------------------------------------------------------------------------
 # _run_validation_agent — mock anthropic client
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# reproduction_status derivation (CS-VALIDATION-005)
+# ---------------------------------------------------------------------------
+
+from coscientist.services.validation import _derive_reproduction_status
+
+
+def _cr(passed, measured=10.0):
+    return CriterionResult(name="m", measured=measured, target=5.0,
+                           operator=">=", passed=passed, unit="dB")
+
+
+def test_derive_reproduction_blocked_when_nothing_measurable():
+    assert _derive_reproduction_status([]) == ReproductionStatusEnum.blocked
+    assert _derive_reproduction_status(
+        [CriterionResult(name="m", measured=None, target=5.0, operator=">=", passed=False, unit="")]
+    ) == ReproductionStatusEnum.blocked
+
+
+def test_derive_reproduction_reproduced_when_all_pass():
+    assert _derive_reproduction_status([_cr(True), _cr(True)]) == ReproductionStatusEnum.reproduced
+
+
+def test_derive_reproduction_failed_when_none_pass():
+    assert _derive_reproduction_status([_cr(False), _cr(False)]) == ReproductionStatusEnum.failed
+
+
+def test_derive_reproduction_partial_when_some_pass():
+    assert _derive_reproduction_status([_cr(True), _cr(False)]) == ReproductionStatusEnum.partially_reproduced
+
+
+@patch("coscientist.services.validation._run_validation_agent")
+def test_submit_sets_reproduction_status_reproduced(mock_agent, db_session):
+    mock_agent.return_value = MOCK_VALIDATED
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp = _create_running_experiment(db_session, goal.id, approach.id)
+    result = svc.submit_results(db_session, exp.id, goal.id,
+                                ExperimentResultSubmission(measured_metrics={}))
+    assert result.reproduction_status == ReproductionStatusEnum.reproduced
+
+
+@patch("coscientist.services.validation._run_validation_agent")
+def test_resubmit_supersedes_prior_result(mock_agent, db_session):
+    from coscientist.models.validation import ValidationResult
+    from coscientist.schemas.experiment import ExperimentStatusEnum
+
+    mock_agent.return_value = MOCK_VALIDATED
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp = _create_running_experiment(db_session, goal.id, approach.id)
+    first = svc.submit_results(db_session, exp.id, goal.id,
+                              ExperimentResultSubmission(measured_metrics={}))
+    # Force the card back to running to exercise the re-run supersede branch
+    # (the normal lifecycle has no completed->running path).
+    card = db_session.get(ExperimentCard, exp.id)
+    card.status = ExperimentStatusEnum.running.value
+    db_session.commit()
+    svc.submit_results(db_session, exp.id, goal.id,
+                       ExperimentResultSubmission(measured_metrics={}))
+    prior = db_session.get(ValidationResult, first.id)
+    assert prior.reproduction_status == ReproductionStatusEnum.superseded.value
+
+
+@patch("coscientist.services.validation._run_validation_agent")
+def test_submit_retires_linked_roadmap_item(mock_agent, db_session):
+    from coscientist.models.roadmap import ResearchRoadmapItem
+    from coscientist.services import roadmap as roadmap_svc
+
+    mock_agent.return_value = MOCK_VALIDATED
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp = _create_running_experiment(db_session, goal.id, approach.id)
+
+    now = datetime.now(timezone.utc)
+    item = ResearchRoadmapItem(
+        id=str(uuid.uuid4()),
+        workspace_id=goal.id,
+        title="Follow up on experiment",
+        description="x",
+        lane="conservative",
+        status="open",
+        priority_score=0.8,
+        priority_rank=1,
+        rationale="x",
+        estimated_cost="low",
+        estimated_information_gain="medium",
+        source_approach_ids=json.dumps([]),
+        source_experiment_id=exp.id,
+        source_device_id=None,
+        generation_run_id=str(uuid.uuid4()),
+        model_used="test",
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    svc.submit_results(db_session, exp.id, goal.id,
+                       ExperimentResultSubmission(measured_metrics={}))
+    refreshed = roadmap_svc.get_item(db_session, item.id, goal.id)
+    assert refreshed.status.value == "completed"
+
 
 def test_run_validation_agent_sends_correct_context(db_session):
     from unittest.mock import MagicMock, patch as mock_patch

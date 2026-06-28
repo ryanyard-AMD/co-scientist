@@ -56,8 +56,20 @@ class ExperimentQualityMetrics(BaseModel):
     invalid_experiment_ids: list[str]
 
 
+class ProductivityMetrics(BaseModel):
+    goal_id: str
+    agent_action_count: int
+    minutes_per_agent_action: int
+    estimated_time_saved_minutes: int
+    estimated_time_saved_hours: float
+    positive_feedback: int
+    total_feedback: int
+    satisfaction_rate: float | None
+
+
 class EvaluationReport(BaseModel):
     goal_id: str
     approach_usefulness: ApproachUsefulnessMetrics
     evidence_grounding: EvidenceGroundingMetrics
     experiment_quality: ExperimentQualityMetrics
+    productivity: ProductivityMetrics

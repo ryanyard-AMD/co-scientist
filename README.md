@@ -112,6 +112,8 @@ Closes the experiment feedback loop by ingesting measured results, evaluating th
 - Claude Sonnet 4.6 agent receives full context — experiment spec, pass conditions, measured values, approach card, goal success criteria — and returns structured JSON with per-criterion pass/fail evaluation
 - Automated side effects on validation: experiment `running → completed` (validated) or `running → failed` (refuted)
 - Automated side effects on approach: `experiment_proposed → tested → validated` or `tested → refuted`; maturity advanced to `simulated` (simulation) or `measured` (measurement/hybrid); maturity never downgraded
+- **Reproduction status taxonomy** (CS-VALIDATION-005): each result carries a `reproduction_status` derived from per-criterion outcomes — `reproduced` (all passed), `partially_reproduced` (some passed), `failed` (none passed), `blocked` (nothing measurable), `superseded` (a later re-run replaced this result)
+- **Roadmap feedback loop** (CS-VALIDATION-006): ingesting a result auto-retires open roadmap items linked to the experiment via `source_experiment_id`, so the next-best recommendations reflect what was just learned
 - Single `db.commit()` at end of orchestration — no nested commits across status transitions
 - Refinement suggestions populated when refuted to guide next iteration
 
@@ -136,6 +138,7 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - Three research lanes: `conservative` (low-risk near-term validation), `exploratory` (higher-risk higher-upside novel combinations), `device_prototype` (hardware and integration steps)
 - Agent assigns `priority_score` (0–1) by weighing estimated information gain, device relevance, and cost; items returned ranked highest-first within a generation run
 - Agent explicitly identifies evidence gaps per approach and surfaces "run scout for X method family" items
+- **Structured evidence gaps** (CS-ROADMAP-003): `GET /roadmap/evidence-gaps` (and `cs roadmap gaps`) returns, per promising approach, the claim fields lacking evidence links and the weak/low-confidence rubric dimensions — the "what must be tested" view that is also fed into the roadmap agent's context
 - Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed
 - Idempotent generation: each `POST /generate` creates a fresh `generation_run_id` batch; prior items remain in DB with their original status for audit
 - Full traceability: each item links back to `source_approach_ids`, `source_experiment_id`, and/or `source_device_id`
@@ -186,8 +189,9 @@ A read-only metrics layer that computes the quality targets from PRD §20 over t
 - **Evidence grounding** (CS-EVAL-002): per claim-bearing field, classify as grounded (a `direct` evidence link), inferred (only `inferred` links), or unsupported (content but no link). Reports grounding rate (target ≥ 90%), unsupported claim rate (target ≤ 5%), and the list of unsupported claims for diagnosis
 - **Experiment quality** (CS-EVAL-003): acceptance rate from experiment status (reviewed/approved/running/completed vs superseded; target ≥ 70%) and spec validity (specs that pass schema validation; target ≥ 85%)
 - Each metric reports raw counts, the rate, the PRD target, and a pass/fail gate. Empty workspaces are not failing gates
+- **Productivity metrics** (CS-EVAL-005): estimated time saved is a heuristic over the governance agent-action log (successful Claude calls × `CS_EVAL_MINUTES_PER_AGENT_ACTION`), reported alongside the user-satisfaction rate computed from captured feedback
+- **User feedback capture** (CS-EVAL-006): a lightweight feedback store records thumbs up/down plus an optional comment against any artefact (approach, score, experiment, device, hypothesis, roadmap); satisfaction rate feeds the productivity block
 - Exposed via `GET /co-scientist/goals/{id}/evaluation[/...]`, the `cs eval` CLI group, and the `/ui/goals/{id}/evaluation` page
-- P1 stories (pipeline observability, time-saved/satisfaction, user feedback capture) are out of scope for the MVP — they require a feedback store and instrumentation hooks
 
 ## Setup
 
@@ -517,6 +521,7 @@ cs roadmap generate <GOAL_ID>
 cs roadmap list <GOAL_ID> [--lane conservative|exploratory|device_prototype] [--status open|completed|superseded]
 cs roadmap show <ITEM_ID> <GOAL_ID>
 cs roadmap complete <ITEM_ID> <GOAL_ID>
+cs roadmap gaps <GOAL_ID>                # per-approach evidence gaps (CS-ROADMAP-003)
 ```
 
 ### Logs
@@ -530,7 +535,15 @@ cs logs show <LOG_ID> <GOAL_ID>
 cs eval approaches <GOAL_ID>    # usefulness + evidence traceability (CS-EVAL-001)
 cs eval grounding <GOAL_ID>     # evidence grounding + unsupported claim rate (CS-EVAL-002)
 cs eval experiments <GOAL_ID>   # acceptance rate + spec validity (CS-EVAL-003)
+cs eval productivity <GOAL_ID>  # estimated time saved + satisfaction rate (CS-EVAL-005)
 cs eval report <GOAL_ID>        # full report as JSON
+```
+
+### Feedback
+```bash
+cs feedback add <GOAL_ID> <TARGET_TYPE> <TARGET_ID> [--up | --down] [--comment "..."] [--reviewer <ID>]
+# TARGET_TYPE: approach|score|experiment|device|hypothesis|roadmap; default vote is --down
+cs feedback list <GOAL_ID> [--type <TARGET_TYPE>] [--target <TARGET_ID>]
 ```
 
 ## API Endpoints
@@ -646,6 +659,7 @@ All endpoints are prefixed with `/co-scientist`.
 |--------|------|-------------|
 | POST | `/goals/{id}/roadmap/generate` | Generate ranked roadmap items via agent |
 | GET | `/goals/{id}/roadmap` | List roadmap items (filter by lane, status) |
+| GET | `/goals/{id}/roadmap/evidence-gaps` | Per-approach evidence gaps (CS-ROADMAP-003) |
 | GET | `/goals/{id}/roadmap/{rid}` | Get roadmap item details |
 | POST | `/goals/{id}/roadmap/{rid}/transition` | Transition item status (open → completed \| superseded) |
 
@@ -666,6 +680,14 @@ Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /go
 | GET | `/goals/{id}/evaluation/approach-usefulness` | Approach usefulness + traceability (CS-EVAL-001) |
 | GET | `/goals/{id}/evaluation/evidence-grounding` | Evidence grounding + unsupported claim rate (CS-EVAL-002) |
 | GET | `/goals/{id}/evaluation/experiment-quality` | Experiment acceptance + spec validity (CS-EVAL-003) |
+| GET | `/goals/{id}/evaluation/productivity` | Estimated time saved + satisfaction rate (CS-EVAL-005) |
+
+### Feedback
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/feedback` | Record thumbs up/down (+ optional comment) on an artefact (CS-EVAL-006) |
+| GET | `/goals/{id}/feedback` | List feedback (filter by target_type, target_id) |
 
 ### Ontology
 
@@ -712,6 +734,9 @@ Environment variables (prefix `CS_`):
 | `CS_EXPERIMENT_SWEEP_COST_HIGH` | `2000` | Sweep cardinality at or below this → medium cost/medium runtime |
 | `CS_VALIDATION_MODEL` | `claude-sonnet-4-6` | Claude model used for experiment validation agent |
 | `CS_ANTHROPIC_API_KEY` | | Anthropic API key for the validation agent |
+| `CS_REPRO_URL` | `http://localhost:8003` | Base URL of the repro experiment runner |
+| `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
+| `CS_EVAL_MINUTES_PER_AGENT_ACTION` | `45` | Minutes-saved heuristic per successful agent action (CS-EVAL-005) |
 
 ## Development
 
@@ -746,7 +771,8 @@ src/coscientist/
 │   ├── validation.py      # ValidationResult ORM
 │   ├── device.py          # DeviceConceptCard ORM
 │   ├── roadmap.py         # ResearchRoadmapItem ORM
-│   └── governance.py      # AgentActionLog ORM (immutable audit)
+│   ├── governance.py      # AgentActionLog ORM (immutable audit)
+│   └── feedback.py        # Feedback ORM (thumbs up/down + comment)
 ├── schemas/
 │   ├── goal.py            # Goal request/response schemas
 │   ├── scout.py           # Scout request/response schemas
@@ -761,7 +787,8 @@ src/coscientist/
 │   ├── roadmap.py         # Roadmap request/response schemas
 │   ├── governance.py      # Agent action log response schemas
 │   ├── evaluation.py      # Evaluation metric response schemas
-│   └── runner.py          # Runner result schema (repro integration)
+│   ├── runner.py          # Runner result schema (repro integration)
+│   └── feedback.py        # Feedback request/response schemas
 ├── services/
 │   ├── goal.py            # Goal CRUD + state machine
 │   ├── scout.py           # Scout orchestration + grouping
@@ -776,7 +803,8 @@ src/coscientist/
 │   ├── roadmap.py         # Agent-driven roadmap generation, transitions, auto-retire
 │   ├── governance.py      # Agent action logging, log queries, restriction checks
 │   ├── evaluation.py      # Quality metrics over existing artefacts (read-only)
-│   └── runner.py          # Runs experiments on repro, translates metrics, validates
+│   ├── runner.py          # Runs experiments on repro, translates metrics, validates
+│   └── feedback.py        # Feedback capture + satisfaction counts
 └── routers/
     ├── goal.py            # Goal API endpoints
     ├── scout.py           # Scout API endpoints
@@ -790,7 +818,8 @@ src/coscientist/
     ├── device.py          # Device concept API endpoints
     ├── roadmap.py         # Roadmap API endpoints
     ├── governance.py      # Agent action log API endpoints
-    └── evaluation.py      # Evaluation metrics API endpoints
+    ├── evaluation.py      # Evaluation metrics API endpoints
+    └── feedback.py        # Feedback capture API endpoints
 └── web/
     ├── routes.py          # /ui routes (thin adapter over services)
     ├── templates.py       # shared Jinja2Templates instance

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.database import get_db
 from coscientist.schemas.roadmap import (
+    EvidenceGapResponse,
     ResearchRoadmapItemResponse,
     ResearchRoadmapListResponse,
     RoadmapGenerateRequest,
@@ -34,6 +35,11 @@ def list_roadmap(
     db: Session = Depends(get_db),
 ):
     return roadmap_svc.get_roadmap(db, goal_id, lane, status, skip, limit)
+
+
+@router.get("/evidence-gaps", response_model=EvidenceGapResponse)
+def evidence_gaps(goal_id: str, db: Session = Depends(get_db)):
+    return roadmap_svc.identify_evidence_gaps(db, goal_id)
 
 
 @router.get("/{item_id}", response_model=ResearchRoadmapItemResponse)

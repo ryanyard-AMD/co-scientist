@@ -9,6 +9,14 @@ class ValidationDecisionEnum(str, Enum):
     refuted = "refuted"
 
 
+class ReproductionStatusEnum(str, Enum):
+    reproduced = "reproduced"
+    partially_reproduced = "partially_reproduced"
+    failed = "failed"
+    blocked = "blocked"
+    superseded = "superseded"
+
+
 class ExperimentResultSubmission(BaseModel):
     measured_metrics: dict[str, float]
     artifact_paths: dict[str, str] | None = None
@@ -41,6 +49,7 @@ class ValidationResultResponse(BaseModel):
     goal_id: str
     approach_id: str
     decision: ValidationDecisionEnum
+    reproduction_status: ReproductionStatusEnum
     confidence: float
     reasoning: str
     criterion_results: list[CriterionResult]

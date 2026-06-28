@@ -7,6 +7,7 @@ from coscientist.schemas.evaluation import (
     EvaluationReport,
     EvidenceGroundingMetrics,
     ExperimentQualityMetrics,
+    ProductivityMetrics,
 )
 from coscientist.services import evaluation as svc
 
@@ -31,3 +32,8 @@ def evidence_grounding(goal_id: str, db: Session = Depends(get_db)):
 @router.get("/experiment-quality", response_model=ExperimentQualityMetrics)
 def experiment_quality(goal_id: str, db: Session = Depends(get_db)):
     return svc.experiment_quality(db, goal_id)
+
+
+@router.get("/productivity", response_model=ProductivityMetrics)
+def productivity(goal_id: str, db: Session = Depends(get_db)):
+    return svc.productivity(db, goal_id)

@@ -18,12 +18,14 @@ from coscientist.schemas.validation import (
     AgentValidationOutput,
     CriterionResult,
     ExperimentResultSubmission,
+    ReproductionStatusEnum,
     ValidationDecisionEnum,
     ValidationResultListResponse,
     ValidationResultResponse,
 )
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import roadmap as roadmap_svc
 
 _MATURITY_ORDER = {
     ApproachMaturityEnum.theoretical.value: 0,
@@ -40,6 +42,7 @@ def _to_response(result: ValidationResult) -> ValidationResultResponse:
         goal_id=result.goal_id,
         approach_id=result.approach_id,
         decision=ValidationDecisionEnum(result.decision),
+        reproduction_status=ReproductionStatusEnum(result.reproduction_status),
         confidence=result.confidence,
         reasoning=result.reasoning,
         criterion_results=[
@@ -63,6 +66,27 @@ def _get_experiment_or_404(db: Session, experiment_id: str, goal_id: str) -> Exp
             detail=f"Experiment {experiment_id!r} not found in goal {goal_id!r}",
         )
     return card
+
+
+def _derive_reproduction_status(
+    criterion_results: list[CriterionResult],
+) -> ReproductionStatusEnum:
+    """Map evaluated criteria to a reproduction outcome (CS-VALIDATION-005).
+
+    blocked  = nothing measurable could be evaluated
+    reproduced = every criterion passed
+    failed   = no criterion passed
+    partially_reproduced = some but not all passed
+    """
+    measurable = [c for c in criterion_results if c.measured is not None]
+    if not measurable:
+        return ReproductionStatusEnum.blocked
+    passed = sum(1 for c in measurable if c.passed)
+    if passed == len(measurable):
+        return ReproductionStatusEnum.reproduced
+    if passed == 0:
+        return ReproductionStatusEnum.failed
+    return ReproductionStatusEnum.partially_reproduced
 
 
 def _advance_maturity(approach_card: ApproachCard, experiment_type: str) -> str:
@@ -191,12 +215,24 @@ def submit_results(
     agent_output = _run_validation_agent(db, goal_id, card, goal, primary_approach, submission)
 
     now = datetime.now(timezone.utc)
+
+    # A re-run supersedes any prior result for the same experiment.
+    prior_results = list(
+        db.scalars(
+            select(ValidationResult).where(ValidationResult.experiment_id == experiment_id)
+        )
+    )
+    for prior in prior_results:
+        prior.reproduction_status = ReproductionStatusEnum.superseded.value
+
+    reproduction_status = _derive_reproduction_status(agent_output.criterion_results)
     result = ValidationResult(
         id=str(uuid.uuid4()),
         experiment_id=experiment_id,
         goal_id=goal_id,
         approach_id=primary_approach_id or "",
         decision=agent_output.decision.value,
+        reproduction_status=reproduction_status.value,
         confidence=agent_output.confidence,
         reasoning=agent_output.reasoning,
         criterion_results=json.dumps([cr.model_dump() for cr in agent_output.criterion_results]),
@@ -235,6 +271,10 @@ def submit_results(
 
         approach_card.maturity = _advance_maturity(approach_card, card.experiment_type)
         db.flush()
+
+    # Ingesting a result advances the roadmap: open items tied to this
+    # experiment are retired so next-best recommendations reflect what was learned.
+    roadmap_svc.retire_for_experiment(db, experiment_id, goal_id)
 
     db.commit()
     db.refresh(result)

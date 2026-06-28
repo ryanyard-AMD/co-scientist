@@ -70,3 +70,19 @@ class ResearchRoadmapListResponse(BaseModel):
     items: list[ResearchRoadmapItemResponse]
     total: int
     generation_run_id: str | None = None
+
+
+class ApproachEvidenceGap(BaseModel):
+    approach_id: str
+    approach_name: str
+    method_family: str
+    status: str
+    missing_claim_fields: list[str]
+    weak_dimensions: list[str]
+    unscored: bool
+
+
+class EvidenceGapResponse(BaseModel):
+    goal_id: str
+    gaps: list[ApproachEvidenceGap]
+    total: int

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     repro_api_key: str | None = None
     repro_poll_interval: float = 2.0
     repro_run_timeout: float = 600.0
+    eval_minutes_per_agent_action: int = 45
 
 
 settings = Settings()

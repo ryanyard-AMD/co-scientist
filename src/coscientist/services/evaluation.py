@@ -1,19 +1,23 @@
 import json
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
+from coscientist.models.governance import AgentActionLog
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
     ExperimentQualityMetrics,
+    ProductivityMetrics,
     UnsupportedClaim,
 )
 from coscientist.services import experiment as experiment_svc
+from coscientist.services import feedback as feedback_svc
 from coscientist.services import goal as goal_svc
 
 # PRD §20 Success Metrics targets.
@@ -212,10 +216,44 @@ def experiment_quality(db: Session, goal_id: str) -> ExperimentQualityMetrics:
     )
 
 
+def productivity(db: Session, goal_id: str) -> ProductivityMetrics:
+    """Estimate research time saved and user satisfaction (CS-EVAL-005).
+
+    Time saved is a heuristic: each successful agent action (a task a researcher
+    would otherwise do by hand) is credited a configurable manual-equivalent
+    duration. Satisfaction is the share of positive feedback votes.
+    """
+    goal_svc.get(db, goal_id)
+
+    action_count = db.scalar(
+        select(func.count())
+        .select_from(AgentActionLog)
+        .where(AgentActionLog.workspace_id == goal_id, AgentActionLog.error.is_(None))
+    ) or 0
+
+    minutes_per = settings.eval_minutes_per_agent_action
+    minutes_saved = action_count * minutes_per
+
+    positive, total = feedback_svc.satisfaction_counts(db, goal_id)
+    satisfaction = (positive / total) if total else None
+
+    return ProductivityMetrics(
+        goal_id=goal_id,
+        agent_action_count=action_count,
+        minutes_per_agent_action=minutes_per,
+        estimated_time_saved_minutes=minutes_saved,
+        estimated_time_saved_hours=round(minutes_saved / 60, 2),
+        positive_feedback=positive,
+        total_feedback=total,
+        satisfaction_rate=satisfaction,
+    )
+
+
 def get_report(db: Session, goal_id: str) -> EvaluationReport:
     return EvaluationReport(
         goal_id=goal_id,
         approach_usefulness=approach_usefulness(db, goal_id),
         evidence_grounding=evidence_grounding(db, goal_id),
         experiment_quality=experiment_quality(db, goal_id),
+        productivity=productivity(db, goal_id),
     )

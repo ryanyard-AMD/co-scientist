@@ -305,3 +305,86 @@ def test_retire_for_experiment_does_not_re_retire_completed(db_session):
     svc.retire_for_experiment(db_session, exp_id, goal.id)
     db_session.refresh(item)
     assert item.status == "completed"
+
+
+# --- identify_evidence_gaps (CS-ROADMAP-003) ---
+
+
+def _seed_score(db, approach_id, workspace_id, *, dimension, score, low_confidence=False):
+    from coscientist.models.score import RubricScore
+
+    db.add(
+        RubricScore(
+            id=str(uuid.uuid4()),
+            approach_id=approach_id,
+            workspace_id=workspace_id,
+            dimension=dimension,
+            score=score,
+            weight=1.0,
+            weighted_score=score,
+            confidence=0.9,
+            rationale="x",
+            evidence_ids=json.dumps([]),
+            low_confidence=low_confidence,
+            scoring_run_id="run-test",
+        )
+    )
+    db.flush()
+
+
+def test_evidence_gaps_flags_unscored_approach(db_session):
+    goal = _create_goal(db_session)
+    _seed_approach(db_session, goal.id)
+    db_session.commit()
+    resp = svc.identify_evidence_gaps(db_session, goal.id)
+    assert resp.total == 1
+    assert resp.gaps[0].unscored is True
+
+
+def test_evidence_gaps_flags_weak_dimension(db_session):
+    goal = _create_goal(db_session)
+    approach = _seed_approach(db_session, goal.id)
+    _seed_score(db_session, approach.id, goal.id, dimension="feasibility", score=0.2)
+    _seed_score(db_session, approach.id, goal.id, dimension="novelty", score=0.9)
+    db_session.commit()
+    resp = svc.identify_evidence_gaps(db_session, goal.id)
+    assert resp.total == 1
+    assert resp.gaps[0].weak_dimensions == ["feasibility"]
+    assert resp.gaps[0].unscored is False
+
+
+def test_evidence_gaps_flags_low_confidence_dimension(db_session):
+    goal = _create_goal(db_session)
+    approach = _seed_approach(db_session, goal.id)
+    _seed_score(db_session, approach.id, goal.id, dimension="impact", score=0.9, low_confidence=True)
+    db_session.commit()
+    resp = svc.identify_evidence_gaps(db_session, goal.id)
+    assert "impact" in resp.gaps[0].weak_dimensions
+
+
+def test_evidence_gaps_skips_non_promising_status(db_session):
+    goal = _create_goal(db_session)
+    approach = _seed_approach(db_session, goal.id)
+    approach.status = "refuted"
+    db_session.commit()
+    resp = svc.identify_evidence_gaps(db_session, goal.id)
+    assert resp.total == 0
+
+
+def test_evidence_gaps_clean_scored_approach_excluded(db_session):
+    goal = _create_goal(db_session)
+    approach = _seed_approach(db_session, goal.id)
+    # mechanism_summary etc. are empty in the seed, so no missing-claim gaps;
+    # give it a strong score so it is fully grounded + scored.
+    _seed_score(db_session, approach.id, goal.id, dimension="feasibility", score=0.9)
+    db_session.commit()
+    resp = svc.identify_evidence_gaps(db_session, goal.id)
+    assert resp.total == 0
+
+
+def test_evidence_gaps_unknown_goal_404(db_session):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        svc.identify_evidence_gaps(db_session, "nope")
+    assert exc.value.status_code == 404

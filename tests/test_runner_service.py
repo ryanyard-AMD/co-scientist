@@ -11,6 +11,7 @@ from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.goal import GoalCreate
 from coscientist.schemas.validation import (
+    ReproductionStatusEnum,
     ValidationDecisionEnum,
     ValidationResultResponse,
 )
@@ -116,6 +117,7 @@ def _fake_validation(monkeypatch):
             goal_id=goal_id,
             approach_id="",
             decision=ValidationDecisionEnum.validated,
+            reproduction_status=ReproductionStatusEnum.reproduced,
             confidence=0.9,
             reasoning="ok",
             criterion_results=[],

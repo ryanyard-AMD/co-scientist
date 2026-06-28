@@ -17,13 +17,21 @@ from coscientist.models.score import RubricScore
 from coscientist.models.validation import ValidationResult
 from coscientist.schemas.roadmap import (
     AgentRoadmapItem,
+    ApproachEvidenceGap,
+    EvidenceGapResponse,
     ResearchRoadmapItemResponse,
     ResearchRoadmapListResponse,
     RoadmapLaneEnum,
     RoadmapStatusEnum,
 )
+from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
+
+# Approaches in these terminal/negative states aren't worth chasing evidence for.
+_NON_PROMISING_STATUS = {"refuted", "superseded"}
+# Raw rubric score below this (or a low-confidence flag) marks a dimension as weak.
+_WEAK_DIMENSION_THRESHOLD = 0.5
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     RoadmapStatusEnum.open: {RoadmapStatusEnum.completed, RoadmapStatusEnum.superseded},
@@ -108,8 +116,10 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
         f"## Experiments\n{json.dumps(context['experiments'], indent=2)}\n\n"
         f"## Validation Results\n{json.dumps(context['validation_results'], indent=2)}\n\n"
         f"## Device Concepts\n{json.dumps(context['device_concepts'], indent=2)}\n\n"
+        f"## Evidence Gaps (per promising approach)\n{json.dumps(context['evidence_gaps'], indent=2)}\n\n"
         "Recommend the next highest-value research actions. "
-        "Identify evidence gaps, follow-up experiments, and device prototype steps."
+        "Prioritize closing the evidence gaps listed above, then follow-up "
+        "experiments and device prototype steps."
     )
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -225,6 +235,9 @@ def _build_context(db: Session, goal_id: str) -> dict:
             }
             for d in device_concepts
         ],
+        "evidence_gaps": [
+            g.model_dump() for g in identify_evidence_gaps(db, goal_id).gaps
+        ],
     }
 
 
@@ -333,6 +346,63 @@ def transition_item(
     db.commit()
     db.refresh(item)
     return _to_response(item)
+
+
+def identify_evidence_gaps(db: Session, goal_id: str) -> EvidenceGapResponse:
+    """Find, per promising approach, which claims lack evidence and which rubric
+    dimensions are weak — the structured "what must be tested" view (CS-ROADMAP-003).
+    """
+    goal_svc.get(db, goal_id)
+    approaches = list(
+        db.scalars(select(ApproachCard).where(ApproachCard.workspace_id == goal_id))
+    )
+
+    scores_by_approach: dict[str, list[RubricScore]] = {}
+    if approaches:
+        rows = db.scalars(
+            select(RubricScore).where(
+                RubricScore.approach_id.in_([a.id for a in approaches])
+            )
+        )
+        for s in rows:
+            scores_by_approach.setdefault(s.approach_id, []).append(s)
+
+    gaps: list[ApproachEvidenceGap] = []
+    for a in approaches:
+        if a.status in _NON_PROMISING_STATUS:
+            continue
+
+        links = json.loads(a.evidence_links) if a.evidence_links else []
+        linked_fields = {link.get("claim_field") for link in links if link.get("claim_field")}
+        missing = [
+            field
+            for field in evaluation_svc._CLAIM_FIELDS
+            if evaluation_svc._has_content(a, field) and field not in linked_fields
+        ]
+
+        dim_scores = scores_by_approach.get(a.id, [])
+        weak = [
+            s.dimension
+            for s in dim_scores
+            if s.low_confidence or s.score < _WEAK_DIMENSION_THRESHOLD
+        ]
+
+        if not missing and not weak and dim_scores:
+            continue
+
+        gaps.append(
+            ApproachEvidenceGap(
+                approach_id=a.id,
+                approach_name=a.name,
+                method_family=a.method_family,
+                status=a.status,
+                missing_claim_fields=missing,
+                weak_dimensions=sorted(set(weak)),
+                unscored=not dim_scores,
+            )
+        )
+
+    return EvidenceGapResponse(goal_id=goal_id, gaps=gaps, total=len(gaps))
 
 
 def retire_for_experiment(db: Session, experiment_id: str, goal_id: str) -> None:

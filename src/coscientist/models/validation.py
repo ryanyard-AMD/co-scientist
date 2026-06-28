@@ -18,6 +18,9 @@ class ValidationResult(Base):
     goal_id: Mapped[str] = mapped_column(String(36), nullable=False)
     approach_id: Mapped[str] = mapped_column(String(36), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reproduction_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="failed"
+    )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     criterion_results: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
