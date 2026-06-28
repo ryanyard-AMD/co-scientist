@@ -44,6 +44,39 @@ from coscientist.services import governance as governance_svc
 from coscientist.services import ontology as ontology_svc
 
 
+_SYNTHESIS_TOOL = {
+    "name": "record_synthesis",
+    "description": "Record the grounded synthesis of one method family's evidence.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "synthesis_text": {
+                "type": "string",
+                "description": "Narrative synthesis grounded in the supplied chunks.",
+            },
+            "key_findings": {"type": "array", "items": {"type": "string"}},
+            "reported_metrics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "value": {"type": "string"},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["name", "value"],
+                },
+            },
+            "hardware_requirements": {"type": "array", "items": {"type": "string"}},
+            "failure_modes": {"type": "array", "items": {"type": "string"}},
+            "open_questions": {"type": "array", "items": {"type": "string"}},
+            "cited_evidence_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["synthesis_text", "cited_evidence_ids"],
+    },
+}
+
+
 def _strength(paper_count: int) -> EvidenceStrengthEnum:
     if paper_count >= settings.scout_strong_threshold:
         return EvidenceStrengthEnum.strong
@@ -250,20 +283,9 @@ def _run_synthesis_agent(
     system_prompt = (
         "You are a scientific evidence synthesis agent. You are given retrieved "
         "literature chunks for ONE method family. Synthesize them into a grounded "
-        "summary. You MUST respond with valid JSON only — no prose, no markdown fences. "
-        "Cite ONLY the evidence_id values provided below; never invent ids. Every "
-        "reported metric and finding must trace to chunks you were given. "
-        "The JSON must conform to this schema:\n"
-        "{\n"
-        '  "synthesis_text": "<narrative grounded in the chunks>",\n'
-        '  "key_findings": ["<str>", ...],\n'
-        '  "reported_metrics": [{"name": "<str>", "value": "<str>", '
-        '"evidence_ids": ["<id>", ...]}],\n'
-        '  "hardware_requirements": ["<str>", ...],\n'
-        '  "failure_modes": ["<str>", ...],\n'
-        '  "open_questions": ["<str>", ...],\n'
-        '  "cited_evidence_ids": ["<id>", ...]\n'
-        "}\n"
+        "summary and record it by calling the record_synthesis tool. "
+        "Cite ONLY the evidence_id values provided in the chunks; never invent ids. "
+        "Every reported metric and finding must trace to chunks you were given. "
         "cited_evidence_ids must list every evidence_id you relied on."
     )
 
@@ -289,13 +311,15 @@ def _run_synthesis_agent(
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
-        max_tokens=2048,
+        max_tokens=4096,
         system=system_prompt,
+        tools=[_SYNTHESIS_TOOL],
+        tool_choice={"type": "tool", "name": "record_synthesis"},
         messages=[{"role": "user", "content": user_message}],
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    raw_text = message.content[0].text.strip()
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
     governance_svc.log_agent_call(
         db=db,
         workspace_id=goal_id,
@@ -305,15 +329,19 @@ def _run_synthesis_agent(
         prompt_tokens=message.usage.input_tokens,
         completion_tokens=message.usage.output_tokens,
         elapsed_ms=elapsed_ms,
-        response_summary=raw_text[:512],
+        response_summary=(json.dumps(tool_use.input)[:512] if tool_use else "no tool_use block"),
     )
-    try:
-        parsed = json.loads(raw_text)
-        return AgentSynthesisOutput(**parsed)
-    except (json.JSONDecodeError, ValueError) as exc:
+    if tool_use is None:
         raise HTTPException(
             status_code=502,
-            detail=f"Synthesis agent returned invalid JSON: {exc}",
+            detail="Synthesis agent did not return a record_synthesis tool call",
+        )
+    try:
+        return AgentSynthesisOutput(**tool_use.input)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Synthesis agent returned invalid output: {exc}",
         )
 
 
