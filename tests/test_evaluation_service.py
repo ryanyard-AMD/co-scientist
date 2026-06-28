@@ -122,8 +122,9 @@ def test_usefulness_empty_goal_meets_target(db_session):
 
 def test_grounding_classifies_claims(db_session):
     gid = _make_goal(db_session)
-    # Populated claim fields: problem_fit, mechanism_summary, key_assumptions,
-    # hardware_requirements, device_relevance = 5 (reported_metrics + risks empty).
+    # Counted claim fields: problem_fit, mechanism_summary, key_assumptions,
+    # hardware_requirements = 4 (reported_metrics + risks empty; device_relevance
+    # is not a literature claim and is excluded from grounding).
     _approach(
         db_session,
         gid,
@@ -133,16 +134,16 @@ def test_grounding_classifies_claims(db_session):
         ],
     )
     m = svc.evidence_grounding(db_session, gid)
-    assert m.total_claims == 5
+    assert m.total_claims == 4
     assert m.grounded == 1
     assert m.inferred == 1
-    assert m.unsupported == 3
-    assert m.grounding_rate == pytest.approx(2 / 5)
-    assert m.unsupported_rate == pytest.approx(3 / 5)
+    assert m.unsupported == 2
+    assert m.grounding_rate == pytest.approx(2 / 4)
+    assert m.unsupported_rate == pytest.approx(2 / 4)
     assert m.grounding_meets_target is False
     assert m.unsupported_meets_target is False
     fields = {c.claim_field for c in m.unsupported_claims}
-    assert fields == {"key_assumptions", "hardware_requirements", "device_relevance"}
+    assert fields == {"key_assumptions", "hardware_requirements"}
 
 
 def test_grounding_direct_beats_inferred(db_session):

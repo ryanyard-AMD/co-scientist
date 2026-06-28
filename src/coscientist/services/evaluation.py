@@ -32,14 +32,16 @@ _APPROACH_DISCARDED = {"superseded", "refuted"}
 _EXPERIMENT_ACCEPTED = {"reviewed", "approved", "running", "completed"}
 _EXPERIMENT_DISCARDED = {"superseded"}
 
-# Approach fields that carry a claim and should be grounded in evidence.
+# Approach fields that carry a research claim and should be grounded in evidence.
+# device_relevance is intentionally excluded: it restates the goal's device
+# constraints rather than a claim drawn from the literature, so it needs no
+# evidence link.
 _CLAIM_FIELDS = (
     "mechanism_summary",
     "problem_fit",
     "key_assumptions",
     "reported_metrics",
     "hardware_requirements",
-    "device_relevance",
     "risks_and_limitations",
 )
 

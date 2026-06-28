@@ -266,6 +266,13 @@ def _synthesize_card(
                 })
 
     assumptions = [f"Requires {h.replace('_', ' ')}" for h in sorted(hw_set)]
+    if assumptions:
+        evidence_links.append({
+            "evidence_id": best.id,
+            "evidence_type": "inferred",
+            "claim_field": "key_assumptions",
+            "confidence": best.confidence,
+        })
 
     all_text = " ".join(r.chunk_text.lower() for r in evidence_list)
     if "validated" in all_text or "field trial" in all_text:
@@ -278,6 +285,12 @@ def _synthesize_card(
         maturity = "theoretical"
 
     problem_fit = f"Applies {name} to {goal.target_application.replace('_', ' ')}"
+    evidence_links.append({
+        "evidence_id": best.id,
+        "evidence_type": "inferred",
+        "claim_field": "problem_fit",
+        "confidence": best.confidence,
+    })
 
     device_relevance = None
     if goal.device_constraints:
