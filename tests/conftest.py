@@ -8,6 +8,7 @@ from coscientist.database import Base, get_db
 from coscientist.main import app
 from coscientist.models import approval, approach, critic, device, evidence, experiment, feedback, governance, hypothesis, ontology, roadmap, score, synthesis, validation  # noqa: F401 — ensure tables created
 from coscientist.clients.retrieval import (
+    ArtifactResult,
     ChunkResult,
     DocumentMetadata,
     QueryResponse,
@@ -89,8 +90,37 @@ def make_chunk(
     )
 
 
+def make_artifact(
+    artifact_text_id: str = "art_text_1",
+    artifact_id: str = "art_1",
+    artifact_type: str = "table",
+    paper_id: str = "paper_1",
+    title: str = "Acoustic Contrast Control for Personal Sound Zones",
+    text: str = "Table 2 reports acoustic contrast of 23 dB in the bright zone using acoustic contrast control across the measured frequency band.",
+    section_title: str | None = "Results",
+    page_number: int | None = 8,
+    score: float = 0.9,
+) -> ArtifactResult:
+    return ArtifactResult(
+        artifact_text_id=artifact_text_id,
+        artifact_id=artifact_id,
+        artifact_type=artifact_type,
+        paper_id=paper_id,
+        title=title,
+        text=text,
+        section_title=section_title,
+        page_number=page_number,
+        score=score,
+    )
+
+
 class MockRetrievalClient:
-    def __init__(self, chunks: list[ChunkResult] | None = None):
+    def __init__(
+        self,
+        chunks: list[ChunkResult] | None = None,
+        artifacts: list[ArtifactResult] | None = None,
+    ):
+        self._artifacts = artifacts or []
         self._chunks = chunks or [
             make_chunk(),
             make_chunk(
@@ -113,7 +143,11 @@ class MockRetrievalClient:
         ]
 
     def query_with_filters(self, query, **kwargs):
-        return QueryResponse(results=self._chunks, total=len(self._chunks))
+        return QueryResponse(
+            results=self._chunks,
+            total=len(self._chunks),
+            artifact_results=self._artifacts,
+        )
 
     def get_document(self, document_id):
         return DocumentMetadata(

@@ -1,4 +1,6 @@
+import hashlib
 import json
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -77,12 +79,62 @@ _SYNTHESIS_TOOL = {
 }
 
 
+_REF_SECTIONS = {
+    "references",
+    "bibliography",
+    "abbreviations",
+    "acknowledgments",
+    "acknowledgements",
+}
+_NUMBERED_PREFIX_RE = re.compile(r"^\s*\d+(\.\d+)*\.?\s+")
+_REF_LINE_RE = re.compile(r"\(\d{4}\)")
+
+
 def _strength(paper_count: int) -> EvidenceStrengthEnum:
     if paper_count >= settings.scout_strong_threshold:
         return EvidenceStrengthEnum.strong
     elif paper_count >= settings.scout_weak_threshold:
         return EvidenceStrengthEnum.weak
     return EvidenceStrengthEnum.none_
+
+
+def _norm_text_hash(text: str) -> str:
+    normalized = " ".join(text.lower().split())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+def _is_substantive(text: str, section_title: str | None) -> bool:
+    """Conservative content gate: reject only clear non-evidence fragments.
+
+    Filters bare section headers, reference/bibliography lines, and stubs that
+    carry no substantive prose. Everything ambiguous is kept (returns True).
+    """
+    stripped = (text or "").strip()
+    words = stripped.split()
+    if len(words) < settings.scout_min_chunk_words:
+        return False
+
+    if section_title and section_title.strip().lower() in _REF_SECTIONS:
+        return False
+
+    # Short numbered header (e.g. "2.3. Controller and Adaptive Filtering"): a
+    # numbered prefix followed by a capitalized title body that carries no
+    # sentence-ending punctuation. The leading "2.3." dots are excluded by
+    # checking punctuation on the body only.
+    prefix_match = _NUMBERED_PREFIX_RE.match(stripped)
+    if prefix_match:
+        body = stripped[prefix_match.end():]
+        if body[:1].isupper() and not any(p in body for p in ".?!") and len(words) < 12:
+            return False
+
+    # Reference-list line: a year in parens plus citation-style density markers.
+    if _REF_LINE_RE.search(stripped):
+        lower = stripped.lower()
+        comma_density = stripped.count(",") / max(len(words), 1)
+        if comma_density > 0.15 or any(t in lower for t in ("pp.", "vol.", "doi")):
+            return False
+
+    return True
 
 
 def _decompose_goal_to_queries(
@@ -92,9 +144,13 @@ def _decompose_goal_to_queries(
     queries: list[str] = []
     app = goal.target_application.replace("_", " ")
     queries.append(app)
+    criteria_phrases: list[str] = []
     if goal.success_criteria:
         for criterion in goal.success_criteria:
-            queries.append(f"{app} {criterion.name.replace('_', ' ')}")
+            crit_name = criterion.name.replace("_", " ")
+            unit = getattr(criterion, "unit", None) or ""
+            queries.append(f"{app} {crit_name}")
+            criteria_phrases.append(f"{crit_name} {unit}".strip())
     if goal.device_constraints and goal.device_constraints.form_factor:
         queries.append(f"{app} {goal.device_constraints.form_factor}")
     method_names = (
@@ -103,7 +159,14 @@ def _decompose_goal_to_queries(
         else list(METHOD_FAMILIES.keys())
     )
     for family_name in method_names:
-        queries.append(f"{app} {family_name.replace('_', ' ')}")
+        family = family_name.replace("_", " ")
+        queries.append(f"{app} {family}")
+        # Results-oriented phrasing pulls Methods/Results chunks over tables-of-contents.
+        if criteria_phrases:
+            for crit in criteria_phrases:
+                queries.append(f"{app} {family} experimental results measured {crit}")
+        else:
+            queries.append(f"{app} {family} experimental results measured performance")
     seen: set[str] = set()
     deduped: list[str] = []
     for q in queries:
@@ -157,6 +220,8 @@ def _to_response(record: EvidenceRecord) -> EvidenceRecordResponse:
         claim_type=record.claim_type,
         confidence=record.confidence,
         evidence_strength=EvidenceStrengthEnum(record.evidence_strength),
+        is_substantive=record.is_substantive,
+        record_kind=record.record_kind,
         source_id=record.source_id,
         source_type=record.source_type,
         created_at=record.created_at,
@@ -185,13 +250,15 @@ def _compute_groups_from_records(
     groups: list[EvidenceGroupItem] = []
     for key, recs in sorted(bucket.items()):
         paper_ids = {r.paper_id for r in recs}
+        substantive_paper_ids = {r.paper_id for r in recs if r.is_substantive}
         groups.append(EvidenceGroupItem(
             group_key=key,
             group_type=group_by,
             count=len(recs),
             paper_count=len(paper_ids),
+            substantive_paper_count=len(substantive_paper_ids),
             avg_score=sum(r.score for r in recs) / len(recs),
-            evidence_strength=_strength(len(paper_ids)),
+            evidence_strength=_strength(len(substantive_paper_ids)),
             evidence_ids=[r.id for r in recs],
         ))
 
@@ -209,6 +276,8 @@ def _assess_sparsity(
 ) -> list[SparsityWarning]:
     method_papers: dict[str, set[str]] = defaultdict(set)
     for rec in records:
+        if not rec.is_substantive:
+            continue
         families = json.loads(rec.method_families) if rec.method_families else []
         for mf in families:
             method_papers[mf].add(rec.paper_id)
@@ -357,7 +426,11 @@ def _synthesize_groups(
     rows: list[EvidenceSynthesis] = []
 
     for group in groups.groups:
-        group_records = [record_by_id[eid] for eid in group.evidence_ids if eid in record_by_id]
+        group_records = [
+            record_by_id[eid]
+            for eid in group.evidence_ids
+            if eid in record_by_id and record_by_id[eid].is_substantive
+        ]
         if not group_records:
             continue
         valid_ids = {r.id for r in group_records}
@@ -433,6 +506,8 @@ def run_scout(
     client = retrieval_client or RetrievalClient()
     all_records: list[EvidenceRecord] = []
     seen_chunk_ids: set[str] = set()
+    seen_text_hashes: set[str] = set()
+    seen_artifact_ids: set[str] = set()
 
     try:
         for query_text in queries:
@@ -449,7 +524,14 @@ def run_scout(
             for chunk in qr.results:
                 if chunk.chunk_id in seen_chunk_ids:
                     continue
+                # Drop graph-expansion sentinels (score 0.0) and below-floor noise.
+                if chunk.score <= settings.scout_min_score:
+                    continue
+                text_hash = f"{chunk.paper_id}:{_norm_text_hash(chunk.text)}"
+                if text_hash in seen_text_hashes:
+                    continue
                 seen_chunk_ids.add(chunk.chunk_id)
+                seen_text_hashes.add(text_hash)
 
                 classification = classify_text(
                     chunk.text,
@@ -493,11 +575,63 @@ def run_scout(
                     claim_type=None,
                     confidence=None,
                     evidence_strength="none",
+                    is_substantive=_is_substantive(chunk.text, chunk.section_title),
+                    record_kind="chunk",
                     source_id=chunk.source_id,
                     source_type=chunk.source_type,
                     created_at=now,
                 )
                 all_records.append(record)
+
+            if settings.scout_include_artifacts:
+                for art in qr.artifact_results:
+                    if art.artifact_text_id in seen_artifact_ids:
+                        continue
+                    seen_artifact_ids.add(art.artifact_text_id)
+
+                    art_classification = classify_text(
+                        art.text,
+                        terms=all_terms if use_db_terms else None,
+                    )
+
+                    if request.method_families:
+                        art_methods = set(art_classification["method_families"])
+                        requested = set(request.method_families)
+                        if not art_methods & requested:
+                            text_lower = art.text.lower()
+                            if not any(mf.replace("_", " ") in text_lower for mf in request.method_families):
+                                continue
+
+                    all_records.append(EvidenceRecord(
+                        id=str(uuid.uuid4()),
+                        workspace_id=goal.workspace_id,
+                        scout_run_id=scout_run_id,
+                        query_text=query_text,
+                        paper_id=art.paper_id,
+                        title=art.title,
+                        year=None,
+                        section_title=art.section_title,
+                        page_number=art.page_number,
+                        chunk_id=art.artifact_text_id,
+                        chunk_index=0,
+                        chunk_text=art.text,
+                        score=art.score,
+                        vector_score=art.vector_score,
+                        fulltext_score=art.fulltext_score,
+                        method_families=json.dumps(art_classification["method_families"]),
+                        metric_names=json.dumps(art_classification["metrics"]),
+                        hardware_assumptions=json.dumps(art_classification["hardware"]),
+                        failure_modes=json.dumps(art_classification["failure_modes"]),
+                        is_primary_method=False,
+                        claim_type=None,
+                        confidence=None,
+                        evidence_strength="none",
+                        is_substantive=True,
+                        record_kind="artifact",
+                        source_id=None,
+                        source_type=art.artifact_type,
+                        created_at=now,
+                    ))
 
         _enrich_paper_metadata(all_records, client)
     finally:

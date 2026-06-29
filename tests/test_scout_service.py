@@ -6,7 +6,7 @@ from coscientist.schemas.goal import GoalCreate, SuccessCriterion
 from coscientist.schemas.scout import EvidenceStrengthEnum, ScoutRunRequest
 from coscientist.services import goal as goal_svc
 from coscientist.services import scout as scout_svc
-from conftest import MockRetrievalClient, make_chunk
+from conftest import MockRetrievalClient, make_artifact, make_chunk
 
 _CRITERIA = [SuccessCriterion(name="acoustic_contrast", operator=">=", target=20.0, unit="dB")]
 
@@ -239,3 +239,128 @@ def test_synthesize_without_api_key_skips(db_session, monkeypatch):
         )
     assert result.syntheses == []
     assert agent.call_count == 0
+
+
+# --- Scout quality gate (substantive filter, dedup, score floor, artifacts) ---
+
+
+def test_header_only_chunk_marked_non_substantive(db_session):
+    chunk = make_chunk(
+        chunk_id="hdr",
+        text="2.3. Controller and Adaptive Filtering Design",
+        section_title="Methods",
+    )
+    mock = MockRetrievalClient(chunks=[chunk])
+    goal = _create_goal(db_session)
+    scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    items, _ = scout_svc.get_evidence(db_session, goal.id)
+    assert len(items) == 1
+    assert items[0].is_substantive is False
+
+
+def test_reference_section_chunk_marked_non_substantive(db_session):
+    chunk = make_chunk(
+        chunk_id="ref",
+        text="Smith J Jones K acoustic methods overview survey paper",
+        section_title="References",
+    )
+    mock = MockRetrievalClient(chunks=[chunk])
+    goal = _create_goal(db_session)
+    scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    items, _ = scout_svc.get_evidence(db_session, goal.id)
+    assert len(items) == 1
+    assert items[0].is_substantive is False
+
+
+def test_identical_text_deduplicated(db_session):
+    chunks = [
+        make_chunk(chunk_id="a", text="Acoustic contrast control maximizes the bright zone energy difference."),
+        make_chunk(chunk_id="b", text="Acoustic contrast control maximizes the bright zone energy difference."),
+    ]
+    mock = MockRetrievalClient(chunks=chunks)
+    goal = _create_goal(db_session)
+    result = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    assert result.evidence_count == 1
+
+
+def test_score_zero_chunk_dropped(db_session):
+    chunks = [
+        make_chunk(chunk_id="real", score=0.8),
+        make_chunk(chunk_id="ghost", paper_id="paper_x", text="Graph expansion neighbor chunk text here.", score=0.0),
+    ]
+    mock = MockRetrievalClient(chunks=chunks)
+    goal = _create_goal(db_session)
+    result = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    items, _ = scout_svc.get_evidence(db_session, goal.id)
+    assert all(i.chunk_id != "ghost" for i in items)
+    assert result.evidence_count == 1
+
+
+def test_artifact_ingested_as_evidence(db_session):
+    chunk = make_chunk(chunk_id="c1")
+    artifact = make_artifact()
+    mock = MockRetrievalClient(chunks=[chunk], artifacts=[artifact])
+    goal = _create_goal(db_session)
+    scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    items, _ = scout_svc.get_evidence(db_session, goal.id)
+    artifact_items = [i for i in items if i.record_kind == "artifact"]
+    assert len(artifact_items) == 1
+    assert artifact_items[0].is_substantive is True
+
+
+def test_synthesis_excludes_non_substantive_records(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    chunks = [
+        make_chunk(
+            chunk_id="good",
+            paper_id="paper_good",
+            text="Acoustic contrast control optimizes loudspeaker signals to maximize bright zone energy.",
+        ),
+        make_chunk(
+            chunk_id="hdr",
+            paper_id="paper_hdr",
+            text="2.3. Acoustic Contrast Control Subsection Heading",
+            section_title="Methods",
+        ),
+    ]
+    mock = MockRetrievalClient(chunks=chunks)
+    goal = _create_goal(db_session)
+
+    captured: dict[str, list[str]] = {}
+
+    def _capturing(db, goal_id, method_family, records):
+        captured[method_family] = [r.id for r in records]
+        return AgentSynthesisOutput(
+            synthesis_text=f"Synthesis of {method_family}.",
+            cited_evidence_ids=[r.id for r in records],
+        )
+
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_capturing):
+        scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+
+    items, _ = scout_svc.get_evidence(db_session, goal.id)
+    header_id = next(i.id for i in items if i.chunk_id == "hdr")
+    for ids in captured.values():
+        assert header_id not in ids
+
+
+def test_substantive_weighted_strength(db_session):
+    # Six papers, all backed only by non-substantive numbered headers.
+    chunks = [
+        make_chunk(
+            chunk_id=f"hdr_{i}",
+            paper_id=f"paper_{i}",
+            text=f"2.{i}. Acoustic Contrast Control Subsection Header",
+            section_title="Methods",
+        )
+        for i in range(6)
+    ]
+    mock = MockRetrievalClient(chunks=chunks)
+    goal = _create_goal(db_session)
+    result = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    acc_groups = [g for g in result.groups.groups if g.group_key == "acoustic_contrast_control"]
+    assert acc_groups
+    assert acc_groups[0].substantive_paper_count == 0
+    assert acc_groups[0].evidence_strength == EvidenceStrengthEnum.none_

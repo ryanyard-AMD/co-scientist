@@ -43,6 +43,9 @@ class EvidenceRecord(Base):
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     evidence_strength: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
 
+    is_substantive: Mapped[bool] = mapped_column(nullable=False, default=True)
+    record_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="chunk")
+
     source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
 

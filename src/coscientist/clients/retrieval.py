@@ -37,11 +37,29 @@ class ChunkResult(BaseModel):
     source_type: str | None = None
 
 
+class ArtifactResult(BaseModel):
+    artifact_text_id: str
+    artifact_id: str
+    artifact_type: str
+    paper_id: str
+    title: str
+    text: str
+    representation_type: str | None = None
+    page_number: int | None = None
+    section_title: str | None = None
+    file_uri: str | None = None
+    thumbnail_uri: str | None = None
+    score: float = 0.0
+    vector_score: float | None = None
+    fulltext_score: float | None = None
+
+
 class QueryResponse(BaseModel):
     results: list[ChunkResult]
     total: int
     answer: str | None = None
     confidence: float | None = None
+    artifact_results: list[ArtifactResult] = []
 
 
 class EvidencePack(BaseModel):

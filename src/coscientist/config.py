@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     scout_strong_threshold: int = 5
     scout_weak_threshold: int = 1
     scout_sparse_threshold: int = 3
+    scout_min_score: float = 0.0
+    scout_min_chunk_words: int = 5
+    scout_include_artifacts: bool = True
     approach_min_evidence: int = 2
     hypothesis_max_per_run: int = 20
     hypothesis_complementary_high: float = 0.6

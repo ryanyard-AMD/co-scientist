@@ -53,6 +53,8 @@ class EvidenceRecordResponse(BaseModel):
     claim_type: str | None
     confidence: float | None
     evidence_strength: EvidenceStrengthEnum
+    is_substantive: bool
+    record_kind: str
     source_id: str | None
     source_type: str | None
     created_at: datetime
@@ -63,6 +65,7 @@ class EvidenceGroupItem(BaseModel):
     group_type: str
     count: int
     paper_count: int
+    substantive_paper_count: int = 0
     avg_score: float
     evidence_strength: EvidenceStrengthEnum
     evidence_ids: list[str]

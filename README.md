@@ -45,6 +45,12 @@ Evidence retrieval layer that queries the retrieval API and organizes literature
 - Detects insufficient evidence with configurable thresholds and suggests related methods
 - Distinguishes primary vs. incidental method mentions
 - Full traceability: every evidence record links to paper, section, page, chunk, and source
+- **Quality gate** — keeps the synthesis agent from manufacturing prose around non-evidence:
+  - *Substantive filter* flags (does not delete) bare section headers, numbered sub-headings, and reference/bibliography lines as `is_substantive=False` (configurable via `CS_SCOUT_MIN_CHUNK_WORDS`); flagged records are persisted for audit but excluded from synthesis input and strength counting
+  - *Score floor* (`CS_SCOUT_MIN_SCORE`, default `0.0`) drops the retrieval server's graph-expansion neighbor chunks that arrive at `score: 0.0`
+  - *Near-duplicate dedup* collapses identical chunk text within a paper (in addition to `chunk_id` dedup), so a repeated header can no longer triple a method family's apparent support
+  - *Substantive-weighted strength*: evidence strength is computed from distinct papers with a **substantive** record, not raw paper count, so header-only families read `none`/`weak` rather than `strong`
+- **Artifact evidence** (`CS_SCOUT_INCLUDE_ARTIFACTS`, default on): extracted tables/figures with their Claude-written summaries are ingested as `record_kind="artifact"` evidence records and flow through the same method-family grouping and synthesis — surfacing quantitative measured results alongside prose chunks
 - **Optional Claude synthesis** (`--synthesize`): per method family, a Claude agent reads the retrieved chunks and produces a grounded synthesis (narrative, key findings, reported metrics, hardware requirements, failure modes, open questions). Pure RAG — the agent may cite only the `evidence_id`s it was given, and any invented citation is stripped before persistence, so evidence-grounding audits stay valid. Off by default; requires `CS_ANTHROPIC_API_KEY`.
 
 ### CS-EPIC-ONTOLOGY: PSZ Semantic Layer
