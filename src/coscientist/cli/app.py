@@ -45,6 +45,7 @@ from coscientist.schemas.roadmap import (
 from coscientist.schemas.score import WeightProfileEnum
 from coscientist.schemas.ontology import OntologyCategoryEnum, TermCreate, TermMergeRequest
 from coscientist.schemas.scout import ScoutRunRequest
+from coscientist.schemas.critic import ApproachCritiqueRequest
 from coscientist.schemas.feedback import FeedbackCreate, FeedbackTargetEnum
 from coscientist.services import approval as approval_svc
 from coscientist.services import validation as validation_svc
@@ -61,12 +62,14 @@ from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import ontology as ontology_svc
 from coscientist.services import score as score_svc
 from coscientist.services import scout as scout_svc
+from coscientist.services import critic as critic_svc
 
 app = typer.Typer(no_args_is_help=True)
 goal_app = typer.Typer(no_args_is_help=True, help="Manage research goals")
 scout_app = typer.Typer(no_args_is_help=True, help="Scout evidence for research goals")
 ontology_app = typer.Typer(no_args_is_help=True, help="Manage ontology terms")
 approach_app = typer.Typer(no_args_is_help=True, help="Manage approach cards")
+critic_app = typer.Typer(no_args_is_help=True, help="Critique approach cards before scoring")
 score_app = typer.Typer(no_args_is_help=True, help="Score and compare approach cards")
 hypothesis_app = typer.Typer(no_args_is_help=True, help="Manage hypothesis cards")
 experiment_app = typer.Typer(no_args_is_help=True, help="Manage experiment cards")
@@ -81,6 +84,7 @@ app.add_typer(goal_app, name="goal")
 app.add_typer(scout_app, name="scout")
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(approach_app, name="approach")
+app.add_typer(critic_app, name="critic")
 app.add_typer(score_app, name="score")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(experiment_app, name="experiment")
@@ -554,6 +558,109 @@ def approach_delete(
     try:
         approach_svc.delete(db, approach_id)
         console.print(f"[red]Approach {approach_id[:8]}… deleted[/red]")
+    finally:
+        db.close()
+
+
+# --- Critic commands ---
+
+_VERDICT_STYLE = {"advance": "green", "revise": "yellow", "refute": "red"}
+
+
+@critic_app.command("run")
+def critic_run(
+    goal_id: str = typer.Argument(...),
+    apply: bool = typer.Option(False, "--apply", help="Apply verdicts (advance→reviewed, refute→refuted)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip --apply confirmation"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
+    as_json: bool = typer.Option(False, "--json", help="Output raw JSON"),
+):
+    """Critique generated approach cards with the LLM critic."""
+    if apply and not yes:
+        typer.confirm(
+            "Apply critic verdicts? This transitions cards (advance→reviewed, refute→refuted).",
+            abort=True,
+        )
+    db = _get_session()
+    try:
+        request = ApproachCritiqueRequest(
+            apply=apply,
+            method_families=[method] if method else None,
+        )
+        result = critic_svc.critique_approaches(db, goal_id, request)
+        if as_json:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+        console.print(f"[green]Critique run {result.critique_run_id[:8]}… complete[/green]")
+        if result.critiqued_count == 0:
+            console.print("[yellow]No generated approach cards to critique.[/yellow]")
+            return
+        table = Table(title=f"Critiques ({result.critiqued_count} cards)")
+        table.add_column("Approach")
+        table.add_column("Method")
+        table.add_column("Verdict")
+        table.add_column("Applied", justify="center")
+        table.add_column("Issues", justify="right")
+        for c in result.critiques:
+            issues = len(c.grounding_issues) + len(c.device_fit_issues) + len(c.maturity_issues)
+            style = _VERDICT_STYLE.get(c.verdict.value, "white")
+            table.add_row(
+                c.approach_name,
+                c.method_family,
+                f"[{style}]{c.verdict.value}[/{style}]",
+                "✓" if c.applied else "-",
+                str(issues),
+            )
+        console.print(table)
+        console.print(
+            f"  advance: {result.advance_count}, revise: {result.revise_count}, "
+            f"refute: {result.refute_count}, applied: {result.applied_count}"
+        )
+        if not apply and (result.advance_count or result.refute_count):
+            console.print("[dim]  Re-run with --apply to act on these verdicts.[/dim]")
+    finally:
+        db.close()
+
+
+@critic_app.command("show")
+def critic_show(
+    goal_id: str = typer.Argument(...),
+    approach_id: Optional[str] = typer.Option(None, "--approach", "-a"),
+    critique_run_id: Optional[str] = typer.Option(None, "--run", "-r"),
+    as_json: bool = typer.Option(False, "--json", help="Output raw JSON"),
+):
+    """Show critic critiques for a goal."""
+    db = _get_session()
+    try:
+        critiques = critic_svc.get_critiques(
+            db, goal_id, approach_id=approach_id, critique_run_id=critique_run_id
+        )
+        if as_json:
+            console.print_json(
+                json.dumps([c.model_dump(mode="json") for c in critiques], indent=2)
+            )
+            return
+        if not critiques:
+            console.print("[yellow]No critiques found. Run `critic run` first.[/yellow]")
+            return
+        for c in critiques:
+            style = _VERDICT_STYLE.get(c.verdict.value, "white")
+            console.print(
+                f"\n[bold cyan]{c.approach_name}[/bold cyan] ({c.method_family}) "
+                f"→ [{style}]{c.verdict.value}[/{style}] "
+                f"({len(c.cited_evidence_ids)} citations)"
+            )
+            console.print(c.summary)
+            for label, items in (
+                ("Grounding issues", c.grounding_issues),
+                ("Device-fit issues", c.device_fit_issues),
+                ("Maturity issues", c.maturity_issues),
+                ("Strengths", c.strengths),
+            ):
+                if items:
+                    console.print(f"  [bold]{label}:[/bold]")
+                    for it in items:
+                        console.print(f"    - {it}")
     finally:
         db.close()
 

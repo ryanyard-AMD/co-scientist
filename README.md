@@ -9,6 +9,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Goal Workspace        (CS-EPIC-GOAL)
          ├── Research Scout        (CS-EPIC-SCOUT)
          ├── Approach Forge        (CS-EPIC-APPROACH)
+         ├── Approach Critic       (CS-EPIC-CRITIC)
          ├── Rubric Scoring        (CS-EPIC-SCORE)
          ├── Hypothesis Gen        (CS-EPIC-HYPOTHESIS)
          ├── Experiment Design     (CS-EPIC-EXPERIMENT)
@@ -61,11 +62,21 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 Synthesizes scout evidence into structured Approach Cards — one per method family — for comparing candidate research approaches.
 
 - **ApproachCard** with 8-state lifecycle: `generated` → `reviewed` → `scored` → `experiment_proposed` → `tested` → `validated` / `refuted` → `superseded`
-- Algorithmic generation from evidence groups: extracts metrics, hardware requirements, risks, and evidence links per method family
+- Synthesis-backed generation: when a scout-stage `EvidenceSynthesis` exists for a method family, the card's mechanism summary, metrics, open questions, hardware, and risks come from the Claude synthesis; falls back to algorithmic extraction from evidence groups otherwise
 - Every field traced to source evidence records with direct/inferred evidence type
 - Duplicate detection across approach cards within a workspace
 - Merge operation combines evidence, metrics, hardware, risks; supersedes source card
 - Maturity inference (theoretical, simulated, measured, validated) from evidence text
+
+### CS-EPIC-CRITIC: Adversarial Approach Review
+
+LLM critic that reviews `generated` approach cards before scoring, catching reasoning flaws the algorithmic scorer cannot see.
+
+- **ApproachCritique** per card: Claude judges grounding fidelity (claims vs cited evidence), device fit, and maturity honesty, returning a structured verdict via forced Anthropic tool-use
+- Verdicts: `advance` (sound, ready to score), `revise` (fixable issues), `refute` (unsound or device-mismatched)
+- Grounding guard: any `cited_evidence_ids` the model invents are stripped before persistence (mirrors scout synthesis)
+- **Recommend-only by default** — writes critiques and transitions nothing; opt-in `--apply` acts on verdicts (`advance`→`reviewed`, `refute`→`refuted`; `revise` never transitions)
+- Each run logged via the governance agent-action audit trail
 
 ### CS-EPIC-SCORE: Evidence-Linked Rubric Scoring
 
@@ -255,6 +266,16 @@ If two approaches cover the same method, merge them:
 
 ```bash
 cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
+```
+
+Optionally run the LLM critic over the generated cards before scoring. It recommends
+verdicts (advance / revise / refute) without changing anything; re-run with `--apply`
+to act on them (`advance`→`reviewed`, `refute`→`refuted`):
+
+```bash
+cs critic run <GOAL_ID>             # recommend-only: verdicts + critiques, no transitions
+cs critic show <GOAL_ID>            # read full critiques (issues, strengths)
+cs critic run <GOAL_ID> --apply     # apply verdicts (prompts for confirmation; -y to skip)
 ```
 
 ### 4. Score and compare approaches
@@ -463,6 +484,12 @@ cs approach merge --source <SOURCE_ID> --target <TARGET_ID>
 cs approach delete <APPROACH_ID>
 ```
 
+### Critic
+```bash
+cs critic run <GOAL_ID> [--apply] [--yes] [--method <FAMILY>] [--json]
+cs critic show <GOAL_ID> [--approach <APPROACH_ID>] [--run <CRITIQUE_RUN_ID>] [--json]
+```
+
 ### Scores
 ```bash
 cs score run <GOAL_ID> [--profile default|fastest_prototype|scientific_novelty|robustness|product_feasibility]
@@ -589,6 +616,13 @@ All endpoints are prefixed with `/co-scientist`.
 | DELETE | `/goals/{id}/approaches/{aid}` | Delete a generated approach |
 | POST | `/goals/{id}/approaches/merge` | Merge two approach cards |
 | GET | `/goals/{id}/approaches/duplicates` | Detect duplicate approach cards |
+
+### Critic
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/goals/{id}/critique` | Critique generated approach cards (optional `apply`) |
+| GET | `/goals/{id}/critique` | List critiques (filter by approach_id, critique_run_id) |
 
 ### Scores
 
