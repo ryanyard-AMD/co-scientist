@@ -160,14 +160,16 @@ def _score_reproducibility(
 def _score_acoustic_performance(
     approach: ApproachCardResponse, evidence: list[EvidenceRecord],
 ) -> tuple[float, float | None, str, list[str], bool]:
+    acoustic_kw = [_norm(kw) for kw in _ACOUSTIC_KEYWORDS]
     acoustic_evidence = []
     for e in evidence:
         metrics = json.loads(e.metric_names) if e.metric_names else []
-        if any(m in _ACOUSTIC_KEYWORDS for m in metrics):
+        if any(any(kw in _norm(m) for kw in acoustic_kw) for m in metrics):
             acoustic_evidence.append(e)
 
     metric_coverage = sum(
-        1 for m in approach.reported_metrics if m.metric_name in _ACOUSTIC_KEYWORDS
+        1 for m in approach.reported_metrics
+        if any(kw in _norm(m.metric_name) for kw in acoustic_kw)
     )
     ev_score = _clamp(len(acoustic_evidence) / 5.0)
     met_score = _clamp(metric_coverage / 3.0)
