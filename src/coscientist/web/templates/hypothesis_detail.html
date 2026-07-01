@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}{{ hypothesis.name }} — Co-Scientist{% endblock %}
+{% block content %}
+<p class="small"><a href="/ui/goals/{{ goal.id }}/hypotheses">← Hypotheses</a></p>
+<div class="row">
+  <h1>{{ hypothesis.name }}</h1>
+  <span class="badge {{ hypothesis.status.value }}">{{ hypothesis.status.value }}</span>
+  <span class="badge">{{ hypothesis.hypothesis_type.value }}</span>
+  {% if hypothesis.has_conflicts %}<span class="badge refuted">conflicts</span>{% endif %}
+</div>
+{% if hypothesis.text %}<p class="muted">{{ hypothesis.text }}</p>{% endif %}
+
+{% if hypothesis.status.value == "generated" %}
+<div class="row" style="margin:0.5rem 0">
+  <button hx-post="/ui/goals/{{ goal.id }}/hypotheses/{{ hypothesis.id }}/review"
+          hx-on::after-request="window.location.reload()">Mark reviewed</button>
+</div>
+{% endif %}
+
+{% if hypothesis.rationale %}<h2>Rationale</h2><p>{{ hypothesis.rationale }}</p>{% endif %}
+
+<h2>Component approaches</h2>
+<ul class="tight">
+  {% for aid in hypothesis.approach_ids %}
+  <li class="small"><a href="/ui/goals/{{ goal.id }}/approaches/{{ aid }}">{{ aid }}</a></li>
+  {% endfor %}
+</ul>
+
+{% if hypothesis.expected_benefits %}<h3>Expected benefits</h3><ul class="tight">{% for b in hypothesis.expected_benefits %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}
+{% if hypothesis.assumptions %}<h3>Assumptions</h3><ul class="tight">{% for a in hypothesis.assumptions %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+{% if hypothesis.failure_modes %}<h3>Failure modes</h3><ul class="tight">{% for f in hypothesis.failure_modes %}<li>{{ f }}</li>{% endfor %}</ul>{% endif %}
+{% if hypothesis.required_experiments %}<h3>Required experiments</h3><ul class="tight">{% for e in hypothesis.required_experiments %}<li>{{ e }}</li>{% endfor %}</ul>{% endif %}
+
+{% if hypothesis.compatibility_notes %}
+<h2>Compatibility</h2>
+{% for cn in hypothesis.compatibility_notes %}
+<div class="panel">
+  <p class="small">
+    <span class="badge {{ 'reviewed' if cn.compatible else 'refuted' }}">{{ "compatible" if cn.compatible else "conflict" }}</span>
+    {% if cn.ontology_related %}<span class="badge">ontology-related</span>{% endif %}
+  </p>
+  {% if cn.shared_hardware %}<p class="small"><strong>Shared hardware:</strong> {{ cn.shared_hardware|join(", ") }}</p>{% endif %}
+  {% if cn.complementary_dimensions %}<p class="small"><strong>Complementary on:</strong> {{ cn.complementary_dimensions|join(", ") }}</p>{% endif %}
+  {% if cn.conflicting_assumptions %}<p class="small"><strong>Conflicts:</strong> {{ cn.conflicting_assumptions|join("; ") }}</p>{% endif %}
+  {% if cn.note %}<p class="small muted">{{ cn.note }}</p>{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

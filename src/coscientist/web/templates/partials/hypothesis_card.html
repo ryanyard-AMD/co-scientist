@@ -1,0 +1,19 @@
+<div class="card" id="hypothesis-{{ h.id }}">
+  <div class="row">
+    <h3 style="margin:0"><a href="/ui/goals/{{ goal.id }}/hypotheses/{{ h.id }}">{{ h.name }}</a></h3>
+    <div class="spacer"></div>
+    <span class="badge {{ h.status.value }}">{{ h.status.value }}</span>
+  </div>
+  <p class="small muted">
+    {{ h.hypothesis_type.value }} · {{ h.approach_ids|length }} approach(es)
+    {% if h.has_conflicts %}· <span class="badge refuted">conflicts</span>{% endif %}
+  </p>
+  {% if h.text %}<p class="small">{{ h.text }}</p>{% endif %}
+  <div class="row" style="margin-top:0.5rem">
+    {% if h.status.value == "generated" %}
+    <button hx-post="/ui/goals/{{ goal.id }}/hypotheses/{{ h.id }}/review"
+            hx-target="#hypothesis-{{ h.id }}" hx-swap="outerHTML">Mark reviewed</button>
+    {% endif %}
+    <a class="btn" href="/ui/goals/{{ goal.id }}/hypotheses/{{ h.id }}">Inspect</a>
+  </div>
+</div>

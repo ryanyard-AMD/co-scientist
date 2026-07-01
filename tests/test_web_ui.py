@@ -4,6 +4,7 @@ import uuid
 from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
+from coscientist.models.hypothesis import HypothesisCard
 from coscientist.services import score as score_svc
 
 
@@ -64,6 +65,33 @@ def _seed_experiment(db, workspace_id, name="Contrast sweep", objective="Measure
     return card
 
 
+def _seed_hypothesis(db, workspace_id, name="ACC + PM", status="generated"):
+    card = HypothesisCard(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        name=name,
+        text="Combine Acoustic Contrast Control and Pressure Matching.",
+        rationale="Share hardware: dsp, loudspeaker array, microphone.",
+        hypothesis_type="conservative",
+        approach_ids=json.dumps([str(uuid.uuid4()), str(uuid.uuid4())]),
+        assumptions=json.dumps(["free-field propagation"]),
+        expected_benefits=json.dumps(["broader coverage"]),
+        failure_modes=json.dumps(["device-geometry mismatch"]),
+        required_experiments=json.dumps(["Validate combined approach"]),
+        compatibility_notes=json.dumps([{
+            "approach_a_id": "a1", "approach_b_id": "a2", "compatible": True,
+            "shared_hardware": ["dsp", "loudspeaker array"],
+            "conflicting_assumptions": [], "complementary_dimensions": [],
+            "ontology_related": True, "note": "related in the ontology",
+        }]),
+        has_conflicts=False,
+        status=status,
+    )
+    db.add(card)
+    db.commit()
+    return card
+
+
 # --- Dashboard / navigation (CS-UI-001) ---
 
 
@@ -85,7 +113,7 @@ def test_dashboard_shows_section_labels(client):
     resp = client.get(f"/ui/goals/{goal['id']}")
     assert resp.status_code == 200
     body = resp.text.lower()
-    for label in ("evidence", "approaches", "experiments", "roadmap"):
+    for label in ("evidence", "approaches", "hypotheses", "experiments", "roadmap"):
         assert label in body
 
 
@@ -185,6 +213,48 @@ def test_score_action_creates_scores(client, db_session):
     assert "evidence_strength" in resp.text
     scores = score_svc.get_scores(db_session, card.id)
     assert len(scores.dimensions) == 10
+
+
+# --- Hypotheses ---
+
+
+def test_hypotheses_list_shows_seeded(client, db_session):
+    goal = _create_goal(client)
+    _seed_hypothesis(db_session, goal["id"])
+    resp = client.get(f"/ui/goals/{goal['id']}/hypotheses")
+    assert resp.status_code == 200
+    assert "ACC + PM" in resp.text
+
+
+def test_hypotheses_list_empty_ok(client):
+    goal = _create_goal(client)
+    resp = client.get(f"/ui/goals/{goal['id']}/hypotheses")
+    assert resp.status_code == 200
+
+
+def test_hypothesis_detail_shows_rationale_and_compat(client, db_session):
+    goal = _create_goal(client)
+    card = _seed_hypothesis(db_session, goal["id"])
+    resp = client.get(f"/ui/goals/{goal['id']}/hypotheses/{card.id}")
+    assert resp.status_code == 200
+    assert "loudspeaker array" in resp.text
+    assert "ontology-related" in resp.text
+
+
+def test_hypothesis_detail_unknown_renders_error(client):
+    goal = _create_goal(client)
+    resp = client.get(f"/ui/goals/{goal['id']}/hypotheses/nope")
+    assert resp.status_code == 404
+    assert "Error 404" in resp.text
+
+
+def test_hypothesis_review_sets_reviewed(client, db_session):
+    goal = _create_goal(client)
+    card = _seed_hypothesis(db_session, goal["id"])
+    resp = client.post(f"/ui/goals/{goal['id']}/hypotheses/{card.id}/review")
+    assert resp.status_code == 200
+    db_session.expire_all()
+    assert db_session.get(HypothesisCard, card.id).status == "reviewed"
 
 
 # --- Experiments (CS-UI-004) ---

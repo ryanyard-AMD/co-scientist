@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Hypotheses — {{ goal.name }}{% endblock %}
+{% block content %}
+<h1>Hypothesis Cards</h1>
+<p class="muted">{{ total }} hypothesis(es) — combinations of 2+ scored approaches.</p>
+
+{% if hypotheses %}
+<div class="cards" id="hypothesis-list">
+  {% for h in hypotheses %}
+    {% include "partials/hypothesis_card.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">No hypotheses yet. Run <code>cs hypothesis generate {{ goal.id }}</code> (needs ≥2 scored approaches).</div>
+{% endif %}
+{% endblock %}

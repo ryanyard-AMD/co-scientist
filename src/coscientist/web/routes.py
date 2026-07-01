@@ -10,11 +10,13 @@ from coscientist.schemas.approach import (
     ApproachStatusEnum,
 )
 from coscientist.schemas.experiment import ExperimentCardUpdate
+from coscientist.schemas.hypothesis import HypothesisStatusEnum
 from coscientist.services import approach as approach_svc
 from coscientist.services import device as device_svc
 from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
+from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import scout as scout_svc
 from coscientist.services import score as score_svc
@@ -61,10 +63,12 @@ def dashboard(request: Request, goal_id: str, db: Session = Depends(get_db)):
         return _error(request, exc)
     _, evidence_total = scout_svc.get_evidence(db, goal_id, limit=1)
     _, approach_total = approach_svc.list_approaches(db, goal_id, limit=1)
+    _, hypothesis_total = hypothesis_svc.list_hypotheses(db, goal_id, limit=1)
     _, experiment_total = experiment_svc.list_experiments(db, goal_id, limit=1)
     counts = {
         "evidence": evidence_total,
         "approaches": approach_total,
+        "hypotheses": hypothesis_total,
         "experiments": experiment_total,
         "validation": validation_svc.list_results(db, goal_id).total,
         "devices": device_svc.list_devices(db, goal_id, limit=1).total,
@@ -229,6 +233,56 @@ def approach_edit(
     approach_svc.update(db, approach_id, data)
     return RedirectResponse(
         url=f"/ui/goals/{goal_id}/approaches/{approach_id}", status_code=303
+    )
+
+
+# --- Hypotheses ---
+
+
+@router.get("/goals/{goal_id}/hypotheses", response_class=HTMLResponse)
+def hypotheses_page(request: Request, goal_id: str, db: Session = Depends(get_db)):
+    try:
+        goal = goal_svc.get(db, goal_id)
+    except HTTPException as exc:
+        return _error(request, exc)
+    items, total = hypothesis_svc.list_hypotheses(db, goal_id, limit=200)
+    return templates.TemplateResponse(
+        request,
+        "hypotheses.html",
+        {"goal": goal, "hypotheses": items, "total": total},
+    )
+
+
+@router.get("/goals/{goal_id}/hypotheses/{hypothesis_id}", response_class=HTMLResponse)
+def hypothesis_detail(
+    request: Request, goal_id: str, hypothesis_id: str, db: Session = Depends(get_db)
+):
+    try:
+        goal = goal_svc.get(db, goal_id)
+        hypothesis = hypothesis_svc.get(db, hypothesis_id)
+    except HTTPException as exc:
+        return _error(request, exc)
+    return templates.TemplateResponse(
+        request,
+        "hypothesis_detail.html",
+        {"goal": goal, "hypothesis": hypothesis},
+    )
+
+
+@router.post(
+    "/goals/{goal_id}/hypotheses/{hypothesis_id}/review", response_class=HTMLResponse
+)
+def hypothesis_review(
+    request: Request, goal_id: str, hypothesis_id: str, db: Session = Depends(get_db)
+):
+    try:
+        goal = goal_svc.get(db, goal_id)
+        hypothesis_svc.transition(db, hypothesis_id, HypothesisStatusEnum.reviewed)
+        h = hypothesis_svc.get(db, hypothesis_id)
+    except HTTPException as exc:
+        return _error(request, exc)
+    return templates.TemplateResponse(
+        request, "partials/hypothesis_card.html", {"goal": goal, "h": h}
     )
 
 
