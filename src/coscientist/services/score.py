@@ -106,6 +106,11 @@ def _clamp(v: float) -> float:
     return max(0.0, min(1.0, v))
 
 
+def _norm(s: str) -> str:
+    """Lowercase and collapse underscores/hyphens to spaces for lenient matching."""
+    return s.lower().replace("_", " ").replace("-", " ")
+
+
 def _get_evidence_for_approach(db: Session, approach: ApproachCardResponse) -> list[EvidenceRecord]:
     evidence_ids = [el.evidence_id for el in approach.evidence_links]
     if not evidence_ids:
@@ -237,7 +242,7 @@ def _score_hardware_feasibility(
     total_checks = 0
     if dc.form_factor:
         total_checks += 1
-        if any(dc.form_factor.lower() in h.lower() for h in hw):
+        if any(_norm(dc.form_factor) in _norm(h) for h in hw):
             matches += 1
     if dc.speaker_count:
         total_checks += 1
@@ -347,13 +352,15 @@ def _score_device_relevance(
 
     if dc.form_factor:
         checks += 1
-        if dc.form_factor.lower() in device_text.lower() or any(
-            dc.form_factor.lower() in h.lower() for h in hw
+        if _norm(dc.form_factor) in _norm(device_text) or any(
+            _norm(dc.form_factor) in _norm(h) for h in hw
         ):
             matches += 1
     if dc.compute_budget:
         checks += 1
-        if dc.compute_budget.lower() in device_text.lower():
+        if _norm(dc.compute_budget) in _norm(device_text) or any(
+            _norm(dc.compute_budget) in _norm(h) for h in hw
+        ):
             matches += 1
 
     if checks == 0:

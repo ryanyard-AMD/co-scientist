@@ -365,6 +365,20 @@ def scout_synthesis(
 # --- Ontology commands ---
 
 
+@ontology_app.command("seed")
+def ontology_seed():
+    """Seed default ontology terms and method relationships from the domain dictionaries."""
+    db = _get_session()
+    try:
+        result = ontology_svc.seed_default_ontology(db)
+        console.print(
+            f"Seeded ontology: {result['terms_added']} terms, "
+            f"{result['relationships_added']} relationships added"
+        )
+    finally:
+        db.close()
+
+
 @ontology_app.command("list")
 def ontology_list(
     category: Optional[OntologyCategoryEnum] = typer.Option(

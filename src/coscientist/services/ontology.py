@@ -6,6 +6,13 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from coscientist.domain import (
+    FAILURE_MODES,
+    HARDWARE_TERMS,
+    METHOD_FAMILIES,
+    METRIC_NAMES,
+    RELATED_METHODS,
+)
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.schemas.ontology import (
@@ -307,3 +314,70 @@ def get_all_terms_by_category(
             )
         ).all()
     )
+
+
+def seed_default_ontology(db: Session) -> dict[str, int]:
+    """Idempotently seed ontology terms and method relationships from domain dicts.
+
+    Returns counts of terms and relationships newly created.
+    """
+    category_dicts = {
+        "method": METHOD_FAMILIES,
+        "metric": METRIC_NAMES,
+        "hardware": HARDWARE_TERMS,
+        "failure_mode": FAILURE_MODES,
+    }
+    now = datetime.now(timezone.utc)
+    terms_added = 0
+    for category, mapping in category_dicts.items():
+        for canonical, keywords in mapping.items():
+            existing = db.scalar(
+                select(OntologyTerm).where(
+                    OntologyTerm.category == category,
+                    OntologyTerm.canonical_name == canonical,
+                )
+            )
+            if existing:
+                continue
+            db.add(OntologyTerm(
+                id=str(uuid.uuid4()),
+                canonical_name=canonical,
+                category=category,
+                keywords=json.dumps(keywords),
+                status="active",
+                created_at=now,
+                updated_at=now,
+            ))
+            terms_added += 1
+    db.flush()
+
+    method_ids = {
+        t.canonical_name: t.id
+        for t in db.scalars(
+            select(OntologyTerm).where(OntologyTerm.category == "method")
+        ).all()
+    }
+    existing_pairs = {
+        (r.source_term_id, r.target_term_id)
+        for r in db.scalars(select(OntologyRelationship)).all()
+    }
+    rels_added = 0
+    for source, targets in RELATED_METHODS.items():
+        src_id = method_ids.get(source)
+        if not src_id:
+            continue
+        for target in targets:
+            tgt_id = method_ids.get(target)
+            if not tgt_id or (src_id, tgt_id) in existing_pairs:
+                continue
+            db.add(OntologyRelationship(
+                id=str(uuid.uuid4()),
+                source_term_id=src_id,
+                target_term_id=tgt_id,
+                relationship_type="related_to",
+                created_at=now,
+            ))
+            existing_pairs.add((src_id, tgt_id))
+            rels_added += 1
+    db.commit()
+    return {"terms_added": terms_added, "relationships_added": rels_added}
