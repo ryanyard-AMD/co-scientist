@@ -27,6 +27,45 @@ from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
 
+_VALIDATION_TOOL = {
+    "name": "record_validation",
+    "description": "Record the validation verdict for an experiment's measured results against its pass conditions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["validated", "refuted"],
+                "description": "validated = ALL criteria pass; refuted = ANY criterion fails.",
+            },
+            "confidence": {"type": "number", "description": "Confidence in the verdict, 0.0-1.0."},
+            "reasoning": {"type": "string", "description": "Narrative explanation of the verdict."},
+            "criterion_results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "measured": {"type": ["number", "null"]},
+                        "target": {"type": "number"},
+                        "operator": {"type": "string"},
+                        "passed": {"type": "boolean"},
+                        "unit": {"type": "string"},
+                    },
+                    "required": ["name", "target", "operator", "passed", "unit"],
+                },
+                "description": "One entry per pass condition evaluated against the measured results.",
+            },
+            "refinement_suggestions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Populate only when decision is 'refuted'.",
+            },
+        },
+        "required": ["decision", "confidence", "reasoning", "criterion_results"],
+    },
+}
+
 _MATURITY_ORDER = {
     ApproachMaturityEnum.theoretical.value: 0,
     ApproachMaturityEnum.simulated.value: 1,
@@ -112,22 +151,11 @@ def _run_validation_agent(
     pass_conditions = validation_spec.get("pass_conditions", {})
 
     system_prompt = (
-        "You are a scientific validation agent. Your task is to evaluate whether an "
-        "experiment's measured results satisfy its validation criteria. "
-        "You MUST respond with valid JSON only — no prose, no markdown fences. "
-        "The JSON must conform to this schema:\n"
-        "{\n"
-        '  "decision": "validated" | "refuted",\n'
-        '  "confidence": <float 0.0-1.0>,\n'
-        '  "reasoning": "<narrative string>",\n'
-        '  "criterion_results": [\n'
-        '    {"name": "<str>", "measured": <float|null>, "target": <float>, '
-        '"operator": "<str>", "passed": <bool>, "unit": "<str>"}\n'
-        "  ],\n"
-        '  "refinement_suggestions": ["<str>", ...]\n'
-        "}\n"
-        "Set decision to 'validated' if ALL criteria pass, 'refuted' if ANY fail. "
-        "Populate refinement_suggestions only when decision is 'refuted'."
+        "You are a scientific validation agent. Evaluate whether an experiment's measured "
+        "results satisfy its validation criteria. For each pass condition, determine whether "
+        "the measured value satisfies the operator and target. Record your verdict by calling "
+        "the record_validation tool. Set decision to 'validated' if ALL criteria pass, "
+        "'refuted' if ANY fail. Populate refinement_suggestions only when decision is 'refuted'."
     )
 
     success_criteria_text = json.dumps(
@@ -163,11 +191,13 @@ def _run_validation_agent(
         model=settings.validation_model,
         max_tokens=1024,
         system=system_prompt,
+        tools=[_VALIDATION_TOOL],
+        tool_choice={"type": "tool", "name": "record_validation"},
         messages=[{"role": "user", "content": user_message}],
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
-    raw_text = message.content[0].text.strip()
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
     governance_svc.log_agent_call(
         db=db,
         workspace_id=goal_id,
@@ -177,15 +207,19 @@ def _run_validation_agent(
         prompt_tokens=message.usage.input_tokens,
         completion_tokens=message.usage.output_tokens,
         elapsed_ms=elapsed_ms,
-        response_summary=raw_text[:512],
+        response_summary=(json.dumps(tool_use.input)[:512] if tool_use else "no tool_use block"),
     )
-    try:
-        parsed = json.loads(raw_text)
-        return AgentValidationOutput(**parsed)
-    except (json.JSONDecodeError, ValueError) as exc:
+    if tool_use is None:
         raise HTTPException(
             status_code=502,
-            detail=f"Validation agent returned invalid JSON: {exc}",
+            detail="Validation agent did not return a record_validation tool call",
+        )
+    try:
+        return AgentValidationOutput(**tool_use.input)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Validation agent returned invalid output: {exc}",
         )
 
 

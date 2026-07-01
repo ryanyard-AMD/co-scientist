@@ -543,15 +543,17 @@ def test_run_validation_agent_sends_correct_context(db_session):
     exp_card = db_session.get(ExperimentCard, exp_resp.id)
     approach_card = db_session.get(ApproachCard, approach.id)
 
-    mock_response_text = json.dumps({
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {
         "decision": "validated",
         "confidence": 0.9,
         "reasoning": "All good.",
         "criterion_results": [],
         "refinement_suggestions": [],
-    })
+    }
     mock_message = MagicMock()
-    mock_message.content = [MagicMock(text=mock_response_text)]
+    mock_message.content = [tool_block]
     mock_message.usage.input_tokens = 100
     mock_message.usage.output_tokens = 50
 
