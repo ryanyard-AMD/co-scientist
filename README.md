@@ -59,7 +59,7 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 
 - **OntologyTerm** with 6 categories: method, metric, hardware, failure_mode, acoustic_goal, scene_assumption
 - **OntologyRelationship** for term-to-term links (related_to, subsumes, alias_of)
-- 63 seed terms across all categories, seeded via Alembic migration
+- 63 seed terms across all categories, seeded via Alembic migration or the idempotent `cs ontology seed` command (also seeds `related_to` method relationships from `domain.RELATED_METHODS`)
 - CRUD API + merge operation (merges keywords, moves relationships, updates evidence records, deprecates source)
 - Scout automatically loads ontology terms from DB for classification
 
@@ -474,6 +474,7 @@ cs scout synthesis <GOAL_ID> [--method METHOD] [--scout-run RUN_ID]
 
 ### Ontology
 ```bash
+cs ontology seed                    # idempotently seed default terms + method relationships
 cs ontology list [--category method|metric|hardware|failure_mode|acoustic_goal|scene_assumption]
 cs ontology show <TERM_ID>
 cs ontology add --name <NAME> --category <CAT> --keywords '["kw1","kw2"]'
