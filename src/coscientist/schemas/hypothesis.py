@@ -23,6 +23,7 @@ class CompatibilityNote(BaseModel):
     shared_hardware: list[str] = Field(default_factory=list)
     conflicting_assumptions: list[str] = Field(default_factory=list)
     complementary_dimensions: list[str] = Field(default_factory=list)
+    ontology_related: bool = False
     note: str = ""
 
 

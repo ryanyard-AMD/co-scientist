@@ -103,7 +103,7 @@ Generates HypothesisCards — proposed combinations of 2+ scored approaches — 
 
 - **HypothesisCard** with 4-state lifecycle: `generated` → `reviewed` → `experiment_proposed` → `superseded`
 - Two hypothesis types: `conservative` (both high-scoring, no conflicts) and `exploratory` (complementary strengths, may have flagged conflicts)
-- Pairwise compatibility analysis: shared hardware, conflicting assumptions, complementary rubric dimensions, ontology relationships
+- Pairwise compatibility analysis: shared hardware (matched on canonical hardware concepts, not verbatim prose), conflicting assumptions, complementary rubric dimensions, ontology relationships
 - Assumption conflict detection via negation patterns ("does not require", "no ", "without ")
 - Complementary dimension detection using configurable thresholds (high ≥ 0.6, low ≤ 0.4)
 - Deterministic generation from rubric scores, ontology relationships, and hardware overlap

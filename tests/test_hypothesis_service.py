@@ -386,7 +386,7 @@ def test_compatibility_shared_hardware(db_session):
     s2 = score_svc.get_scores(db_session, a2.id)
 
     note = svc._check_compatibility(a1, a2, s1, s2, db_session)
-    assert "loudspeaker_array" in note.shared_hardware
+    assert "loudspeaker array" in note.shared_hardware
     assert note.compatible is True
 
 

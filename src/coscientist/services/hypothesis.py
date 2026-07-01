@@ -180,6 +180,43 @@ def delete(db: Session, hypothesis_id: str) -> None:
     db.commit()
 
 
+_HARDWARE_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "microphone": ("microphone", "mic array", "error mic", "reference mic"),
+    "loudspeaker array": (
+        "loudspeaker", "speaker array", "speaker", "desktop bar",
+        "soundbar", "sound bar",
+    ),
+    "dsp": (
+        "dsp", "digital signal processing", "digital signal processor",
+        "fpga", "gpu", "real-time processor", "adaptive filter",
+        "filter computation",
+    ),
+    "headphone": ("headphone", "earphone"),
+    "headrest": ("headrest", "head rest"),
+    "parametric loudspeaker": ("parametric loudspeaker", "mcpl"),
+}
+
+
+def _norm(s: str) -> str:
+    """Lowercase and collapse underscores/hyphens to spaces for lenient matching."""
+    return s.lower().replace("_", " ").replace("-", " ")
+
+
+def _canonical_hardware(requirements: list[str]) -> set[str]:
+    """Map prose hardware requirements onto canonical PSZ hardware concepts.
+
+    Exact set intersection on human-written strings never overlaps; this
+    collapses varied prose ("Digital signal processors", "DSP hardware") to a
+    shared concept token so genuinely-common hardware registers.
+    """
+    text = " ".join(_norm(r) for r in requirements)
+    return {
+        concept
+        for concept, keywords in _HARDWARE_CONCEPTS.items()
+        if any(kw in text for kw in keywords)
+    }
+
+
 def _find_complementary_dimensions(
     scores_a: ApproachScoreResponse,
     scores_b: ApproachScoreResponse,
@@ -252,8 +289,8 @@ def _check_compatibility(
     scores_b: ApproachScoreResponse | None,
     db: Session,
 ) -> CompatibilityNote:
-    hw_a = set(approach_a.hardware_requirements)
-    hw_b = set(approach_b.hardware_requirements)
+    hw_a = _canonical_hardware(approach_a.hardware_requirements)
+    hw_b = _canonical_hardware(approach_b.hardware_requirements)
     shared_hw = sorted(hw_a & hw_b)
 
     conflicts = _find_assumption_conflicts(
@@ -285,6 +322,7 @@ def _check_compatibility(
         shared_hardware=shared_hw,
         conflicting_assumptions=conflicts,
         complementary_dimensions=complementary,
+        ontology_related=ontology_related,
         note=". ".join(note_parts) if note_parts else "No significant compatibility signals found",
     )
 
@@ -303,11 +341,14 @@ def _synthesize_hypothesis(
 
     all_complementary = set()
     all_shared_hw = set()
+    ontology_related = False
     has_conflicts = False
     conflict_details = []
     for cn in compatibility:
         all_complementary.update(cn.complementary_dimensions)
         all_shared_hw.update(cn.shared_hardware)
+        if cn.ontology_related:
+            ontology_related = True
         if not cn.compatible:
             has_conflicts = True
             conflict_details.extend(cn.conflicting_assumptions)
@@ -325,6 +366,9 @@ def _synthesize_hypothesis(
         )
     if all_shared_hw:
         rationale_parts.append(f"Share hardware: {', '.join(sorted(all_shared_hw))}")
+    if ontology_related:
+        method_names_lower = ", ".join(a.method_family.replace("_", " ") for a in approaches)
+        rationale_parts.append(f"Methods are related in the ontology ({method_names_lower})")
     if has_conflicts:
         rationale_parts.append(f"WARNING: {len(conflict_details)} assumption conflicts detected")
     if not rationale_parts:
