@@ -287,11 +287,8 @@ def _build_fixed_assumptions(goal: GoalResponse) -> dict[str, str]:
     return assumptions
 
 
-def _derive_metrics(approach_resp, goal: GoalResponse) -> list[str]:
+def _derive_metrics(goal: GoalResponse) -> list[str]:
     metric_set: set[str] = set()
-    if hasattr(approach_resp, "reported_metrics"):
-        for m in approach_resp.reported_metrics:
-            metric_set.add(m.metric_name)
     for sc in goal.success_criteria:
         metric_set.add(sc.name)
     for canonical in METRIC_NAMES:
@@ -370,7 +367,7 @@ def _synthesize_experiment(
     baselines = _select_baselines(approach_resp.method_family)
     sweep = _build_parameter_sweep(goal)
     fixed = _build_fixed_assumptions(goal)
-    metrics = _derive_metrics(approach_resp, goal)
+    metrics = _derive_metrics(goal)
     validation = _derive_validation(goal)
     runtime = {"preferred": "python_numerics_or_treble", "alternatives": ["dolfinx", "elmer", "octave"]}
     sweep_count = _compute_sweep_cardinality(sweep)
@@ -428,9 +425,7 @@ def _synthesize_comparative_experiment(
 
     sweep = _build_parameter_sweep(goal)
     fixed = _build_fixed_assumptions(goal)
-    metrics_a = set(_derive_metrics(approach_a, goal))
-    metrics_b = set(_derive_metrics(approach_b, goal))
-    metrics = sorted(metrics_a | metrics_b)
+    metrics = _derive_metrics(goal)
     validation = _derive_validation(goal)
     runtime = {"preferred": "python_numerics_or_treble", "alternatives": ["dolfinx", "elmer", "octave"]}
     sweep_count = _compute_sweep_cardinality(sweep)
