@@ -151,8 +151,16 @@ def _decompose_goal_to_queries(
             unit = getattr(criterion, "unit", None) or ""
             queries.append(f"{app} {crit_name}")
             criteria_phrases.append(f"{crit_name} {unit}".strip())
-    if goal.device_constraints and goal.device_constraints.form_factor:
-        queries.append(f"{app} {goal.device_constraints.form_factor}")
+    dc = goal.device_constraints
+    if dc:
+        if dc.form_factor:
+            ff = dc.form_factor.replace("_", " ")
+            queries.append(f"{app} {ff}")
+            queries.append(f"{app} {ff} near-field compact loudspeaker array")
+        if dc.speaker_count:
+            n = dc.speaker_count
+            queries.append(f"{app} {n}-loudspeaker array acoustic contrast")
+            queries.append(f"{app} small near-field array {n} loudspeakers sound zone")
     method_names = (
         [t.canonical_name for t in method_terms]
         if method_terms is not None
