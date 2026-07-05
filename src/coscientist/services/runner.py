@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import HTTPException
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.repro import ReproClient
 from coscientist.config import settings
+from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.runner import RunnerResult
 from coscientist.schemas.validation import ExperimentResultSubmission
@@ -62,13 +64,46 @@ _TERMINAL_OK = "success"
 _TERMINAL_BAD = {"failed", "cancelled"}
 
 
-def _primary_method_family(db: Session, approach_ids: list[str]) -> str | None:
+def _resolve_simulator(db: Session, approach_ids: list[str]) -> Simulator:
+    """Pick the simulator for a single-approach experiment.
+
+    Combination experiments (>1 approach) describe a method no single-paper
+    reproduction runs; auto-running one ingredient and labelling it as the
+    combination's result would fabricate a verdict. Refuse and route to the
+    manual submission lane instead.
+    """
+    if len(approach_ids) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Experiment combines multiple approaches; no single-paper repro simulator "
+                "can run the combination. Run it externally and use 'cs validation submit'."
+            ),
+        )
+
+    family: str | None = None
     for aid in approach_ids:
         try:
-            return approach_svc.get(db, aid).method_family
+            family = approach_svc.get(db, aid).method_family
+            break
         except HTTPException:
             continue
-    return None
+    if family is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Experiment has no resolvable approach to determine a method family.",
+        )
+
+    sim = SIMULATOR_REGISTRY.get(family)
+    if sim is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No repro simulator registered for method family {family!r}. "
+                "Run the experiment externally and use 'cs validation submit' instead."
+            ),
+        )
+    return sim
 
 
 def _translate(raw: dict, metric_map: dict[str, str]) -> dict[str, float]:
@@ -124,16 +159,7 @@ def run_experiment(
             detail=f"Experiment must be 'approved' to run, got {card.status.value!r}",
         )
 
-    family = _primary_method_family(db, card.approach_ids)
-    sim = SIMULATOR_REGISTRY.get(family) if family else None
-    if sim is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"No repro simulator registered for method family {family!r}. "
-                "Run the experiment externally and use 'cs validation submit' instead."
-            ),
-        )
+    sim = _resolve_simulator(db, card.approach_ids)
 
     timeout = timeout if timeout is not None else settings.repro_run_timeout
     spec = _build_spec(card, sim)
@@ -160,18 +186,30 @@ def run_experiment(
         raise HTTPException(
             status_code=502,
             detail=(
-                f"repro run {run_id!r} produced no translatable metrics for {family!r}; "
+                f"repro run {run_id!r} produced no translatable metrics for {sim.script!r}; "
                 "refusing to fabricate. Experiment left 'approved'."
             ),
         )
 
+    # The run succeeded and produced metrics. Transition to 'running' and hand off to
+    # validation. If validation raises (infra error, not a refuted verdict), roll the
+    # card back to 'approved' so it stays re-runnable — the state machine has no
+    # running→approved edge, so this compensating write is the runner's responsibility.
     experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.running)
     submission = ExperimentResultSubmission(
         measured_metrics=measured,
         artifact_paths={"metrics_json": f"runs/{run_id}/metrics.json"},
         notes=f"Auto-run via repro simulator {sim.script} (run {run_id}).",
     )
-    result = validation_svc.submit_results(db, experiment_id, goal_id, submission)
+    try:
+        result = validation_svc.submit_results(db, experiment_id, goal_id, submission)
+    except Exception:
+        card_row = db.get(ExperimentCard, experiment_id)
+        if card_row is not None and card_row.status == ExperimentStatusEnum.running.value:
+            card_row.status = ExperimentStatusEnum.approved.value
+            card_row.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        raise
 
     return RunnerResult(
         experiment_id=experiment_id,

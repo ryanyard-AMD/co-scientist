@@ -226,3 +226,47 @@ def test_run_unknown_experiment_404(db_session, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         svc.run_experiment(db_session, "nope", gid)
     assert exc.value.status_code == 404
+
+
+def test_run_combination_refuses(db_session, monkeypatch):
+    # A combination experiment (>1 approach) has no single-paper repro; auto-running one
+    # ingredient would fabricate a verdict, so refuse and route to the manual lane.
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(db_session, gid, [a1.id, a2.id])
+
+    monkeypatch.setattr(svc, "ReproClient", lambda: _FakeReproClient())
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 422
+    assert "cs validation submit" in exc.value.detail
+    # never touched repro, card left runnable
+    assert _FakeReproClient.instances == []
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
+
+
+def test_validation_error_rolls_back_to_approved(db_session, monkeypatch):
+    # If validation raises (infra error, not a refuted verdict) after the card is moved to
+    # 'running', the runner rolls it back to 'approved' so it stays re-runnable.
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
+    )
+
+    def _boom(db, experiment_id, goal_id, submission):
+        raise HTTPException(status_code=502, detail="validation agent unavailable")
+
+    monkeypatch.setattr(svc.validation_svc, "submit_results", _boom)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 502
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
