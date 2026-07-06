@@ -206,6 +206,13 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - Idempotent generation: each `POST /generate` creates a fresh `generation_run_id` batch; prior items remain in DB with their original status for audit
 - Full traceability: each item links back to `source_approach_ids`, `source_experiment_id`, and/or `source_device_id`
 
+**Roadmap updates from execution outcomes** — as ResultBundles are ingested and an Experiment Card's validation aggregation is recomputed, the roadmap reacts automatically (no re-generation needed). The whole refresh is a deterministic projection of the current aggregation, so replayed ingestions never double-create follow-ups or drift ranks.
+
+- **Outcome on linked items** (CS-ROADMAP-006): items that planned the experiment (linked via `source_experiment_id`) pick up its `execution_outcome` — `passed`/`failed` complete the item, `inconclusive` (blocked/mixed) leaves it open for more evidence
+- **Failure follow-ups** (CS-ROADMAP-007): a failed experiment auto-spawns actionable follow-up items — *rerun with changed assumptions*, *add a baseline*, *inspect failure artifacts*, *adjust target metric or tolerance*, *test a simpler scenario* — inheriting the experiment's approaches and deduped by title so re-ingestion adds none
+- **Validation-aware ranking** (CS-ROADMAP-008): every item gets an `evidence_adjusted_score` folding in outcome, information gain, cost, lane risk, device relevance, and open evidence gaps; `GET /roadmap` orders by this score (falling back to the agent's `priority_score`) and `priority_rank` is recomputed goal-wide
+- **Provisional partial-batch updates** (CS-ROADMAP-009): a still-incomplete (partial) batch marks linked items `provisional` and spawns provisional follow-ups on early failure; once the batch finishes they are confirmed (final failure) or superseded (final pass)
+
 ### CS-EPIC-EXPERIMENT: Experiment Card and Spec Generation
 
 Generates ExperimentCards — structured experiment proposals from approach cards and/or hypothesis cards — with objectives, baselines, parameter sweeps, validation criteria, and exportable specs.

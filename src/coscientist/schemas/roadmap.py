@@ -16,6 +16,13 @@ class RoadmapStatusEnum(str, Enum):
     superseded = "superseded"
 
 
+class RoadmapExecutionOutcomeEnum(str, Enum):
+    passed = "passed"
+    failed = "failed"
+    inconclusive = "inconclusive"
+    partial = "partial"
+
+
 # --- Agent internal schema ---
 
 class AgentRoadmapItem(BaseModel):
@@ -60,6 +67,9 @@ class ResearchRoadmapItemResponse(BaseModel):
     source_device_id: str | None
     generation_run_id: str
     model_used: str | None
+    execution_outcome: RoadmapExecutionOutcomeEnum | None = None
+    provisional: bool = False
+    evidence_adjusted_score: float | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from coscientist.database import Base
@@ -29,6 +29,15 @@ class ResearchRoadmapItem(Base):
     source_device_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     generation_run_id: Mapped[str] = mapped_column(String(36), nullable=False)
     model_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Execution linkage (CS-EPIC-ROADMAP). Populated when a linked experiment's
+    # ResultBundles aggregate: passed/failed/inconclusive/partial. `provisional`
+    # marks updates driven by a still-incomplete (partial) batch, to be confirmed
+    # or replaced once the batch finishes. `evidence_adjusted_score` is the
+    # validation-aware ranking score that supersedes priority_score for ordering.
+    execution_outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    provisional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    evidence_adjusted_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow

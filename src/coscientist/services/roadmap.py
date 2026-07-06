@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
@@ -21,6 +21,7 @@ from coscientist.schemas.roadmap import (
     EvidenceGapResponse,
     ResearchRoadmapItemResponse,
     ResearchRoadmapListResponse,
+    RoadmapExecutionOutcomeEnum,
     RoadmapLaneEnum,
     RoadmapStatusEnum,
 )
@@ -58,6 +59,13 @@ def _to_response(item: ResearchRoadmapItem) -> ResearchRoadmapItemResponse:
         source_device_id=item.source_device_id,
         generation_run_id=item.generation_run_id,
         model_used=item.model_used,
+        execution_outcome=(
+            RoadmapExecutionOutcomeEnum(item.execution_outcome)
+            if item.execution_outcome
+            else None
+        ),
+        provisional=item.provisional,
+        evidence_adjusted_score=item.evidence_adjusted_score,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -299,11 +307,17 @@ def get_roadmap(
     skip: int = 0,
     limit: int = 50,
 ) -> ResearchRoadmapListResponse:
+    # Rank by the validation-aware score when execution evidence has adjusted it
+    # (CS-ROADMAP-008), falling back to the agent's original priority_score.
+    effective_score = func.coalesce(
+        ResearchRoadmapItem.evidence_adjusted_score,
+        ResearchRoadmapItem.priority_score,
+    )
     stmt = (
         select(ResearchRoadmapItem)
         .where(ResearchRoadmapItem.workspace_id == goal_id)
         .order_by(
-            ResearchRoadmapItem.priority_score.desc(),
+            effective_score.desc(),
             ResearchRoadmapItem.created_at.desc(),
         )
     )
