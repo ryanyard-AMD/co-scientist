@@ -5,11 +5,12 @@ from fastapi.staticfiles import StaticFiles
 
 from coscientist.config import settings
 from coscientist.database import Base, engine
-from coscientist.models import approval, approach, critic, device, evidence, experiment, feedback, governance, hypothesis, roadmap, score, synthesis, validation  # noqa: F401 — registers ORM models
+from coscientist.models import approval, approach, critic, device, evidence, execution, experiment, feedback, governance, hypothesis, roadmap, score, synthesis, validation  # noqa: F401 — registers ORM models
 from coscientist.routers import approval as approval_router
 from coscientist.routers import critic as critic_router
 from coscientist.routers import device as device_router
 from coscientist.routers import evaluation as evaluation_router
+from coscientist.routers import execution as execution_router
 from coscientist.routers import feedback as feedback_router
 from coscientist.routers import governance as governance_router
 from coscientist.routers import approach as approach_router
@@ -46,6 +47,7 @@ app.include_router(approach_router.router, prefix=settings.api_prefix)
 app.include_router(goal_router.router, prefix=settings.api_prefix)
 app.include_router(approval_router.router, prefix=settings.api_prefix)
 app.include_router(experiment_router.router, prefix=settings.api_prefix)
+app.include_router(execution_router.router, prefix=settings.api_prefix)
 app.include_router(hypothesis_router.router, prefix=settings.api_prefix)
 app.include_router(ontology_router.router, prefix=settings.api_prefix)
 app.include_router(scout_router.router, prefix=settings.api_prefix)

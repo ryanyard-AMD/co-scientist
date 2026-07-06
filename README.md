@@ -14,6 +14,7 @@ Layer 4: Co-Scientist (this project, port 8001)
          ├── Hypothesis Gen        (CS-EPIC-HYPOTHESIS)
          ├── Experiment Design     (CS-EPIC-EXPERIMENT)
          ├── Human Approval        (CS-EPIC-APPROVAL)
+         ├── Execution Tracking    (CS-EPIC-EXECUTION)
          ├── Experiment Validation (CS-EPIC-VALIDATION)
          ├── Device Synthesis      (CS-EPIC-DEVICE)
          ├── Research Roadmap      (CS-EPIC-ROADMAP)
@@ -183,6 +184,16 @@ Generates ExperimentCards — structured experiment proposals from approach card
 - **Submission modes**: `single_run`, `run_request_batch`, `sweep_batch`. Synthesised sweep cards default to `sweep_batch` with `expected_run_count` from the sweep cardinality; required capabilities are derived from runtime + experiment type
 - **RunRequest preview** (`GET /experiments/{id}/run-request-preview`, `cap` param): Cartesian-expands the sweep into per-run parameter dicts (capped, `truncated` flagged), reporting expanded run count, variables, required capabilities, cost/runtime, and the approval implication — so a researcher sees how many runs a sweep creates before submitting
 - **Execution status endpoint** (`POST /experiments/{id}/execution-status`, `force` for idempotent syncs) advances the execution lifecycle independently of approval
+
+### CS-EPIC-EXECUTION: Execution Batch and Run Tracking
+
+The co-scientist does not execute experiments — it hands approved cards to the external Experimentation System and keeps *references* to the objects that system owns. Status updates arrive by poll or webhook and roll up into an aggregate batch status and each Experiment Card's `execution_status`.
+
+- **Reference model, not execution**: three co-scientist-side tables — `ExecutionBatchReference`, `RunRequestReference` (unique on the external `run_request_id`), and `RunAttemptReference` (surfaces retries/failures) — track state without owning runner internals. Correlation IDs (`corr-…`) tie references back to control-plane objects.
+- **RunRequest status** (`pending`, `queued`, `running`, `completed`, `failed`, `canceled`, `blocked`, `timed_out`) is ingested idempotently; re-registering the same `run_request_id` returns the existing reference.
+- **Aggregate batch rollup**: `recompute_batch` recounts member runs into per-status counts and derives a `BatchAggregateStatus` (`submitted`, `queued`, `running`, `partially_completed`, `completed`, `failed`, `mixed_outcome`, `blocked`, `canceled`) — terminal-but-mixed batches resolve to `mixed_outcome`; any completed/failed alongside non-terminal runs resolves to `partially_completed`.
+- **Card sync**: every rollup best-effort syncs the owning Experiment Card's `execution_status` (via `set_execution_status(..., force=True)`); a missing/archived card never breaks ingestion.
+- **Endpoints**: `POST /execution-batches`, `GET /goals/{id}/execution-batches`, `GET /execution-batches/{id}`, `POST /run-requests` (register), `GET /run-requests` (filter by `batch_id`/`experiment_id`), `GET /run-requests/{id}`, `POST /run-requests/{id}/status` (ingest update), `POST|GET /run-requests/{id}/attempts`.
 
 ### CS-EPIC-GOVERNANCE: Agent Orchestration and Governance
 
