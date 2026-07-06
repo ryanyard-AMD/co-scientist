@@ -195,3 +195,42 @@ def test_score_experiment(client, db_session):
     body = resp.json()
     assert len(body["dimensions"]) == 10
     assert body["total_score"] > 0
+
+
+def test_run_request_preview_endpoint(client, db_session):
+    goal = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal["id"], "beamforming")
+    created = _create_experiment(client, goal["id"], [a1["id"]])
+    resp = client.get(
+        f"/co-scientist/goals/{goal['id']}/experiments/{created['id']}/run-request-preview"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["experiment_id"] == created["id"]
+    assert body["expanded_run_count"] >= 1
+    assert "approval_implication" in body
+
+
+def test_execution_status_endpoint(client, db_session):
+    goal = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal["id"], "beamforming")
+    created = _create_experiment(client, goal["id"], [a1["id"]])
+    resp = client.post(
+        f"/co-scientist/goals/{goal['id']}/experiments/{created['id']}/execution-status",
+        json={"execution_status": "submitted"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["execution_status"] == "submitted"
+    # response exposes the handoff block
+    assert resp.json()["execution_handoff"]["handoff_status"] == "not_submitted"
+
+
+def test_execution_status_invalid_transition(client, db_session):
+    goal = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal["id"], "beamforming")
+    created = _create_experiment(client, goal["id"], [a1["id"]])
+    resp = client.post(
+        f"/co-scientist/goals/{goal['id']}/experiments/{created['id']}/execution-status",
+        json={"execution_status": "completed"},
+    )
+    assert resp.status_code == 422

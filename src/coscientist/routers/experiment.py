@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.database import get_db
 from coscientist.schemas.experiment import (
+    ExecutionStatusUpdate,
     ExperimentCardCreate,
     ExperimentCardResponse,
     ExperimentCardUpdate,
@@ -14,6 +15,7 @@ from coscientist.schemas.experiment import (
     ExperimentStatusEnum,
     ExperimentStatusUpdate,
     ExperimentTypeEnum,
+    RunRequestPreview,
 )
 from coscientist.schemas.runner import RunnerResult
 from coscientist.services import experiment as svc
@@ -77,6 +79,25 @@ def transition_experiment(
     if body.status in (ExperimentStatusEnum.completed, ExperimentStatusEnum.failed):
         roadmap_svc.retire_for_experiment(db, experiment_id, goal_id)
     return result
+
+
+@router.post("/{experiment_id}/execution-status", response_model=ExperimentCardResponse)
+def set_execution_status(
+    goal_id: str, experiment_id: str,
+    body: ExecutionStatusUpdate,
+    force: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    return svc.set_execution_status(db, experiment_id, body.execution_status, force=force)
+
+
+@router.get("/{experiment_id}/run-request-preview", response_model=RunRequestPreview)
+def preview_run_requests(
+    goal_id: str, experiment_id: str,
+    cap: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    return svc.preview_run_requests(db, experiment_id, cap=cap)
 
 
 @router.post("/{experiment_id}/run", response_model=RunnerResult)

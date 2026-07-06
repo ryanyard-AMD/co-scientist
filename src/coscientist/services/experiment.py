@@ -18,6 +18,8 @@ from coscientist.models.experiment import ExperimentCard
 from coscientist.models.hypothesis import HypothesisCard
 from coscientist.schemas.experiment import (
     CostEstimateEnum,
+    ExecutionHandoff,
+    ExecutionStatusEnum,
     ExperimentCardCreate,
     ExperimentCardResponse,
     ExperimentCardUpdate,
@@ -29,7 +31,11 @@ from coscientist.schemas.experiment import (
     ExperimentScoreResponse,
     ExperimentStatusEnum,
     ExperimentTypeEnum,
+    HandoffStatusEnum,
+    RunRequestPreview,
+    RunRequestPreviewItem,
     RuntimeSpec,
+    SubmissionModeEnum,
     ValidationCriteria,
 )
 from coscientist.schemas.goal import GoalResponse
@@ -37,13 +43,31 @@ from coscientist.services import approach as approach_svc
 from coscientist.services import goal as goal_svc
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    ExperimentStatusEnum.generated:  {ExperimentStatusEnum.reviewed, ExperimentStatusEnum.superseded},
-    ExperimentStatusEnum.reviewed:   {ExperimentStatusEnum.approved, ExperimentStatusEnum.superseded},
-    ExperimentStatusEnum.approved:   {ExperimentStatusEnum.running, ExperimentStatusEnum.superseded},
+    ExperimentStatusEnum.generated:  {ExperimentStatusEnum.reviewed, ExperimentStatusEnum.needs_review, ExperimentStatusEnum.duplicated, ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.needs_review: {ExperimentStatusEnum.reviewed, ExperimentStatusEnum.approved, ExperimentStatusEnum.rejected, ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.reviewed:   {ExperimentStatusEnum.approved, ExperimentStatusEnum.rejected, ExperimentStatusEnum.needs_review, ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.approved:   {ExperimentStatusEnum.running, ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.rejected:   {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.duplicated: {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.running:    {ExperimentStatusEnum.completed, ExperimentStatusEnum.failed, ExperimentStatusEnum.superseded},
-    ExperimentStatusEnum.completed:  {ExperimentStatusEnum.superseded},
-    ExperimentStatusEnum.failed:     {ExperimentStatusEnum.superseded},
+    ExperimentStatusEnum.completed:  {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.failed:     {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.superseded: set(),
+    ExperimentStatusEnum.archived:   set(),
+}
+
+# Execution lifecycle in the external Experimentation System, tracked
+# independently of the card's approval `status`.
+ALLOWED_EXECUTION_TRANSITIONS: dict[str, set[str]] = {
+    ExecutionStatusEnum.not_submitted:       {ExecutionStatusEnum.submitted, ExecutionStatusEnum.blocked},
+    ExecutionStatusEnum.submitted:           {ExecutionStatusEnum.queued, ExecutionStatusEnum.running, ExecutionStatusEnum.failed, ExecutionStatusEnum.blocked, ExecutionStatusEnum.not_submitted},
+    ExecutionStatusEnum.queued:              {ExecutionStatusEnum.running, ExecutionStatusEnum.failed, ExecutionStatusEnum.blocked, ExecutionStatusEnum.partially_completed, ExecutionStatusEnum.completed},
+    ExecutionStatusEnum.running:             {ExecutionStatusEnum.partially_completed, ExecutionStatusEnum.completed, ExecutionStatusEnum.failed, ExecutionStatusEnum.mixed_outcome, ExecutionStatusEnum.blocked},
+    ExecutionStatusEnum.partially_completed: {ExecutionStatusEnum.completed, ExecutionStatusEnum.failed, ExecutionStatusEnum.mixed_outcome, ExecutionStatusEnum.blocked},
+    ExecutionStatusEnum.blocked:             {ExecutionStatusEnum.submitted, ExecutionStatusEnum.queued, ExecutionStatusEnum.running, ExecutionStatusEnum.failed, ExecutionStatusEnum.not_submitted},
+    ExecutionStatusEnum.completed:           set(),
+    ExecutionStatusEnum.failed:              {ExecutionStatusEnum.not_submitted, ExecutionStatusEnum.submitted},
+    ExecutionStatusEnum.mixed_outcome:       set(),
 }
 
 EXPERIMENT_WEIGHTS: dict[str, float] = {
@@ -96,9 +120,26 @@ def _to_response(card: ExperimentCard) -> ExperimentCardResponse:
         experiment_type=ExperimentTypeEnum(card.experiment_type),
         parameter_sweep_count=card.parameter_sweep_count,
         status=ExperimentStatusEnum(card.status),
+        execution_status=ExecutionStatusEnum(card.execution_status),
+        execution_handoff=_handoff(card),
         generation_run_id=card.generation_run_id,
         created_at=card.created_at,
         updated_at=card.updated_at,
+    )
+
+
+def _handoff(card: ExperimentCard) -> ExecutionHandoff:
+    return ExecutionHandoff(
+        submission_mode=SubmissionModeEnum(card.submission_mode),
+        handoff_status=HandoffStatusEnum(card.handoff_status),
+        experiment_control_plane=card.experiment_control_plane,
+        required_capabilities=json.loads(card.required_capabilities) if card.required_capabilities else [],
+        runner_pool_preference=card.runner_pool_preference,
+        run_request_ids=json.loads(card.run_request_ids) if card.run_request_ids else [],
+        execution_batch_id=card.execution_batch_id,
+        result_bundle_ids=json.loads(card.result_bundle_ids) if card.result_bundle_ids else [],
+        batch_expansion=json.loads(card.batch_expansion) if card.batch_expansion else {},
+        expected_run_count=card.expected_run_count,
     )
 
 
@@ -123,6 +164,7 @@ def create(db: Session, goal_id: str, data: ExperimentCardCreate) -> ExperimentC
             raise HTTPException(status_code=404, detail=f"Hypothesis {data.hypothesis_id!r} not found")
 
     now = datetime.now(timezone.utc)
+    sweep_count = _compute_sweep_cardinality(data.independent_variables)
     card = ExperimentCard(
         id=str(uuid.uuid4()),
         workspace_id=goal.workspace_id,
@@ -142,8 +184,18 @@ def create(db: Session, goal_id: str, data: ExperimentCardCreate) -> ExperimentC
         estimated_runtime=data.estimated_runtime.value,
         requires_human_approval=data.requires_human_approval,
         experiment_type=data.experiment_type.value,
-        parameter_sweep_count=_compute_sweep_cardinality(data.independent_variables),
+        parameter_sweep_count=sweep_count,
         status=ExperimentStatusEnum.generated.value,
+        execution_status=ExecutionStatusEnum.not_submitted.value,
+        handoff_status=HandoffStatusEnum.not_submitted.value,
+        submission_mode=data.submission_mode.value,
+        experiment_control_plane=data.experiment_control_plane,
+        required_capabilities=json.dumps(
+            data.required_capabilities
+            or _derive_required_capabilities(data.experiment_type.value, data.runtime.preferred)
+        ),
+        runner_pool_preference=data.runner_pool_preference,
+        expected_run_count=max(1, sweep_count) if data.submission_mode != SubmissionModeEnum.single_run else 1,
         created_at=now,
         updated_at=now,
     )
@@ -209,6 +261,14 @@ def update(db: Session, experiment_id: str, data: ExperimentCardUpdate) -> Exper
         card.experiment_type = data.experiment_type.value
     if data.requires_human_approval is not None:
         card.requires_human_approval = data.requires_human_approval
+    if data.submission_mode is not None:
+        card.submission_mode = data.submission_mode.value
+    if data.required_capabilities is not None:
+        card.required_capabilities = json.dumps(data.required_capabilities)
+    if data.runner_pool_preference is not None:
+        card.runner_pool_preference = data.runner_pool_preference
+    if data.experiment_control_plane is not None:
+        card.experiment_control_plane = data.experiment_control_plane
     card.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(card)
@@ -234,6 +294,36 @@ def transition(db: Session, experiment_id: str, new_status: ExperimentStatusEnum
     return _to_response(card)
 
 
+def set_execution_status(
+    db: Session,
+    experiment_id: str,
+    new_status: ExecutionStatusEnum,
+    *,
+    force: bool = False,
+) -> ExperimentCardResponse:
+    """Advance the execution lifecycle (separate from approval `status`).
+
+    `force` bypasses the transition guard for idempotent status syncs from the
+    Experimentation System (e.g. re-receiving the same terminal status).
+    """
+    card = _get_or_404(db, experiment_id)
+    current = ExecutionStatusEnum(card.execution_status)
+    if not force and new_status != current and new_status not in ALLOWED_EXECUTION_TRANSITIONS[current]:
+        allowed = {s.value for s in ALLOWED_EXECUTION_TRANSITIONS[current]}
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Cannot transition execution status from {current.value!r} to {new_status.value!r}. "
+                f"Allowed: {sorted(allowed) or 'none (terminal state)'}"
+            ),
+        )
+    card.execution_status = new_status.value
+    card.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(card)
+    return _to_response(card)
+
+
 def delete(db: Session, experiment_id: str) -> None:
     card = _get_or_404(db, experiment_id)
     if card.status != ExperimentStatusEnum.generated.value:
@@ -248,6 +338,37 @@ def delete(db: Session, experiment_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Generation helpers
 # ---------------------------------------------------------------------------
+
+_RUNTIME_CAPABILITIES: dict[str, list[str]] = {
+    "python_numerics_or_treble": ["python_numerics"],
+    "treble": ["treble_solver"],
+    "dolfinx": ["fem_solver"],
+    "elmer": ["fem_solver"],
+    "octave": ["octave_runtime"],
+}
+
+
+def _derive_required_capabilities(experiment_type: str, runtime_preferred: str) -> list[str]:
+    caps: list[str] = list(_RUNTIME_CAPABILITIES.get(runtime_preferred, ["python_numerics"]))
+    if experiment_type == "measurement":
+        caps.append("physical_measurement_rig")
+    elif experiment_type == "hybrid":
+        caps.append("physical_measurement_rig")
+    return list(dict.fromkeys(caps))
+
+
+def _expand_sweep(independent_variables: dict[str, list], *, cap: int) -> tuple[list[dict[str, Any]], bool]:
+    """Cartesian-expand a sweep into per-run parameter dicts, capped for preview."""
+    items = [(k, v) for k, v in independent_variables.items() if isinstance(v, list) and v]
+    if not items:
+        return [], False
+    runs: list[dict[str, Any]] = [{}]
+    for key, values in items:
+        runs = [{**base, key: val} for base in runs for val in values]
+        if len(runs) > cap:
+            return runs[:cap], True
+    return runs, False
+
 
 def _select_baselines(method_family: str) -> list[str]:
     related = RELATED_METHODS.get(method_family, [])
@@ -395,6 +516,11 @@ def _synthesize_experiment(
         experiment_type="simulation",
         parameter_sweep_count=sweep_count,
         status=ExperimentStatusEnum.generated.value,
+        execution_status=ExecutionStatusEnum.not_submitted.value,
+        handoff_status=HandoffStatusEnum.not_submitted.value,
+        submission_mode=(SubmissionModeEnum.sweep_batch.value if sweep_count > 1 else SubmissionModeEnum.single_run.value),
+        required_capabilities=json.dumps(_derive_required_capabilities("simulation", "python_numerics_or_treble")),
+        expected_run_count=max(1, sweep_count),
         generation_run_id=generation_run_id,
         created_at=now,
         updated_at=now,
@@ -453,6 +579,11 @@ def _synthesize_comparative_experiment(
         experiment_type="simulation",
         parameter_sweep_count=sweep_count,
         status=ExperimentStatusEnum.generated.value,
+        execution_status=ExecutionStatusEnum.not_submitted.value,
+        handoff_status=HandoffStatusEnum.not_submitted.value,
+        submission_mode=(SubmissionModeEnum.sweep_batch.value if sweep_count > 1 else SubmissionModeEnum.single_run.value),
+        required_capabilities=json.dumps(_derive_required_capabilities("simulation", "python_numerics_or_treble")),
+        expected_run_count=max(1, sweep_count),
         generation_run_id=generation_run_id,
         created_at=now,
         updated_at=now,
@@ -818,4 +949,50 @@ def score_experiment(db: Session, experiment_id: str, goal_id: str) -> Experimen
         experiment_id=experiment_id,
         dimensions=dimensions,
         total_score=round(total, 4),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RunRequest preview (CS-EXP-012)
+# ---------------------------------------------------------------------------
+
+def preview_run_requests(db: Session, experiment_id: str, *, cap: int = 50) -> RunRequestPreview:
+    """Show how a card would expand into RunRequests before submission."""
+    card = _get_or_404(db, experiment_id)
+    resp = _to_response(card)
+
+    if resp.execution_handoff.submission_mode == SubmissionModeEnum.single_run:
+        runs = [{}]
+        truncated = False
+        total = 1
+    else:
+        runs, truncated = _expand_sweep(resp.independent_variables, cap=cap)
+        if not runs:
+            runs = [{}]
+            total = 1
+        else:
+            total = resp.parameter_sweep_count or len(runs)
+
+    requires_approval = resp.requires_human_approval
+    if requires_approval:
+        implication = (
+            f"{total} run(s) require human approval before submission"
+            if resp.execution_handoff.submission_mode == SubmissionModeEnum.single_run
+            else f"batch of {total} runs requires approval (batch or per-run policy applies at submission)"
+        )
+    else:
+        implication = "auto-submittable; no human approval required"
+
+    return RunRequestPreview(
+        experiment_id=experiment_id,
+        submission_mode=resp.execution_handoff.submission_mode,
+        expanded_run_count=total,
+        truncated=truncated,
+        variables=resp.independent_variables,
+        required_capabilities=resp.execution_handoff.required_capabilities,
+        estimated_cost=resp.estimated_cost,
+        estimated_runtime=resp.estimated_runtime,
+        requires_human_approval=requires_approval,
+        approval_implication=implication,
+        runs=[RunRequestPreviewItem(index=i, parameters=p) for i, p in enumerate(runs)],
     )

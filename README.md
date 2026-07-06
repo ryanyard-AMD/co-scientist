@@ -176,6 +176,14 @@ Generates ExperimentCards — structured experiment proposals from approach card
 - YAML and Python config export without external dependencies
 - Deduplication against existing experiments by approach ID sets
 
+**Execution handoff schema** (Experimentation System integration — the co-scientist hands approved cards off as RunRequests, it does not execute them):
+
+- **Separated lifecycles**: the card's approval `status` (now `generated`, `needs_review`, `reviewed`, `approved`, `rejected`, `duplicated`, `superseded`, `archived`; legacy `running`/`completed`/`failed` retained) is distinct from `execution_status` (`not_submitted` → `submitted` → `queued` → `running` → `partially_completed` → `completed` / `failed` / `blocked` / `mixed_outcome`), each with its own guarded transition table. "Approved" no longer implies "executed."
+- **Handoff fields** on every card: `execution_handoff` block (`submission_mode`, `handoff_status`, `experiment_control_plane`, `required_capabilities`, `runner_pool_preference`, `run_request_ids`, `execution_batch_id`, `result_bundle_ids`, `batch_expansion`, `expected_run_count`)
+- **Submission modes**: `single_run`, `run_request_batch`, `sweep_batch`. Synthesised sweep cards default to `sweep_batch` with `expected_run_count` from the sweep cardinality; required capabilities are derived from runtime + experiment type
+- **RunRequest preview** (`GET /experiments/{id}/run-request-preview`, `cap` param): Cartesian-expands the sweep into per-run parameter dicts (capped, `truncated` flagged), reporting expanded run count, variables, required capabilities, cost/runtime, and the approval implication — so a researcher sees how many runs a sweep creates before submitting
+- **Execution status endpoint** (`POST /experiments/{id}/execution-status`, `force` for idempotent syncs) advances the execution lifecycle independently of approval
+
 ### CS-EPIC-GOVERNANCE: Agent Orchestration and Governance
 
 Adds an immutable audit trail over every agent-driven Claude call and a corpus/experiment permission model that can disable agent actions per goal.
