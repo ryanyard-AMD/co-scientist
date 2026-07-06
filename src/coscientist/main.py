@@ -18,6 +18,7 @@ from coscientist.routers import experiment as experiment_router
 from coscientist.routers import goal as goal_router
 from coscientist.routers import hypothesis as hypothesis_router
 from coscientist.routers import ontology as ontology_router
+from coscientist.routers import result_bundle as result_bundle_router
 from coscientist.routers import roadmap as roadmap_router
 from coscientist.routers import score as score_router
 from coscientist.routers import scout as scout_router
@@ -48,6 +49,7 @@ app.include_router(goal_router.router, prefix=settings.api_prefix)
 app.include_router(approval_router.router, prefix=settings.api_prefix)
 app.include_router(experiment_router.router, prefix=settings.api_prefix)
 app.include_router(execution_router.router, prefix=settings.api_prefix)
+app.include_router(result_bundle_router.router, prefix=settings.api_prefix)
 app.include_router(hypothesis_router.router, prefix=settings.api_prefix)
 app.include_router(ontology_router.router, prefix=settings.api_prefix)
 app.include_router(scout_router.router, prefix=settings.api_prefix)

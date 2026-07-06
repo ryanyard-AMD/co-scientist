@@ -143,6 +143,14 @@ Closes the experiment feedback loop by ingesting measured results, evaluating th
 - Single `db.commit()` at end of orchestration — no nested commits across status transitions
 - Refinement suggestions populated when refuted to guide next iteration
 
+**ResultBundle ingestion + aggregation** (Experimentation System results, `POST /result-bundles`): the automated counterpart to the agent path — structured ResultBundle summaries from the external runner are ingested and rolled up per Experiment Card.
+
+- **ResultBundleReference** (CS-VALIDATION-007/009): links result bundle ID, RunRequest/run/attempt IDs, Experiment Card, Hypothesis Card, Approach Cards, and ExecutionBatch, plus metrics, validation status, artifacts, deviations, warnings, and provenance. Missing links default from the Experiment Card.
+- **Idempotent ingestion** (CS-VALIDATION-008): keyed on `(run_request_id, run_id, attempt_id)`. Replayed completion events return `duplicate: true` and never double-count runs or metric summaries.
+- **Failure diagnostics** (CS-VALIDATION-010): failed bundles carry `failure_type`, `failure_summary`, `retryable`, partial `artifacts`, and `deviations` so failures still inform decisions.
+- **ValidationAggregation** (CS-VALIDATION-011, `GET /experiments/{id}/validation-aggregation`): one row per experiment collapsing bundles to the latest attempt per run, computing an aggregate status — `passed`, `failed`, `mixed`, `blocked`, `inconclusive`, or `partial` (when expected runs are still missing) — with per-metric summaries (count/min/max/mean) and a `missing_runs` count. Bundles flagged `is_partial` mark the aggregation partial (CS-VALIDATION-012).
+- **Execution sync**: ingesting a bundle advances the linked `RunRequestReference` (passed→completed, failed→failed, blocked→blocked), which rolls up through the batch to the card's `execution_status`.
+
 ### CS-EPIC-DEVICE: Candidate Device Concept Synthesis
 
 Closes the research-to-device loop by synthesising validated approach cards — with their rubric scores, experiments, and validation results — into actionable candidate device architectures via a Claude Sonnet 4.6 agent.
