@@ -50,4 +50,41 @@
   </table>
   <p class="small muted">accepted {{ eq.accepted_count }} · discarded {{ eq.discarded_count }} · failed {{ eq.failed_count }} · pending {{ eq.pending_count }}</p>
 </div>
+
+{% set hs = report.handoff_success %}
+<div class="panel">
+  <h3 style="margin-top:0">Execution Handoff <span class="muted small">CS-EVAL-007 · {{ hs.attempted_handoffs }} attempts</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Handoff success</td><td>{{ "%.0f%%"|format(hs.handoff_success_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(hs.handoff_success_target * 100) }}</td><td>{{ gate(hs.handoff_success_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">approved {{ hs.approved_experiments }} · attempted {{ hs.attempted_handoffs }} · successful {{ hs.successful_handoffs }} · failed {{ hs.failed_handoffs }} · run requests {{ hs.successful_run_requests }} · retry success {{ "n/a" if hs.retry_success_rate is none else "%.0f%%"|format(hs.retry_success_rate * 100) }}</p>
+</div>
+
+{% set tr = report.execution_traceability %}
+<div class="panel">
+  <h3 style="margin-top:0">Execution Traceability <span class="muted small">CS-EVAL-008 · {{ tr.total_run_requests }} run requests</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Fully traceable</td><td>{{ "%.0f%%"|format(tr.traceability_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(tr.traceability_target * 100) }}</td><td>{{ gate(tr.traceability_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">goal {{ tr.linked_to_goal }} · experiment {{ tr.linked_to_experiment }} · approach {{ tr.linked_to_approach }} · hypothesis {{ tr.linked_to_hypothesis }}/{{ tr.hypothesis_applicable }} · approval {{ tr.linked_to_approval }}</p>
+</div>
+
+{% set di = report.duplicate_ingestion %}
+<div class="panel">
+  <h3 style="margin-top:0">Idempotent Ingestion <span class="muted small">CS-EVAL-009 · target zero duplicates</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Duplicate result bundles</td><td>{{ di.duplicate_bundle_count }}</td><td>{{ gate(di.duplicate_bundle_count == 0) }}</td></tr>
+      <tr><td>Duplicate score updates</td><td>{{ di.duplicate_score_update_count }}</td><td>{{ gate(di.duplicate_score_update_count == 0) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">bundles {{ di.total_result_bundles }} · distinct keys {{ di.distinct_ingestion_keys }} · score updates {{ di.total_score_updates }} · distinct {{ di.distinct_score_update_keys }}</p>
+</div>
 {% endblock %}

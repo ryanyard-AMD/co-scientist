@@ -1790,6 +1790,90 @@ def eval_productivity(goal_id: str = typer.Argument(...)):
         db.close()
 
 
+@eval_app.command("handoff")
+def eval_handoff(goal_id: str = typer.Argument(...)):
+    """Execution handoff / RunRequest creation reliability (CS-EVAL-007)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.handoff_success(db, goal_id)
+        table = Table(title="Handoff Success")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Handoff success",
+            f"{m.handoff_success_rate:.0%}",
+            f"≥{m.handoff_success_target:.0%}",
+            _gate(m.handoff_success_meets_target),
+        )
+        console.print(table)
+        retry = "n/a" if m.retry_success_rate is None else f"{m.retry_success_rate:.0%}"
+        console.print(
+            f"approved={m.approved_experiments} attempted={m.attempted_handoffs} "
+            f"successful={m.successful_handoffs} failed={m.failed_handoffs} "
+            f"run_requests={m.successful_run_requests} retry_success={retry}"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("traceability")
+def eval_traceability(goal_id: str = typer.Argument(...)):
+    """RunRequest traceability back to research intent (CS-EVAL-008)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.execution_traceability(db, goal_id)
+        table = Table(title=f"Execution Traceability ({m.total_run_requests} run requests)")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Fully traceable",
+            f"{m.traceability_rate:.0%}",
+            f"≥{m.traceability_target:.0%}",
+            _gate(m.traceability_meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"goal={m.linked_to_goal} experiment={m.linked_to_experiment} "
+            f"approach={m.linked_to_approach} hypothesis={m.linked_to_hypothesis}"
+            f"/{m.hypothesis_applicable} approval={m.linked_to_approval}"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("duplicates")
+def eval_duplicates(goal_id: str = typer.Argument(...)):
+    """Duplicate ingestion / score-update rate — idempotency check (CS-EVAL-009)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.duplicate_ingestion(db, goal_id)
+        table = Table(title="Duplicate Ingestion")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Duplicate bundles",
+            str(m.duplicate_bundle_count),
+            _gate(m.duplicate_bundle_count == 0),
+        )
+        table.add_row(
+            "Duplicate score updates",
+            str(m.duplicate_score_update_count),
+            _gate(m.duplicate_score_update_count == 0),
+        )
+        console.print(table)
+        console.print(
+            f"bundles={m.total_result_bundles} distinct_keys={m.distinct_ingestion_keys} "
+            f"score_updates={m.total_score_updates} distinct={m.distinct_score_update_keys}"
+        )
+    finally:
+        db.close()
+
+
 @feedback_app.command("add")
 def feedback_add(
     goal_id: str = typer.Argument(...),

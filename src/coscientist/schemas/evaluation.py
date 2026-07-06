@@ -67,9 +67,54 @@ class ProductivityMetrics(BaseModel):
     satisfaction_rate: float | None
 
 
+class HandoffSuccessMetrics(BaseModel):
+    goal_id: str
+    approved_experiments: int
+    attempted_handoffs: int
+    successful_handoffs: int
+    failed_handoffs: int
+    handoff_success_rate: float
+    handoff_success_target: float
+    handoff_success_meets_target: bool
+    successful_run_requests: int
+    retried_run_requests: int
+    retry_successes: int
+    retry_success_rate: float | None
+
+
+class ExecutionTraceabilityMetrics(BaseModel):
+    goal_id: str
+    total_run_requests: int
+    linked_to_goal: int
+    linked_to_experiment: int
+    linked_to_approach: int
+    hypothesis_applicable: int
+    linked_to_hypothesis: int
+    linked_to_approval: int
+    fully_traceable: int
+    traceability_rate: float
+    traceability_target: float
+    traceability_meets_target: bool
+    untraceable_run_request_ids: list[str]
+
+
+class DuplicateIngestionMetrics(BaseModel):
+    goal_id: str
+    total_result_bundles: int
+    distinct_ingestion_keys: int
+    duplicate_bundle_count: int
+    total_score_updates: int
+    distinct_score_update_keys: int
+    duplicate_score_update_count: int
+    meets_target: bool
+
+
 class EvaluationReport(BaseModel):
     goal_id: str
     approach_usefulness: ApproachUsefulnessMetrics
     evidence_grounding: EvidenceGroundingMetrics
     experiment_quality: ExperimentQualityMetrics
     productivity: ProductivityMetrics
+    handoff_success: HandoffSuccessMetrics
+    execution_traceability: ExecutionTraceabilityMetrics
+    duplicate_ingestion: DuplicateIngestionMetrics

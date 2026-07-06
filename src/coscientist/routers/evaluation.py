@@ -4,9 +4,12 @@ from sqlalchemy.orm import Session
 from coscientist.database import get_db
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
+    DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
+    ExecutionTraceabilityMetrics,
     ExperimentQualityMetrics,
+    HandoffSuccessMetrics,
     ProductivityMetrics,
 )
 from coscientist.services import evaluation as svc
@@ -37,3 +40,18 @@ def experiment_quality(goal_id: str, db: Session = Depends(get_db)):
 @router.get("/productivity", response_model=ProductivityMetrics)
 def productivity(goal_id: str, db: Session = Depends(get_db)):
     return svc.productivity(db, goal_id)
+
+
+@router.get("/handoff-success", response_model=HandoffSuccessMetrics)
+def handoff_success(goal_id: str, db: Session = Depends(get_db)):
+    return svc.handoff_success(db, goal_id)
+
+
+@router.get("/execution-traceability", response_model=ExecutionTraceabilityMetrics)
+def execution_traceability(goal_id: str, db: Session = Depends(get_db)):
+    return svc.execution_traceability(db, goal_id)
+
+
+@router.get("/duplicate-ingestion", response_model=DuplicateIngestionMetrics)
+def duplicate_ingestion(goal_id: str, db: Session = Depends(get_db)):
+    return svc.duplicate_ingestion(db, goal_id)

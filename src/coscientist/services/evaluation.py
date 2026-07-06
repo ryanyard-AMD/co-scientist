@@ -6,13 +6,19 @@ from sqlalchemy.orm import Session
 
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
+from coscientist.models.execution import RunAttemptReference, RunRequestReference
 from coscientist.models.experiment import ExperimentCard
-from coscientist.models.governance import AgentActionLog
+from coscientist.models.governance import AgentActionLog, ExecutionAuditLog
+from coscientist.models.score import ScoreUpdate
+from coscientist.models.validation import ResultBundleReference
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
+    DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
+    ExecutionTraceabilityMetrics,
     ExperimentQualityMetrics,
+    HandoffSuccessMetrics,
     ProductivityMetrics,
     UnsupportedClaim,
 )
@@ -27,6 +33,14 @@ GROUNDING_TARGET = 0.90
 UNSUPPORTED_TARGET = 0.05
 ACCEPTANCE_TARGET = 0.70
 VALIDITY_TARGET = 0.85
+HANDOFF_SUCCESS_TARGET = 0.95
+
+# Experiment lifecycle statuses that imply the card was approved for execution.
+_EXPERIMENT_APPROVED = {"approved", "running", "completed", "failed"}
+# handoff_status values that count as a submission attempt / success.
+_HANDOFF_ATTEMPTED = {"submitting", "submitted", "failed", "canceled"}
+_HANDOFF_SUCCEEDED = {"submitted"}
+_HANDOFF_FAILED = {"failed", "canceled"}
 
 # Approach lifecycle status buckets.
 _APPROACH_USEFUL = {"reviewed", "scored", "experiment_proposed", "tested", "validated"}
@@ -249,6 +263,168 @@ def productivity(db: Session, goal_id: str) -> ProductivityMetrics:
     )
 
 
+def handoff_success(db: Session, goal_id: str) -> HandoffSuccessMetrics:
+    """CS-EVAL-007: measure RunRequest creation / handoff reliability.
+
+    Everything is derived from stored state: the Experiment Card handoff
+    lifecycle, RunRequest references, and run attempts. The co-scientist only
+    records the handoff — it never runs anything.
+    """
+    goal_svc.get(db, goal_id)
+    cards = db.scalars(
+        select(ExperimentCard).where(ExperimentCard.workspace_id == goal_id)
+    ).all()
+
+    approved = attempted = successful = failed = 0
+    for card in cards:
+        if card.status in _EXPERIMENT_APPROVED or card.handoff_status in _HANDOFF_ATTEMPTED:
+            approved += 1
+        if card.handoff_status in _HANDOFF_ATTEMPTED:
+            attempted += 1
+        if card.handoff_status in _HANDOFF_SUCCEEDED:
+            successful += 1
+        if card.handoff_status in _HANDOFF_FAILED:
+            failed += 1
+
+    run_requests = db.scalars(
+        select(RunRequestReference).where(RunRequestReference.goal_id == goal_id)
+    ).all()
+    successful_run_requests = len(run_requests)
+
+    # Retry success: run requests that took more than one attempt and ended
+    # completed. Attempt counts come from RunAttemptReference.
+    retried = retry_successes = 0
+    for rr in run_requests:
+        attempt_count = db.scalar(
+            select(func.count())
+            .select_from(RunAttemptReference)
+            .where(RunAttemptReference.run_request_id == rr.run_request_id)
+        ) or 0
+        if attempt_count >= 2:
+            retried += 1
+            if rr.status == "completed":
+                retry_successes += 1
+
+    handoff_rate = _rate(successful, attempted)
+    retry_rate = (retry_successes / retried) if retried else None
+    return HandoffSuccessMetrics(
+        goal_id=goal_id,
+        approved_experiments=approved,
+        attempted_handoffs=attempted,
+        successful_handoffs=successful,
+        failed_handoffs=failed,
+        handoff_success_rate=handoff_rate,
+        handoff_success_target=HANDOFF_SUCCESS_TARGET,
+        handoff_success_meets_target=_meets_min(handoff_rate, HANDOFF_SUCCESS_TARGET, attempted),
+        successful_run_requests=successful_run_requests,
+        retried_run_requests=retried,
+        retry_successes=retry_successes,
+        retry_success_rate=retry_rate,
+    )
+
+
+def execution_traceability(db: Session, goal_id: str) -> ExecutionTraceabilityMetrics:
+    """CS-EVAL-008: every RunRequest should trace back to research intent —
+    goal, Experiment Card, Approach Card, Hypothesis Card (where applicable),
+    and an approval/handoff record."""
+    goal_svc.get(db, goal_id)
+    run_requests = db.scalars(
+        select(RunRequestReference).where(RunRequestReference.goal_id == goal_id)
+    ).all()
+
+    # Experiment cards with a handoff-submitted audit record are "approved".
+    approved_experiment_ids = set(
+        db.scalars(
+            select(ExecutionAuditLog.experiment_id).where(
+                ExecutionAuditLog.workspace_id == goal_id,
+                ExecutionAuditLog.action == "handoff_submitted",
+            )
+        )
+    )
+    approved_experiment_ids.discard(None)
+
+    linked_goal = linked_experiment = linked_approach = 0
+    hypothesis_applicable = linked_hypothesis = linked_approval = fully = 0
+    untraceable: list[str] = []
+    for rr in run_requests:
+        has_goal = bool(rr.goal_id)
+        card = db.get(ExperimentCard, rr.experiment_id)
+        has_experiment = card is not None
+        has_approach = bool(card and json.loads(card.approach_ids or "[]"))
+        has_hypothesis_slot = bool(card and card.hypothesis_id)
+        has_approval = rr.experiment_id in approved_experiment_ids
+
+        linked_goal += has_goal
+        linked_experiment += has_experiment
+        linked_approach += has_approach
+        if has_hypothesis_slot:
+            hypothesis_applicable += 1
+            linked_hypothesis += 1
+        linked_approval += has_approval
+
+        if has_goal and has_experiment and has_approach and has_approval:
+            fully += 1
+        else:
+            untraceable.append(rr.run_request_id)
+
+    total = len(run_requests)
+    rate = _rate(fully, total)
+    return ExecutionTraceabilityMetrics(
+        goal_id=goal_id,
+        total_run_requests=total,
+        linked_to_goal=linked_goal,
+        linked_to_experiment=linked_experiment,
+        linked_to_approach=linked_approach,
+        hypothesis_applicable=hypothesis_applicable,
+        linked_to_hypothesis=linked_hypothesis,
+        linked_to_approval=linked_approval,
+        fully_traceable=fully,
+        traceability_rate=rate,
+        traceability_target=TRACEABILITY_TARGET,
+        traceability_meets_target=_meets_min(rate, TRACEABILITY_TARGET, total),
+        untraceable_run_request_ids=untraceable,
+    )
+
+
+def duplicate_ingestion(db: Session, goal_id: str) -> DuplicateIngestionMetrics:
+    """CS-EVAL-009: verify idempotent ingestion — zero duplicate score changes.
+
+    ResultBundles are unique on their ingestion key and score updates on
+    (source_key, approach_id, dimension); a nonzero duplicate count means the
+    idempotency guarantee was violated.
+    """
+    goal_svc.get(db, goal_id)
+
+    bundle_keys = db.scalars(
+        select(ResultBundleReference.ingestion_key).where(
+            ResultBundleReference.goal_id == goal_id
+        )
+    ).all()
+    total_bundles = len(bundle_keys)
+    distinct_keys = len(set(bundle_keys))
+
+    update_rows = db.execute(
+        select(
+            ScoreUpdate.source_key, ScoreUpdate.approach_id, ScoreUpdate.dimension
+        ).where(ScoreUpdate.workspace_id == goal_id)
+    ).all()
+    total_updates = len(update_rows)
+    distinct_updates = len({tuple(r) for r in update_rows})
+
+    duplicate_bundles = total_bundles - distinct_keys
+    duplicate_updates = total_updates - distinct_updates
+    return DuplicateIngestionMetrics(
+        goal_id=goal_id,
+        total_result_bundles=total_bundles,
+        distinct_ingestion_keys=distinct_keys,
+        duplicate_bundle_count=duplicate_bundles,
+        total_score_updates=total_updates,
+        distinct_score_update_keys=distinct_updates,
+        duplicate_score_update_count=duplicate_updates,
+        meets_target=duplicate_bundles == 0 and duplicate_updates == 0,
+    )
+
+
 def get_report(db: Session, goal_id: str) -> EvaluationReport:
     return EvaluationReport(
         goal_id=goal_id,
@@ -256,4 +432,7 @@ def get_report(db: Session, goal_id: str) -> EvaluationReport:
         evidence_grounding=evidence_grounding(db, goal_id),
         experiment_quality=experiment_quality(db, goal_id),
         productivity=productivity(db, goal_id),
+        handoff_success=handoff_success(db, goal_id),
+        execution_traceability=execution_traceability(db, goal_id),
+        duplicate_ingestion=duplicate_ingestion(db, goal_id),
     )

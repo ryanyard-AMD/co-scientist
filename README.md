@@ -301,6 +301,10 @@ A read-only metrics layer that computes the quality targets from PRD §20 over t
 - Each metric reports raw counts, the rate, the PRD target, and a pass/fail gate. Empty workspaces are not failing gates
 - **Productivity metrics** (CS-EVAL-005): estimated time saved is a heuristic over the governance agent-action log (successful Claude calls × `CS_EVAL_MINUTES_PER_AGENT_ACTION`), reported alongside the user-satisfaction rate computed from captured feedback
 - **User feedback capture** (CS-EVAL-006): a lightweight feedback store records thumbs up/down plus an optional comment against any artefact (approach, score, experiment, device, hypothesis, roadmap); satisfaction rate feeds the productivity block
+- **Execution-handoff metrics** (CS-EVAL-007…009), all derived from stored handoff state — the co-scientist only records the handoff, it never runs anything:
+  - **Handoff success** (CS-EVAL-007): from the Experiment Card handoff lifecycle, the share of attempted handoffs that reached `submitted` (target ≥ 95%), plus successful RunRequest count and retry-success rate (run requests that took ≥ 2 attempts and completed)
+  - **Execution traceability** (CS-EVAL-008): every RunRequest should trace back to research intent — goal, Experiment Card, Approach Card, hypothesis (where applicable), and a `handoff_submitted` approval record; reports the fully-traceable rate (target 100%) and the ids of any untraceable run requests
+  - **Idempotent ingestion** (CS-EVAL-009): verifies zero duplicate ResultBundles (by ingestion key) and zero duplicate score updates (by source_key/approach_id/dimension) — a nonzero count means the idempotency guarantee was violated
 - Exposed via `GET /co-scientist/goals/{id}/evaluation[/...]`, the `cs eval` CLI group, and the `/ui/goals/{id}/evaluation` page
 
 ## Setup
@@ -667,6 +671,9 @@ cs eval approaches <GOAL_ID>    # usefulness + evidence traceability (CS-EVAL-00
 cs eval grounding <GOAL_ID>     # evidence grounding + unsupported claim rate (CS-EVAL-002)
 cs eval experiments <GOAL_ID>   # acceptance rate + spec validity (CS-EVAL-003)
 cs eval productivity <GOAL_ID>  # estimated time saved + satisfaction rate (CS-EVAL-005)
+cs eval handoff <GOAL_ID>       # handoff success rate + retry success (CS-EVAL-007)
+cs eval traceability <GOAL_ID>  # run-request traceability to research intent (CS-EVAL-008)
+cs eval duplicates <GOAL_ID>    # idempotent ingestion / duplicate detection (CS-EVAL-009)
 cs eval report <GOAL_ID>        # full report as JSON
 ```
 
@@ -820,11 +827,14 @@ Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /go
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/goals/{id}/evaluation` | Full evaluation report (all three metric blocks) |
+| GET | `/goals/{id}/evaluation` | Full evaluation report (all metric blocks) |
 | GET | `/goals/{id}/evaluation/approach-usefulness` | Approach usefulness + traceability (CS-EVAL-001) |
 | GET | `/goals/{id}/evaluation/evidence-grounding` | Evidence grounding + unsupported claim rate (CS-EVAL-002) |
 | GET | `/goals/{id}/evaluation/experiment-quality` | Experiment acceptance + spec validity (CS-EVAL-003) |
 | GET | `/goals/{id}/evaluation/productivity` | Estimated time saved + satisfaction rate (CS-EVAL-005) |
+| GET | `/goals/{id}/evaluation/handoff-success` | Handoff success rate + retry success (CS-EVAL-007) |
+| GET | `/goals/{id}/evaluation/execution-traceability` | RunRequest traceability to research intent (CS-EVAL-008) |
+| GET | `/goals/{id}/evaluation/duplicate-ingestion` | Idempotent ingestion / duplicate detection (CS-EVAL-009) |
 
 ### Feedback
 
