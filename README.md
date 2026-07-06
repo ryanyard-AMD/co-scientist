@@ -122,6 +122,13 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 - `list_pending()` surfaces all `reviewed` experiments, optionally filtered by goal
 - `duplicate_experiment()` creates an editable copy (status=`generated`, name+" (copy)") with no decisions
 
+**RunRequest submission** (approved card → RunRequests, `POST /experiments/{id}/submit`): the co-scientist hands an approved card to the external Experimentation System as one or more RunRequests instead of executing it directly.
+
+- **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter` so a live client can be swapped in.
+- **Approval policy on every batch** (CS-APPROVAL-008): `approval_id`, `approver`, `approved_at`, `cost_class` (defaults to the card's estimated cost), `credentialed` flag, `resource_policy` (required capabilities + overrides), and `retry_policy` are stored on the `ExecutionBatchReference`.
+- **Batch approval modes** (CS-APPROVAL-009): `approve_batch` submits all runs as `pending`; `approve_each_run` submits every run as `blocked` awaiting per-run approval; `approval_required_above_threshold` blocks runs only when the expanded count exceeds `approval_threshold`. The resulting card `execution_status` follows the batch rollup (`submitted` vs `blocked`).
+- **Idempotent**: a card that already carries an `execution_batch_id` is rejected (409); re-registering the same RunRequest returns the existing reference. Submission requires `approved` status.
+
 ### CS-EPIC-VALIDATION: Agent-Driven Experiment Validation
 
 Closes the experiment feedback loop by ingesting measured results, evaluating them against pass conditions via a Claude Sonnet 4.6 agent, and driving automated status transitions on experiments and approach cards.
@@ -554,6 +561,7 @@ cs approval reject <EXPERIMENT_ID> <GOAL_ID> --reason "..."
 cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."
 cs approval history <EXPERIMENT_ID> <GOAL_ID>
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>
+cs approval submit <EXPERIMENT_ID> <GOAL_ID> [--mode approve_batch|approve_each_run|approval_required_above_threshold] [--approver <ID>] [--threshold <N>] [--credentialed]
 ```
 
 ### Validation

@@ -62,3 +62,40 @@ class ExperimentDuplicateResponse(BaseModel):
     original_id: str
     new_id: str
     new_experiment: ExperimentCardResponse
+
+
+class ApprovalModeEnum(str, Enum):
+    approve_batch = "approve_batch"
+    approve_each_run = "approve_each_run"
+    approval_required_above_threshold = "approval_required_above_threshold"
+
+
+class SubmissionRequest(BaseModel):
+    """Submit an approved Experiment Card to the Experimentation System as
+    RunRequest(s). Carries the approval policy governing execution."""
+
+    approval_mode: ApprovalModeEnum = ApprovalModeEnum.approve_batch
+    approver: str | None = None
+    approval_threshold: int | None = None
+    cost_class: str | None = None
+    credentialed: bool = False
+    resource_policy: dict = Field(default_factory=dict)
+    retry_policy: dict = Field(default_factory=lambda: {"max_retries": 1})
+    cap: int = 50
+
+
+class SubmittedRunRequest(BaseModel):
+    run_request_id: str
+    status: str
+    parameters: dict
+
+
+class SubmissionResponse(BaseModel):
+    experiment_id: str
+    execution_batch_id: str
+    approval_mode: ApprovalModeEnum
+    handoff_status: str
+    execution_status: str
+    aggregate_status: str
+    run_request_count: int
+    runs: list[SubmittedRunRequest]

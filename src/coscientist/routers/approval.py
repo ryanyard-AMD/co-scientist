@@ -10,9 +10,12 @@ from coscientist.schemas.approval import (
     ApprovalDecisionListResponse,
     ApprovalDecisionResponse,
     ExperimentDuplicateResponse,
+    SubmissionRequest,
+    SubmissionResponse,
 )
 from coscientist.schemas.experiment import ExperimentCardResponse
 from coscientist.services import approval as svc
+from coscientist.services import submission as submission_svc
 
 router = APIRouter(prefix="/goals/{goal_id}/experiments", tags=["approval"])
 
@@ -88,6 +91,18 @@ def duplicate_experiment(
     db: Session = Depends(get_db),
 ):
     return svc.duplicate_experiment(db, experiment_id, goal_id)
+
+
+@router.post("/{experiment_id}/submit", response_model=SubmissionResponse, status_code=201)
+def submit_experiment(
+    goal_id: str,
+    experiment_id: str,
+    body: SubmissionRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    return submission_svc.submit_experiment(
+        db, experiment_id, goal_id, body or SubmissionRequest()
+    )
 
 
 @router.get("/{experiment_id}/decisions", response_model=ApprovalDecisionListResponse)

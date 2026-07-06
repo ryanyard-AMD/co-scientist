@@ -1210,6 +1210,37 @@ def approval_duplicate(
         db.close()
 
 
+@approval_app.command("submit")
+def approval_submit(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    mode: str = typer.Option("approve_batch", "--mode", help="approve_batch | approve_each_run | approval_required_above_threshold"),
+    approver: str | None = typer.Option(None, "--approver"),
+    threshold: int | None = typer.Option(None, "--threshold", help="run count above which per-run approval is required"),
+    credentialed: bool = typer.Option(False, "--credentialed"),
+):
+    """Submit an approved experiment to the Experimentation System as RunRequest(s)."""
+    from coscientist.schemas.approval import ApprovalModeEnum, SubmissionRequest
+    from coscientist.services import submission as submission_svc
+    db = _get_session()
+    try:
+        body = SubmissionRequest(
+            approval_mode=ApprovalModeEnum(mode),
+            approver=approver,
+            approval_threshold=threshold,
+            credentialed=credentialed,
+        )
+        result = submission_svc.submit_experiment(db, experiment_id, goal_id, body)
+        console.print(
+            f"[green]Submitted[/green] experiment {experiment_id[:8]}… → batch {result.execution_batch_id[:8]}…"
+        )
+        console.print(
+            f"{result.run_request_count} RunRequest(s), execution_status=[bold]{result.execution_status}[/bold]"
+        )
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Validation commands
 # ---------------------------------------------------------------------------
