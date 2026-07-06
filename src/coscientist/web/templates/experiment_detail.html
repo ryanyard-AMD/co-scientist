@@ -4,11 +4,108 @@
 <p class="small"><a href="/ui/goals/{{ goal.id }}/experiments">← Experiments</a></p>
 <div class="row">
   <h1>{{ experiment.name }}</h1>
-  <span class="badge {{ experiment.status.value }}">{{ experiment.status.value }}</span>
+  <span class="badge {{ experiment.status.value }}" title="Lifecycle state">{{ experiment.status.value }}</span>
+  <span class="badge {{ experiment.execution_status.value }}" title="Execution status">exec: {{ experiment.execution_status.value }}</span>
   <span class="badge">{{ experiment.experiment_type.value }}</span>
 </div>
 
 {% if saved %}<div class="flash">Changes saved.</div>{% endif %}
+
+<h2>Execution</h2>
+<p class="small muted">Co-Scientist submits approved experiments to the external Experimentation System and ingests results. It records references — it never runs experiments.</p>
+
+{% if batches %}
+{% for b in batches %}
+<div class="panel">
+  <div class="row">
+    <h3 style="margin:0">Batch {{ b.correlation_id }}</h3>
+    <div class="spacer"></div>
+    <span class="badge {{ b.aggregate_status.value }}">{{ b.aggregate_status.value }}</span>
+    <span class="badge">{{ b.submission_mode }}</span>
+  </div>
+  <table>
+    <thead><tr><th>total</th><th>queued</th><th>running</th><th>completed</th><th>failed</th><th>canceled</th><th>blocked</th><th>timed out</th></tr></thead>
+    <tbody><tr>
+      <td>{{ b.counts.total }}</td>
+      <td>{{ b.counts.queued }}</td>
+      <td>{{ b.counts.running }}</td>
+      <td>{{ b.counts.completed }}</td>
+      <td>{{ b.counts.failed }}</td>
+      <td>{{ b.counts.canceled }}</td>
+      <td>{{ b.counts.blocked }}</td>
+      <td>{{ b.counts.timed_out }}</td>
+    </tr></tbody>
+  </table>
+</div>
+{% endfor %}
+{% else %}
+<p class="muted">No execution batch submitted for this experiment yet.</p>
+{% endif %}
+
+{% if run_requests %}
+<h3>Run requests</h3>
+<table>
+  <thead><tr><th>Run request</th><th>Status</th><th>Submitted</th><th>Last update</th></tr></thead>
+  <tbody>
+    {% for r in run_requests %}
+    <tr>
+      <td class="small">{{ r.run_request_id }}</td>
+      <td><span class="badge {{ r.status.value }}">{{ r.status.value }}</span></td>
+      <td class="small">{{ r.submitted_at.strftime("%Y-%m-%d %H:%M") if r.submitted_at else "—" }}</td>
+      <td class="small">{{ r.latest_update_at.strftime("%Y-%m-%d %H:%M") if r.latest_update_at else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if aggregation %}
+<h3>Validation aggregation</h3>
+<div class="panel">
+  <div class="row">
+    <span class="badge {{ aggregation.aggregate_status.value }}">{{ aggregation.aggregate_status.value }}</span>
+    {% if aggregation.is_partial %}<span class="badge partial" title="Batch is not yet complete">partial</span>{% endif %}
+    <div class="spacer"></div>
+    <span class="small muted">{{ aggregation.passed_runs }} passed / {{ aggregation.failed_runs }} failed / {{ aggregation.blocked_runs }} blocked / {{ aggregation.missing_runs }} missing of {{ aggregation.expected_run_count or aggregation.total_runs }} expected</span>
+  </div>
+  {% if aggregation.metric_summaries %}
+  <table>
+    <thead><tr><th>Metric</th><th>count</th><th>min</th><th>mean</th><th>max</th></tr></thead>
+    <tbody>
+      {% for name, m in aggregation.metric_summaries.items() %}
+      <tr><td>{{ name }}</td><td>{{ m.count }}</td><td>{{ "%.3g"|format(m.min) }}</td><td>{{ "%.3g"|format(m.mean) }}</td><td>{{ "%.3g"|format(m.max) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if score_updates %}
+<h3>Score provenance</h3>
+<p class="small muted">Approach score changes driven by ingested execution evidence.</p>
+{% for s in score_updates %}
+<div class="panel">
+  <div class="row">
+    <span class="small">{{ s.dimension }}</span>
+    <div class="spacer"></div>
+    <span class="badge {{ s.validation_status }}">{{ s.validation_status }}</span>
+    <span class="badge">{{ s.evidence_type.value }}</span>
+  </div>
+  <p class="small">
+    score {{ "%.2f"|format(s.previous_score) }} → {{ "%.2f"|format(s.new_score) }}
+    ({{ "%+.2f"|format(s.score_delta) }})
+    {% if s.previous_confidence is not none and s.new_confidence is not none %}
+    · confidence {{ "%.2f"|format(s.previous_confidence) }} → {{ "%.2f"|format(s.new_confidence) }} ({{ "%+.2f"|format(s.confidence_delta) }})
+    {% endif %}
+  </p>
+  <p class="small muted">{{ s.rationale }}</p>
+  {% if s.result_bundle_refs %}
+  <p class="small">Result bundles: {% for ref in s.result_bundle_refs %}<code>{{ ref }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
 
 <h2>Editor</h2>
 <div class="panel">

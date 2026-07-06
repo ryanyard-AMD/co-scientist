@@ -14,12 +14,15 @@ from coscientist.schemas.hypothesis import HypothesisStatusEnum
 from coscientist.services import approach as approach_svc
 from coscientist.services import device as device_svc
 from coscientist.services import evaluation as evaluation_svc
+from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import hypothesis as hypothesis_svc
+from coscientist.services import result_bundle as result_bundle_svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import scout as scout_svc
 from coscientist.services import score as score_svc
+from coscientist.services import score_update as score_update_svc
 from coscientist.services import validation as validation_svc
 from coscientist.web.templates import templates
 
@@ -316,10 +319,25 @@ def experiment_detail(
         experiment = experiment_svc.get(db, experiment_id)
     except HTTPException as exc:
         return _error(request, exc)
+    all_batches, _ = execution_svc.list_batches(db, goal_id, limit=200)
+    batches = [b for b in all_batches if b.experiment_id == experiment_id]
+    run_requests, _ = execution_svc.list_run_requests(db, experiment_id=experiment_id)
+    aggregation = _try_get_aggregation(db, experiment_id)
+    score_updates = score_update_svc.list_score_updates(
+        db, goal_id, experiment_id=experiment_id
+    ).items
     return templates.TemplateResponse(
         request,
         "experiment_detail.html",
-        {"goal": goal, "experiment": experiment, "saved": saved},
+        {
+            "goal": goal,
+            "experiment": experiment,
+            "saved": saved,
+            "batches": batches,
+            "run_requests": run_requests,
+            "aggregation": aggregation,
+            "score_updates": score_updates,
+        },
     )
 
 
@@ -385,10 +403,24 @@ def validation_page(request: Request, goal_id: str, db: Session = Depends(get_db
     except HTTPException as exc:
         return _error(request, exc)
     result = validation_svc.list_results(db, goal_id)
+    experiments, _ = experiment_svc.list_experiments(db, goal_id, limit=200)
+    execution = []
+    for exp in experiments:
+        bundles, _ = result_bundle_svc.list_bundles(db, exp.id)
+        aggregation = _try_get_aggregation(db, exp.id)
+        if bundles or aggregation:
+            execution.append(
+                {"experiment": exp, "bundles": bundles, "aggregation": aggregation}
+            )
     return templates.TemplateResponse(
         request,
         "validation.html",
-        {"goal": goal, "results": result.items, "total": result.total},
+        {
+            "goal": goal,
+            "results": result.items,
+            "total": result.total,
+            "execution": execution,
+        },
     )
 
 
@@ -435,5 +467,12 @@ def evaluation_page(request: Request, goal_id: str, db: Session = Depends(get_db
 def _try_get_scores(db: Session, approach_id: str):
     try:
         return score_svc.get_scores(db, approach_id)
+    except HTTPException:
+        return None
+
+
+def _try_get_aggregation(db: Session, experiment_id: str):
+    try:
+        return result_bundle_svc.get_aggregation(db, experiment_id)
     except HTTPException:
         return None

@@ -5,7 +5,10 @@ from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.hypothesis import HypothesisCard
+from coscientist.schemas.execution import RunRequestStatusEnum
+from coscientist.services import execution as execution_svc
 from coscientist.services import score as score_svc
+from test_approval_api import _create_scored_approach
 
 
 def _create_goal(client):
@@ -340,3 +343,100 @@ def test_evaluation_page_ok(client, db_session):
     body = resp.text.lower()
     assert "grounding" in body
     assert "acceptance" in body
+
+
+# --- Execution status UI (CS-EPIC-UI: CS-UI-008..013) ---
+
+
+def _scored_experiment(client, db_session):
+    goal = _create_goal(client)
+    approach = _create_scored_approach(client, db_session, goal["id"])
+    exp = client.post(
+        f"/co-scientist/goals/{goal['id']}/experiments",
+        json={
+            "name": "Execution Experiment",
+            "objective": "Evaluate method",
+            "hypothesis_text": "Method achieves target",
+            "approach_ids": [approach["id"]],
+        },
+    ).json()
+    return goal, approach, exp
+
+
+def _ingest(client, experiment_id, run_request_id, status="passed", **extra):
+    body = {
+        "result_bundle_id": f"rb-{run_request_id}",
+        "run_request_id": run_request_id,
+        "attempt_id": "1",
+        "experiment_id": experiment_id,
+        "validation_status": status,
+        "metrics": {"acoustic_contrast": 22.0},
+    }
+    body.update(extra)
+    return client.post("/co-scientist/result-bundles", json=body)
+
+
+def test_experiment_detail_shows_execution_status_badge(client, db_session):
+    # CS-UI-008: lifecycle state and execution status render as separate badges.
+    goal = _create_goal(client)
+    card = _seed_experiment(db_session, goal["id"])
+    resp = client.get(f"/ui/goals/{goal['id']}/experiments/{card.id}")
+    assert resp.status_code == 200
+    assert "exec: not_submitted" in resp.text
+
+
+def test_experiment_detail_shows_batch_panel(client, db_session):
+    # CS-UI-009: ExecutionBatch panel with per-status run request counts.
+    goal = _create_goal(client)
+    card = _seed_experiment(db_session, goal["id"])
+    batch = execution_svc.create_execution_batch(
+        db_session,
+        experiment_id=card.id,
+        goal_id=goal["id"],
+        workspace_id=goal["id"],
+        submission_mode="run_request_batch",
+    )
+    execution_svc.register_run_request(
+        db_session,
+        run_request_id="rr-ui-1",
+        experiment_id=card.id,
+        goal_id=goal["id"],
+        workspace_id=goal["id"],
+        execution_batch_id=batch.id,
+        status=RunRequestStatusEnum.running,
+    )
+    resp = client.get(f"/ui/goals/{goal['id']}/experiments/{card.id}")
+    assert resp.status_code == 200
+    assert batch.correlation_id in resp.text
+    assert "rr-ui-1" in resp.text
+    assert "Run requests" in resp.text
+
+
+def test_experiment_detail_shows_score_provenance(client, db_session):
+    # CS-UI-013: score panel shows before/after, rationale, and bundle links.
+    goal, approach, exp = _scored_experiment(client, db_session)
+    _ingest(client, exp["id"], "rr-1", status="passed")
+    resp = client.get(f"/ui/goals/{goal['id']}/experiments/{exp['id']}")
+    assert resp.status_code == 200
+    assert "Score provenance" in resp.text
+    assert "rb-rr-1" in resp.text
+
+
+def test_validation_page_shows_execution_results(client, db_session):
+    # CS-UI-010: ResultBundle summaries + aggregation appear in the validation view.
+    goal, approach, exp = _scored_experiment(client, db_session)
+    _ingest(client, exp["id"], "rr-1", status="passed")
+    resp = client.get(f"/ui/goals/{goal['id']}/validation")
+    assert resp.status_code == 200
+    assert "Execution results" in resp.text
+    assert "rb-rr-1" in resp.text
+    assert "passed" in resp.text
+
+
+def test_validation_page_marks_partial_batch(client, db_session):
+    # CS-UI-011: partial batches are clearly flagged.
+    goal, approach, exp = _scored_experiment(client, db_session)
+    _ingest(client, exp["id"], "rr-1", status="failed", is_partial=True)
+    resp = client.get(f"/ui/goals/{goal['id']}/validation")
+    assert resp.status_code == 200
+    assert "partial" in resp.text

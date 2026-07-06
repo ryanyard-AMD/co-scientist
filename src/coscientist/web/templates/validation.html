@@ -35,6 +35,43 @@
 </div>
 {% endfor %}
 {% else %}
-<div class="empty">No validation results yet. Submit metrics with <code>cs validation submit</code>.</div>
+<div class="empty">No agent validation results yet. Submit metrics with <code>cs validation submit</code>.</div>
+{% endif %}
+
+<h2>Execution results</h2>
+<p class="small muted">ResultBundles ingested from the external Experimentation System, aggregated per experiment.</p>
+{% if execution %}
+{% for e in execution %}
+<div class="panel">
+  <div class="row">
+    <h3 style="margin:0"><a href="/ui/goals/{{ goal.id }}/experiments/{{ e.experiment.id }}">{{ e.experiment.name }}</a></h3>
+    <div class="spacer"></div>
+    {% if e.aggregation %}
+    <span class="badge {{ e.aggregation.aggregate_status.value }}">{{ e.aggregation.aggregate_status.value }}</span>
+    {% if e.aggregation.is_partial %}<span class="badge partial" title="Batch is not yet complete">partial</span>{% endif %}
+    {% endif %}
+  </div>
+  {% if e.aggregation %}
+  <p class="small muted">{{ e.aggregation.passed_runs }} passed / {{ e.aggregation.failed_runs }} failed / {{ e.aggregation.blocked_runs }} blocked / {{ e.aggregation.missing_runs }} missing of {{ e.aggregation.expected_run_count or e.aggregation.total_runs }} expected</p>
+  {% endif %}
+  {% if e.bundles %}
+  <table>
+    <thead><tr><th>Bundle</th><th>Run request</th><th>Status</th><th>Failure</th></tr></thead>
+    <tbody>
+      {% for b in e.bundles %}
+      <tr>
+        <td class="small"><code>{{ b.result_bundle_id }}</code>{% if b.is_partial %} <span class="badge partial">partial</span>{% endif %}</td>
+        <td class="small">{{ b.run_request_id }}</td>
+        <td><span class="badge {{ b.validation_status.value }}">{{ b.validation_status.value }}</span></td>
+        <td class="small">{{ b.failure_summary or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="empty">No execution results ingested yet.</div>
 {% endif %}
 {% endblock %}

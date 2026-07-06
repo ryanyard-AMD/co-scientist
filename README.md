@@ -280,6 +280,17 @@ A server-rendered web UI for reviewing, editing, scoring, and curating already-g
 - **Read-only views** for validation results, device concept cards, and the research roadmap
 - All UI flows are deterministic (zero Claude calls); generation triggers remain in the CLI/API
 
+#### Execution status UI (CS-UI-008…013)
+
+Surfaces the execution-tracking state added by the experimentation-integration epics. The co-scientist only *records references* to work the external Experimentation System runs — the UI reflects that boundary and never triggers a run.
+
+- **Separate lifecycle and execution badges** (CS-UI-008): the experiment detail header shows the card's lifecycle `status` and its `execution_status` as distinct badges, so a `reviewed` card that is `running` reads unambiguously
+- **ExecutionBatch panel** (CS-UI-009): per experiment, each submitted batch shows its aggregate status, submission mode, and a RunRequest count table (total / queued / running / completed / failed / canceled / blocked / timed out), plus a per-run-request list with status and timestamps
+- **ResultBundle summaries in the validation view** (CS-UI-010): the validation page gains an "Execution results" section listing each experiment's ingested ResultBundles (bundle id, run request, validation status, failure summary) alongside its validation aggregation
+- **Partial-batch marking** (CS-UI-011): incomplete batches and partial bundles are flagged with a `partial` badge, and the aggregation line spells out passed / failed / blocked / missing counts against the expected run count
+- **Score provenance panel** (CS-UI-013): the experiment detail page shows the execution-driven score updates for its approaches — before/after score and confidence, the rationale, and the linked ResultBundle references
+- Everything is read-only projection of stored references; the UI never submits, cancels, or resubmits runs
+
 ### CS-EPIC-EVALUATION: Observability, Evaluation & Quality Metrics
 
 A read-only metrics layer that computes the quality targets from PRD §20 over the artefacts already in the workspace. No new DB models, migrations, or Claude calls — every metric is derived deterministically from existing state.

@@ -73,9 +73,9 @@ tr:hover td { background: var(--panel-2); }
 }
 .badge.generated { color: var(--muted); }
 .badge.reviewed, .badge.scored { color: var(--accent); border-color: var(--accent); }
-.badge.validated, .badge.completed { color: var(--good); border-color: var(--good); }
-.badge.refuted, .badge.failed, .badge.superseded { color: var(--bad); border-color: var(--bad); }
-.badge.open { color: var(--warn); border-color: var(--warn); }
+.badge.validated, .badge.completed, .badge.passed { color: var(--good); border-color: var(--good); }
+.badge.refuted, .badge.failed, .badge.superseded, .badge.blocked { color: var(--bad); border-color: var(--bad); }
+.badge.open, .badge.partial, .badge.running, .badge.queued, .badge.mixed { color: var(--warn); border-color: var(--warn); }
 
 .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }
