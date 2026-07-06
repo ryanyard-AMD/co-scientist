@@ -30,6 +30,7 @@ from coscientist.schemas.validation import (
 )
 from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.services import approach_evidence as approach_evidence_svc
+from coscientist.services import device_evidence as device_evidence_svc
 from coscientist.services import execution as execution_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import score_update as score_update_svc
@@ -301,6 +302,8 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
 
     for approach_id in json.loads(bundle.approach_ids) if bundle.approach_ids else []:
         approach_evidence_svc.refresh_status_from_execution(db, approach_id)
+
+    device_evidence_svc.refresh_devices_for_experiment(db, body.experiment_id, key)
 
     db.commit()
     db.refresh(bundle)

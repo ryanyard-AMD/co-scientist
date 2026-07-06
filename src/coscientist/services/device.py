@@ -30,6 +30,7 @@ from coscientist.schemas.device import (
     HardwareSpec,
     UseCase,
 )
+from coscientist.services import device_evidence as device_evidence_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
 
@@ -57,6 +58,7 @@ def _to_response(card: DeviceConceptCard) -> DeviceConceptCardResponse:
         description=card.description,
         status=DeviceConceptStatusEnum(card.status),
         maturity=card.maturity,
+        confidence=card.confidence,
         form_factor=FormFactor(**ff_raw),
         use_case=UseCase(**uc_raw),
         acoustic_architecture=AcousticArchitecture(**aa_raw),
@@ -376,9 +378,12 @@ def compare(
     dimensions = [
         "form_factor_type",
         "maturity",
+        "confidence",
         "approach_count",
         "experiment_count",
         "validation_result_count",
+        "validation_passed",
+        "validation_failed",
         "unresolved_risk_count",
         "next_step_count",
     ]
@@ -386,6 +391,7 @@ def compare(
     concepts = []
     for card in cards:
         ff = json.loads(card.form_factor) if card.form_factor else {}
+        ev = device_evidence_svc.build_execution_evidence(db, card.id)
         concepts.append(
             DeviceConceptComparisonItem(
                 id=card.id,
@@ -393,9 +399,12 @@ def compare(
                 values={
                     "form_factor_type": ff.get("type", ""),
                     "maturity": card.maturity,
+                    "confidence": f"{card.confidence:.2f}",
                     "approach_count": str(len(json.loads(card.approach_ids or "[]"))),
                     "experiment_count": str(len(json.loads(card.experiment_ids or "[]"))),
                     "validation_result_count": str(len(json.loads(card.validation_result_ids or "[]"))),
+                    "validation_passed": str(ev.passed_experiments),
+                    "validation_failed": str(ev.failed_experiments),
                     "unresolved_risk_count": str(len(json.loads(card.unresolved_risks or "[]"))),
                     "next_step_count": str(len(json.loads(card.next_steps or "[]"))),
                 },

@@ -180,9 +180,18 @@ Closes the research-to-device loop by synthesising validated approach cards — 
 - Each card stores form factor, use case, acoustic architecture (control stack, calibration, simulation backing), hardware spec (speakers, microphones, compute), and expected performance as structured JSON
 - Full traceability: `approach_ids`, `experiment_ids`, `validation_result_ids` link back to all source artefacts
 - `unresolved_risks` and `next_steps` fields turn each concept into an actionable research roadmap
-- Side-by-side comparison across ≥2 concepts: form factor, maturity, approach count, risk count, next step count
+- Side-by-side comparison across ≥2 concepts: form factor, maturity, confidence, approach count, validation passed/failed counts, risk count, next step count
 - Export as markdown (human-readable handoff with all sections) or JSON
 - Maturity inherited from weakest contributing approach
+
+#### Device updates from execution evidence (CS-DEVICE-007…010)
+
+Device Concept Cards close the loop back from execution: as ResultBundles are ingested, a concept's architecture confidence and unresolved risks update from the validation outcomes of the experiments testing its approaches.
+
+- **Linked evidence** (CS-DEVICE-007): `GET /goals/{id}/devices/{device_id}/execution-evidence` reports per-experiment validation status, passing metrics, failed assumptions, result-bundle IDs, execution batch, and the current `evidence_strength` score of each supporting approach
+- **Risks from failure** (CS-DEVICE-008): failed/inconclusive validation adds canonical unresolved risks — latency, robustness, calibration burden, hardware feasibility, low-frequency leakage — mapped from ResultBundle failure types (deduped, additive)
+- **Confidence from evidence** (CS-DEVICE-009): confidence is recomputed deterministically from linked experiment aggregations (base 0.5, passing raises, failing/inconclusive lowers); each change records a **DeviceEvidenceUpdate** with supporting ResultBundles, affected approach scores, added risks, and rationale — idempotent on the triggering ingestion key. Queryable via `GET /goals/{id}/devices/evidence-updates`
+- **Comparison by tested performance** (CS-DEVICE-010): the side-by-side view includes confidence and validation passed/failed counts
 
 ### CS-EPIC-ROADMAP: Research Roadmap and Next-Best Experiment Planning
 
@@ -762,7 +771,9 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/devices/generate` | Generate device concepts via agent from validated approaches |
 | GET | `/goals/{id}/devices` | List device concept cards (filter by status) |
 | GET | `/goals/{id}/devices/compare?ids=id1,id2` | Side-by-side comparison of ≥2 concepts |
+| GET | `/goals/{id}/devices/evidence-updates` | List device confidence/risk updates (filter by `device_id`) |
 | GET | `/goals/{id}/devices/{did}` | Get device concept card details |
+| GET | `/goals/{id}/devices/{did}/execution-evidence` | Linked experiments, validation outcomes, confidence, and affected approach scores |
 | POST | `/goals/{id}/devices/{did}/transition` | Transition device concept status |
 | GET | `/goals/{id}/devices/{did}/export` | Export as markdown or JSON |
 | DELETE | `/goals/{id}/devices/{did}` | Delete a generated device concept |

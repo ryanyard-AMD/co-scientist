@@ -94,6 +94,7 @@ class DeviceConceptCardResponse(BaseModel):
     description: str | None
     status: DeviceConceptStatusEnum
     maturity: DeviceMaturityEnum
+    confidence: float
     form_factor: FormFactor
     use_case: UseCase
     acoustic_architecture: AcousticArchitecture
@@ -139,3 +140,55 @@ class DeviceConceptComparisonItem(BaseModel):
 class DeviceConceptComparisonResponse(BaseModel):
     dimensions: list[str]
     concepts: list[DeviceConceptComparisonItem]
+
+
+# --- Execution evidence (CS-EPIC-DEVICE) ---
+
+class DeviceExperimentEvidence(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    validation_status: str | None = None
+    passed_runs: int = 0
+    failed_runs: int = 0
+    total_runs: int = 0
+    execution_batch_id: str | None = None
+    result_bundle_ids: list[str] = Field(default_factory=list)
+    passing_metrics: dict = Field(default_factory=dict)
+    failed_assumptions: list[str] = Field(default_factory=list)
+
+
+class DeviceExecutionEvidenceResponse(BaseModel):
+    device_id: str
+    device_name: str
+    status: DeviceConceptStatusEnum
+    confidence: float
+    passed_experiments: int
+    failed_experiments: int
+    inconclusive_experiments: int
+    unresolved_risks: list[str] = Field(default_factory=list)
+    experiments: list[DeviceExperimentEvidence] = Field(default_factory=list)
+    affected_approach_scores: dict = Field(default_factory=dict)
+
+
+class DeviceEvidenceUpdateResponse(BaseModel):
+    id: str
+    device_id: str
+    workspace_id: str
+    validation_status: str
+    previous_confidence: float
+    new_confidence: float
+    confidence_delta: float
+    passed_experiments: int
+    failed_experiments: int
+    inconclusive_experiments: int
+    supporting_result_bundle_refs: list[str]
+    affected_approach_ids: list[str]
+    score_deltas: dict
+    added_risks: list[str]
+    rationale: str
+    created_at: datetime
+
+
+class DeviceEvidenceUpdateListResponse(BaseModel):
+    items: list[DeviceEvidenceUpdateResponse]
+    total: int
