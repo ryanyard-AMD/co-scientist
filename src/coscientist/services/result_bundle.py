@@ -31,6 +31,7 @@ from coscientist.schemas.validation import (
 from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.services import execution as execution_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import score_update as score_update_svc
 
 
 def _utcnow() -> datetime:
@@ -288,6 +289,13 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
             "result_bundle_id": body.result_bundle_id,
             "validation_status": body.validation_status.value,
         },
+    )
+
+    score_update_svc.apply_execution_score_update(
+        db,
+        experiment_id=body.experiment_id,
+        source_key=key,
+        result_bundle_id=body.result_bundle_id,
     )
 
     db.commit()

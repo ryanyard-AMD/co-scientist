@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # itself (the direct repro runner path) — experiments run only via RunRequest
     # handoff to the external Experimentation System.
     enforce_execution_boundary: bool = False
+    # CS-EPIC-SCORE: execution-evidence score update magnitudes (0..1 rubric scale).
+    score_execution_delta: float = 0.15
+    score_confidence_delta: float = 0.20
 
 
 settings = Settings()

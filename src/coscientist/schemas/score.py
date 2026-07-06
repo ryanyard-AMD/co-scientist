@@ -25,8 +25,52 @@ class WeightProfileEnum(str, Enum):
     product_feasibility = "product_feasibility"
 
 
+class ExecutionEvidenceTypeEnum(str, Enum):
+    approved_experiment_design = "approved_experiment_design"
+    queued_experiment = "queued_experiment"
+    completed_experiment = "completed_experiment"
+    failed_experiment = "failed_experiment"
+    validation_passed = "validation_passed"
+    validation_failed = "validation_failed"
+    mixed_validation = "mixed_validation"
+
+
 class ScoreRequest(BaseModel):
     weight_profile: WeightProfileEnum = WeightProfileEnum.default
+
+
+class ScoreUpdateResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    source_key: str
+    workspace_id: str
+    approach_id: str
+    experiment_id: str
+    execution_batch_id: str | None
+    dimension: str
+    validation_status: str
+    evidence_type: ExecutionEvidenceTypeEnum
+    previous_score: float
+    new_score: float
+    score_delta: float
+    previous_confidence: float | None
+    new_confidence: float | None
+    confidence_delta: float
+    run_count: int
+    passed_count: int
+    failed_count: int
+    missing_count: int
+    result_bundle_refs: list[str]
+    aggregate_metrics: dict
+    rationale: str
+    reviewer_notes: str | None
+    created_at: datetime
+
+
+class ScoreUpdateListResponse(BaseModel):
+    items: list[ScoreUpdateResponse]
+    total: int
 
 
 class WeightOverride(BaseModel):

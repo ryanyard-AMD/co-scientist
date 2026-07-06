@@ -98,6 +98,17 @@ Transparent, evidence-linked scoring system for evaluating and comparing approac
 - Per-dimension comparison rankings across all scored approaches
 - Pareto frontier analysis: identifies non-dominated approaches
 
+#### Execution-evidence score updates (CS-SCORE-008…012)
+
+When a ResultBundle is ingested and an Experiment Card's validation aggregation is recomputed, the linked Approach Cards' `evidence_strength` score and confidence move to reflect real execution evidence — closing the loop from literature-only scoring to validated outcomes.
+
+- **Execution evidence types** (CS-SCORE-008): `approved_experiment_design`, `queued_experiment`, `completed_experiment`, `failed_experiment`, `validation_passed`, `validation_failed`, `mixed_validation` — distinguishing validated results from literature/inference
+- **ScoreUpdate** (CS-SCORE-009): every adjustment records previous/new score, score delta, previous/new confidence, confidence delta, validation status, evidence type, ResultBundle references, and a human-readable rationale
+- **Idempotent** (CS-SCORE-010): keyed on the triggering ResultBundle ingestion key + approach + dimension, so a replayed ingestion applies no additional delta
+- **Uncertainty-aware** (CS-SCORE-011): clean `passed`/`failed` outcomes move confidence fully (and score up/down); `mixed`/`partial` move confidence cautiously with no directional score change; `blocked` erodes confidence. Magnitudes are configurable via `CS_SCORE_EXECUTION_DELTA` / `CS_SCORE_CONFIDENCE_DELTA`
+- **Batch explainability** (CS-SCORE-012): each update carries aggregate run count, passed/failed/missing counts, and aggregate metric summaries so large sweeps stay legible
+- Queryable via `GET /goals/{id}/score-updates` (filter by `approach_id`, `experiment_id`)
+
 ### CS-EPIC-HYPOTHESIS: Hypothesis and Combination Generation
 
 Generates HypothesisCards — proposed combinations of 2+ scored approaches — with compatibility analysis, rationale, and testability artifacts.
@@ -687,6 +698,7 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/approaches/comparison` | Ranked comparison of scored approaches |
 | GET | `/goals/{id}/approaches/pareto` | Pareto frontier analysis |
 | POST | `/goals/{id}/approaches/{aid}/rescore` | Rescore with different weight profile |
+| GET | `/goals/{id}/score-updates` | List execution-evidence score updates (filter by `approach_id`, `experiment_id`) |
 
 ### Hypotheses
 
@@ -831,6 +843,8 @@ Environment variables (prefix `CS_`):
 | `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
 | `CS_EVAL_MINUTES_PER_AGENT_ACTION` | `45` | Minutes-saved heuristic per successful agent action (CS-EVAL-005) |
 | `CS_ENFORCE_EXECUTION_BOUNDARY` | `false` | When true, block the direct repro-runner path — experiments run only via RunRequest handoff (CS-GOV-008) |
+| `CS_SCORE_EXECUTION_DELTA` | `0.15` | Score magnitude (0..1) applied to evidence-strength on a clean pass/fail outcome (CS-SCORE-011) |
+| `CS_SCORE_CONFIDENCE_DELTA` | `0.20` | Confidence magnitude (0..1) applied on execution evidence, dampened for mixed/partial outcomes (CS-SCORE-011) |
 
 ## Development
 

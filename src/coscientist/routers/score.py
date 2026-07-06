@@ -7,11 +7,29 @@ from coscientist.schemas.score import (
     ParetoResponse,
     ScoreComparisonResponse,
     ScoreRequest,
+    ScoreUpdateListResponse,
     WeightProfileEnum,
 )
 from coscientist.services import score as svc
+from coscientist.services import score_update as score_update_svc
 
 router = APIRouter(prefix="/goals/{goal_id}/approaches", tags=["scores"])
+
+updates_router = APIRouter(prefix="/goals/{goal_id}/score-updates", tags=["scores"])
+
+
+@updates_router.get("", response_model=ScoreUpdateListResponse)
+def list_score_updates(
+    goal_id: str,
+    approach_id: str | None = Query(default=None),
+    experiment_id: str | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    return score_update_svc.list_score_updates(
+        db, goal_id, approach_id=approach_id, experiment_id=experiment_id, skip=skip, limit=limit
+    )
 
 
 @router.post("/score-all", response_model=list[ApproachScoreResponse], status_code=201)
