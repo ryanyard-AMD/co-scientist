@@ -220,6 +220,16 @@ Adds an immutable audit trail over every agent-driven Claude call and a corpus/e
 - Queryable via `GET /goals/{id}/agent-logs` (filter by service) and `GET /goals/{id}/agent-logs/{log_id}`, or the `cs logs` CLI
 - **Permission model**: `is_restricted` flag on `ResearchGoal` (toggled via `PATCH /goals/{id}`). When set, `raise_if_restricted()` at the top of each generate service returns 403 — blocking validation, device, and roadmap agent actions while leaving read endpoints intact
 
+#### Execution boundary and handoff accountability (CS-GOV-007…010)
+
+The co-scientist is a planning, approval, and interpretation layer — **not** the experiment execution system. Compute, credentials, containers, and solvers are governed by the external Experimentation System. Experiments run only via RunRequest handoff; the co-scientist records references, never results it produced itself.
+
+- **Simulation Handoff Agent** (CS-GOV-007): the execution-touching agent is scoped to *submit RunRequests, monitor status, and ingest results*. It does not start containers, run commands, allocate GPUs, or operate solvers. Name exposed as `governance.HANDOFF_AGENT_NAME` and used as the default audit actor
+- **Execution boundary** (CS-GOV-008): `assert_execution_boundary()` guards the direct repro-runner path. When `CS_ENFORCE_EXECUTION_BOUNDARY=true`, direct execution returns 403 and the only sanctioned route is RunRequest submission. Defaults to `false` so the legacy synchronous runner remains available in dev
+- **ExecutionAuditLog** (CS-GOV-009): append-only accountability trail for every execution-related action — `handoff_submitted`, `run_status_updated`, and `result_bundle_ingested`. Each row records the submitter/actor, approval ID, Experiment Card ID, execution batch ID, RunRequest IDs, governing policy, a stable SHA-256 payload checksum, and an action detail blob. Written via `record_execution_event()`, which `flush`es into the caller's transaction and never raises
+- Queryable via `GET /goals/{id}/execution-audit` (filter by `action` and `experiment_id`)
+- **Permission-checked references** (CS-GOV-010): execution references stay scoped to their goal workspace; restricted goals disable agent actions across the execution surface
+
 ### CS-EPIC-UI: Web User Interface
 
 A server-rendered web UI for reviewing, editing, scoring, and curating already-generated artefacts — the first graphical alternative to the `cs` CLI and raw REST calls.
@@ -751,8 +761,9 @@ All endpoints are prefixed with `/co-scientist`.
 |--------|------|-------------|
 | GET | `/goals/{id}/agent-logs` | List agent action logs (filter by service) |
 | GET | `/goals/{id}/agent-logs/{log_id}` | Get a single agent action log |
+| GET | `/goals/{id}/execution-audit` | List execution audit logs (filter by `action`, `experiment_id`) |
 
-Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /goals/{id}` — restricted goals return 403 from all generate endpoints (validation, device, roadmap).
+Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /goals/{id}` — restricted goals return 403 from all generate endpoints (validation, device, roadmap). Set `CS_ENFORCE_EXECUTION_BOUNDARY=true` to block the direct repro-runner path so experiments run only via RunRequest handoff.
 
 ### Evaluation
 
@@ -819,6 +830,7 @@ Environment variables (prefix `CS_`):
 | `CS_REPRO_URL` | `http://localhost:8003` | Base URL of the repro experiment runner |
 | `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
 | `CS_EVAL_MINUTES_PER_AGENT_ACTION` | `45` | Minutes-saved heuristic per successful agent action (CS-EVAL-005) |
+| `CS_ENFORCE_EXECUTION_BOUNDARY` | `false` | When true, block the direct repro-runner path — experiments run only via RunRequest handoff (CS-GOV-008) |
 
 ## Development
 

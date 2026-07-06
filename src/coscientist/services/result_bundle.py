@@ -28,7 +28,9 @@ from coscientist.schemas.validation import (
     ValidationAggregateStatusEnum,
     ValidationAggregationResponse,
 )
+from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.services import execution as execution_svc
+from coscientist.services import governance as governance_svc
 
 
 def _utcnow() -> datetime:
@@ -266,6 +268,27 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
 
     _sync_run_request_status(db, body)
     agg = recompute_aggregation(db, body.experiment_id)
+
+    governance_svc.record_execution_event(
+        db,
+        workspace_id=goal_id,
+        action=ExecutionAuditActionEnum.result_bundle_ingested,
+        experiment_id=body.experiment_id,
+        execution_batch_id=bundle.execution_batch_id,
+        run_request_ids=[body.run_request_id],
+        payload_checksum=governance_svc.payload_checksum(
+            {
+                "result_bundle_id": body.result_bundle_id,
+                "run_request_id": body.run_request_id,
+                "validation_status": body.validation_status.value,
+                "metrics": body.metrics,
+            }
+        ),
+        detail={
+            "result_bundle_id": body.result_bundle_id,
+            "validation_status": body.validation_status.value,
+        },
+    )
 
     db.commit()
     db.refresh(bundle)

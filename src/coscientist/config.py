@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     repro_poll_interval: float = 2.0
     repro_run_timeout: float = 600.0
     eval_minutes_per_agent_action: int = 45
+    # CS-GOV-008: when true, the co-scientist refuses to execute experiments
+    # itself (the direct repro runner path) — experiments run only via RunRequest
+    # handoff to the external Experimentation System.
+    enforce_execution_boundary: bool = False
 
 
 settings = Settings()

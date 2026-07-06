@@ -32,7 +32,9 @@ from coscientist.schemas.execution import (
     RunStatusUpdate,
 )
 from coscientist.schemas.experiment import ExecutionStatusEnum
+from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.services import experiment as experiment_svc
+from coscientist.services import governance as governance_svc
 
 
 def _utcnow() -> datetime:
@@ -205,6 +207,15 @@ def apply_run_status_update(
     ref = _get_run_or_404(db, run_request_id)
     ref.status = update.status.value
     ref.latest_update_at = _utcnow()
+    governance_svc.record_execution_event(
+        db,
+        workspace_id=ref.workspace_id,
+        action=ExecutionAuditActionEnum.run_status_updated,
+        experiment_id=ref.experiment_id,
+        execution_batch_id=ref.execution_batch_id,
+        run_request_ids=[run_request_id],
+        detail={"status": update.status.value},
+    )
     db.commit()
     db.refresh(ref)
     if ref.execution_batch_id:

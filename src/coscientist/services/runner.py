@@ -28,6 +28,7 @@ from coscientist.schemas.validation import ExperimentResultSubmission
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 from coscientist.services import validation as validation_svc
 
 
@@ -146,6 +147,7 @@ def run_experiment(
     *,
     timeout: float | None = None,
 ) -> RunnerResult:
+    governance_svc.assert_execution_boundary("run experiments")
     goal_svc.raise_if_restricted(db, goal_id)
     card = experiment_svc.get(db, experiment_id)
     if card.workspace_id != goal_id:

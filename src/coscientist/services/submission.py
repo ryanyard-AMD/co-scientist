@@ -27,8 +27,10 @@ from coscientist.schemas.approval import (
 )
 from coscientist.schemas.execution import RunRequestStatusEnum
 from coscientist.schemas.experiment import ExperimentStatusEnum
+from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
+from coscientist.services import governance as governance_svc
 
 
 def _default_run_request_submitter(payload: dict) -> str:
@@ -149,6 +151,27 @@ def submit_experiment(
     db.flush()
 
     batch = execution_svc.recompute_batch(db, batch.id)
+
+    governance_svc.record_execution_event(
+        db,
+        workspace_id=card.workspace_id,
+        action=ExecutionAuditActionEnum.handoff_submitted,
+        actor=body.approver or governance_svc.HANDOFF_AGENT_NAME,
+        experiment_id=experiment_id,
+        execution_batch_id=batch.id,
+        approval_id=approval_id,
+        run_request_ids=run_request_ids,
+        policy=policy,
+        payload_checksum=governance_svc.payload_checksum(
+            {
+                "experiment_id": experiment_id,
+                "run_request_ids": run_request_ids,
+                "approval_policy": policy,
+            }
+        ),
+        detail={"submission_mode": card.submission_mode, "run_request_count": total},
+    )
+
     db.commit()
     db.refresh(card)
 
