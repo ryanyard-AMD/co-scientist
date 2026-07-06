@@ -6,6 +6,7 @@ from coscientist.schemas.approach import (
     ApproachCardCreate,
     ApproachCardResponse,
     ApproachCardUpdate,
+    ApproachExecutionEvidenceResponse,
     ApproachGenerateRequest,
     ApproachGenerateResponse,
     ApproachListResponse,
@@ -15,6 +16,7 @@ from coscientist.schemas.approach import (
     DuplicateWarning,
 )
 from coscientist.services import approach as svc
+from coscientist.services import approach_evidence as evidence_svc
 
 router = APIRouter(prefix="/goals/{goal_id}/approaches", tags=["approaches"])
 
@@ -61,6 +63,11 @@ def list_approaches(
 @router.get("/{approach_id}", response_model=ApproachCardResponse)
 def get_approach(goal_id: str, approach_id: str, db: Session = Depends(get_db)):
     return svc.get(db, approach_id)
+
+
+@router.get("/{approach_id}/execution-evidence", response_model=ApproachExecutionEvidenceResponse)
+def approach_execution_evidence(goal_id: str, approach_id: str, db: Session = Depends(get_db)):
+    return evidence_svc.build_execution_evidence(db, approach_id)
 
 
 @router.patch("/{approach_id}", response_model=ApproachCardResponse)

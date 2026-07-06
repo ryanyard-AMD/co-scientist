@@ -9,9 +9,11 @@ class ApproachStatusEnum(str, Enum):
     reviewed = "reviewed"
     scored = "scored"
     experiment_proposed = "experiment_proposed"
+    submitted = "submitted"
     tested = "tested"
     validated = "validated"
     refuted = "refuted"
+    inconclusive = "inconclusive"
     superseded = "superseded"
 
 
@@ -140,3 +142,53 @@ class DuplicateWarning(BaseModel):
     method_family: str
     existing_approach_id: str
     existing_status: str
+
+
+class NegativeEvidence(BaseModel):
+    """A failed or inconclusive ResultBundle surfaced as useful evidence
+    (CS-APPROACH-011): what failed, why, and what to do next."""
+
+    result_bundle_id: str
+    run_request_id: str
+    validation_status: str
+    failure_type: str | None = None
+    failure_summary: str | None = None
+    deviations: list[str] = Field(default_factory=list)
+    retryable: bool = False
+
+
+class ValidationSummary(BaseModel):
+    aggregate_status: str
+    total_runs: int
+    passed_runs: int
+    failed_runs: int
+    blocked_runs: int
+    missing_runs: int
+    is_partial: bool
+    metric_summaries: dict = Field(default_factory=dict)
+
+
+class ExperimentEvidenceBlock(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    status: str
+    execution_status: str
+    execution_batch_id: str | None = None
+    run_request_ids: list[str] = Field(default_factory=list)
+    result_bundle_ids: list[str] = Field(default_factory=list)
+    validation: ValidationSummary | None = None
+    negative_evidence: list[NegativeEvidence] = Field(default_factory=list)
+
+
+class ApproachExecutionEvidenceResponse(BaseModel):
+    """Links an approach to its downstream execution evidence
+    (CS-APPROACH-008/009): experiments, batches, run requests, result
+    bundles, and validation outcomes, grouped by evidence provenance."""
+
+    approach_id: str
+    approach_name: str
+    status: ApproachStatusEnum
+    literature_evidence_count: int
+    evidence_groups: dict[str, int]
+    experiments: list[ExperimentEvidenceBlock] = Field(default_factory=list)
+    suggested_followups: list[str] = Field(default_factory=list)

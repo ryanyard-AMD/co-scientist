@@ -68,12 +68,21 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 
 Synthesizes scout evidence into structured Approach Cards — one per method family — for comparing candidate research approaches.
 
-- **ApproachCard** with 8-state lifecycle: `generated` → `reviewed` → `scored` → `experiment_proposed` → `tested` → `validated` / `refuted` → `superseded`
+- **ApproachCard** lifecycle: `generated` → `reviewed` → `scored` → `experiment_proposed` → `submitted` → `tested` → `validated` / `refuted` / `inconclusive` → `superseded`
 - Synthesis-backed generation: when a scout-stage `EvidenceSynthesis` exists for a method family, the card's mechanism summary, metrics, open questions, hardware, and risks come from the Claude synthesis; falls back to algorithmic extraction from evidence groups otherwise
 - Every field traced to source evidence records with direct/inferred evidence type
 - Duplicate detection across approach cards within a workspace
 - Merge operation combines evidence, metrics, hardware, risks; supersedes source card
 - Maturity inference (theoretical, simulated, measured, validated) from evidence text
+
+#### Execution evidence links (CS-APPROACH-008…011)
+
+Approach Cards close the loop back from execution: `GET /goals/{id}/approaches/{approach_id}/execution-evidence` links a card to every downstream Experiment Card, ExecutionBatch, RunRequest, ResultBundle, and validation aggregation it produced.
+
+- **Linked evidence** (CS-APPROACH-008): per-experiment blocks carry execution status, run-request IDs, result-bundle IDs, and the experiment's validation summary
+- **Provenance groups** (CS-APPROACH-009): counts split literature/inference (`source_literature`, `inferred_synthesis`, `generated_hypotheses`) from execution (`approved_experiments`, `completed_validation`, `failed_validation`, `inconclusive_validation`)
+- **Forward-only status refresh** (CS-APPROACH-010): after each ResultBundle ingest, a linked approach advances (never regresses) from validation aggregation — any passing sweep → `validated`, all-failing → `refuted`, otherwise → `inconclusive`; submitted-but-unvalidated cards sit at `submitted`/`experiment_proposed`
+- **Negative evidence as signal** (CS-APPROACH-011): failed/inconclusive bundles surface failure type, summary, deviations, and retryability, plus deduplicated suggested follow-ups (retry vs. revise)
 
 ### CS-EPIC-CRITIC: Adversarial Approach Review
 
@@ -675,6 +684,7 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/approaches` | Create a manual approach card |
 | GET | `/goals/{id}/approaches` | List approach cards (filter by status, method) |
 | GET | `/goals/{id}/approaches/{aid}` | Get approach card details |
+| GET | `/goals/{id}/approaches/{aid}/execution-evidence` | Linked experiments, bundles, validation outcomes, and provenance groups |
 | PATCH | `/goals/{id}/approaches/{aid}` | Update approach card fields |
 | POST | `/goals/{id}/approaches/{aid}/transition` | Transition approach status |
 | DELETE | `/goals/{id}/approaches/{aid}` | Delete a generated approach |

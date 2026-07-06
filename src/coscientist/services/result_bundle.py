@@ -29,6 +29,7 @@ from coscientist.schemas.validation import (
     ValidationAggregationResponse,
 )
 from coscientist.schemas.governance import ExecutionAuditActionEnum
+from coscientist.services import approach_evidence as approach_evidence_svc
 from coscientist.services import execution as execution_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import score_update as score_update_svc
@@ -297,6 +298,9 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
         source_key=key,
         result_bundle_id=body.result_bundle_id,
     )
+
+    for approach_id in json.loads(bundle.approach_ids) if bundle.approach_ids else []:
+        approach_evidence_svc.refresh_status_from_execution(db, approach_id)
 
     db.commit()
     db.refresh(bundle)
