@@ -53,16 +53,39 @@
   </div>
   {% if e.aggregation %}
   <p class="small muted">{{ e.aggregation.passed_runs }} passed / {{ e.aggregation.failed_runs }} failed / {{ e.aggregation.blocked_runs }} blocked / {{ e.aggregation.missing_runs }} missing of {{ e.aggregation.expected_run_count or e.aggregation.total_runs }} expected</p>
+  <p class="small">
+    {% if e.aggregation.is_partial and not score_update_on_partial %}
+    <span class="badge partial" title="CS-VALIDATION-012">score updates held</span>
+    <span class="muted">Approach scores wait for the batch to complete (policy: score_update_on_partial=off).</span>
+    {% else %}
+    <span class="badge completed" title="CS-VALIDATION-012">score updates applied</span>
+    {% endif %}
+  </p>
+  {% if e.aggregation.metric_summaries %}
+  <table>
+    <thead><tr><th>Metric</th><th>count</th><th>mean</th><th>stddev</th><th>min</th><th>max</th></tr></thead>
+    <tbody>
+      {% for name, m in e.aggregation.metric_summaries.items() %}
+      <tr><td>{{ name }}</td><td>{{ m.count }}</td><td>{{ "%.3g"|format(m.mean) }}</td><td>{{ "%.3g"|format(m.stddev) }}</td><td>{{ "%.3g"|format(m.min) }}</td><td>{{ "%.3g"|format(m.max) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
   {% endif %}
   {% if e.bundles %}
   <table>
-    <thead><tr><th>Bundle</th><th>Run request</th><th>Status</th><th>Failure</th></tr></thead>
+    <thead><tr><th>Bundle</th><th>Run request</th><th>Status</th><th>Artifacts</th><th>Failure</th></tr></thead>
     <tbody>
       {% for b in e.bundles %}
       <tr>
         <td class="small"><code>{{ b.result_bundle_id }}</code>{% if b.is_partial %} <span class="badge partial">partial</span>{% endif %}</td>
         <td class="small">{{ b.run_request_id }}</td>
         <td><span class="badge {{ b.validation_status.value }}">{{ b.validation_status.value }}</span></td>
+        <td class="small">
+          {% if b.manifest_uri %}<a href="{{ b.manifest_uri }}"><code>manifest</code></a>{% else %}—{% endif %}
+          <span class="badge">{{ b.artifact_visibility }}</span>
+          {% if b.access_label %}<span class="badge" title="permission-aware access label">{{ b.access_label }}</span>{% endif %}
+        </td>
         <td class="small">{{ b.failure_summary or "—" }}</td>
       </tr>
       {% endfor %}

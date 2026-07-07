@@ -55,6 +55,8 @@ class RunRequestReferenceResponse(BaseModel):
     goal_id: str
     execution_batch_id: str | None
     correlation_id: str
+    hypothesis_id: str | None = None
+    approach_ids: list[str] = []
     status: RunRequestStatusEnum
     control_plane_uri: str | None
     parameters: dict[str, Any]

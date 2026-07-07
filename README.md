@@ -115,7 +115,7 @@ When a ResultBundle is ingested and an Experiment Card's validation aggregation 
 - **ScoreUpdate** (CS-SCORE-009): every adjustment records previous/new score, score delta, previous/new confidence, confidence delta, validation status, evidence type, ResultBundle references, and a human-readable rationale
 - **Idempotent** (CS-SCORE-010): keyed on the triggering ResultBundle ingestion key + approach + dimension, so a replayed ingestion applies no additional delta
 - **Uncertainty-aware** (CS-SCORE-011): clean `passed`/`failed` outcomes move confidence fully (and score up/down); `mixed`/`partial` move confidence cautiously with no directional score change; `blocked` erodes confidence. Magnitudes are configurable via `CS_SCORE_EXECUTION_DELTA` / `CS_SCORE_CONFIDENCE_DELTA`
-- **Batch explainability** (CS-SCORE-012): each update carries aggregate run count, passed/failed/missing counts, and aggregate metric summaries so large sweeps stay legible
+- **Batch explainability** (CS-SCORE-012): each update carries aggregate run count, passed/failed/missing counts, and aggregate metric summaries — including cross-run `variance`/`stddev` so a high-variance sweep is visibly less trustworthy than a tight one
 - Queryable via `GET /goals/{id}/score-updates` (filter by `approach_id`, `experiment_id`)
 
 ### CS-EPIC-HYPOTHESIS: Hypothesis and Combination Generation
@@ -145,6 +145,7 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 **RunRequest submission** (approved card → RunRequests, `POST /experiments/{id}/submit`): the co-scientist hands an approved card to the external Experimentation System as one or more RunRequests instead of executing it directly.
 
 - **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter` so a live client can be swapped in.
+- **Full correlation on every RunRequest** (CS-EXEC-007): each `RunRequestReference` carries the `correlation_id`, `goal_id`, `experiment_id`, `execution_batch_id`, plus the `hypothesis_id` and `approach_ids` it tests — so events from the Experimentation System reconcile directly to Approach/Hypothesis cards without traversing the Experiment card.
 - **Approval policy on every batch** (CS-APPROVAL-008): `approval_id`, `approver`, `approved_at`, `cost_class` (defaults to the card's estimated cost), `credentialed` flag, `resource_policy` (required capabilities + overrides), and `retry_policy` are stored on the `ExecutionBatchReference`.
 - **Batch approval modes** (CS-APPROVAL-009): `approve_batch` submits all runs as `pending`; `approve_each_run` submits every run as `blocked` awaiting per-run approval; `approval_required_above_threshold` blocks runs only when the expanded count exceeds `approval_threshold`. The resulting card `execution_status` follows the batch rollup (`submitted` vs `blocked`).
 - **Idempotent**: a card that already carries an `execution_batch_id` is rejected (409); re-registering the same RunRequest returns the existing reference. Submission requires `approved` status.
@@ -168,7 +169,9 @@ Closes the experiment feedback loop by ingesting measured results, evaluating th
 - **ResultBundleReference** (CS-VALIDATION-007/009): links result bundle ID, RunRequest/run/attempt IDs, Experiment Card, Hypothesis Card, Approach Cards, and ExecutionBatch, plus metrics, validation status, artifacts, deviations, warnings, and provenance. Missing links default from the Experiment Card.
 - **Idempotent ingestion** (CS-VALIDATION-008): keyed on `(run_request_id, run_id, attempt_id)`. Replayed completion events return `duplicate: true` and never double-count runs or metric summaries.
 - **Failure diagnostics** (CS-VALIDATION-010): failed bundles carry `failure_type`, `failure_summary`, `retryable`, partial `artifacts`, and `deviations` so failures still inform decisions.
-- **ValidationAggregation** (CS-VALIDATION-011, `GET /experiments/{id}/validation-aggregation`): one row per experiment collapsing bundles to the latest attempt per run, computing an aggregate status — `passed`, `failed`, `mixed`, `blocked`, `inconclusive`, or `partial` (when expected runs are still missing) — with per-metric summaries (count/min/max/mean) and a `missing_runs` count. Bundles flagged `is_partial` mark the aggregation partial (CS-VALIDATION-012).
+- **ValidationAggregation** (CS-VALIDATION-011, `GET /experiments/{id}/validation-aggregation`): one row per experiment collapsing bundles to the latest attempt per run, computing an aggregate status — `passed`, `failed`, `mixed`, `blocked`, `inconclusive`, or `partial` (when expected runs are still missing) — with per-metric summaries (count/min/max/mean/variance/stddev, CS-SCORE-012) and a `missing_runs` count.
+- **Partial-aggregation score gate** (CS-VALIDATION-012): a bundle flagged `is_partial` or a batch still missing runs marks the aggregation partial and, by default, does **not** drive an approach score update — evidence stays provisional until the batch completes. Set `CS_SCORE_UPDATE_ON_PARTIAL=true` to update scores from partial evidence.
+- **Artifact manifest + access labels** (CS-VALIDATION-013): each bundle stores a `manifest_uri`, `artifact_visibility` (default `internal`), and a permission-aware `access_label` alongside the `artifacts` map, surfaced in the validation view so researchers can inspect plots/logs/metrics with the right access context.
 - **Execution sync**: ingesting a bundle advances the linked `RunRequestReference` (passed→completed, failed→failed, blocked→blocked), which rolls up through the batch to the card's `execution_status`.
 
 ### CS-EPIC-DEVICE: Candidate Device Concept Synthesis
@@ -287,9 +290,10 @@ Surfaces the execution-tracking state added by the experimentation-integration e
 
 - **Separate lifecycle and execution badges** (CS-UI-008): the experiment detail header shows the card's lifecycle `status` and its `execution_status` as distinct badges, so a `reviewed` card that is `running` reads unambiguously
 - **ExecutionBatch panel** (CS-UI-009): per experiment, each submitted batch shows its aggregate status, submission mode, and a RunRequest count table (total / queued / running / completed / failed / canceled / blocked / timed out), plus a per-run-request list with status and timestamps
-- **ResultBundle summaries in the validation view** (CS-UI-010): the validation page gains an "Execution results" section listing each experiment's ingested ResultBundles (bundle id, run request, validation status, failure summary) alongside its validation aggregation
-- **Partial-batch marking** (CS-UI-011): incomplete batches and partial bundles are flagged with a `partial` badge, and the aggregation line spells out passed / failed / blocked / missing counts against the expected run count
-- **Score provenance panel** (CS-UI-013): the experiment detail page shows the execution-driven score updates for its approaches — before/after score and confidence, the rationale, and the linked ResultBundle references
+- **ResultBundle summaries in the validation view** (CS-UI-010): the validation page gains an "Execution results" section listing each experiment's ingested ResultBundles (bundle id, run request, validation status, artifact manifest link + visibility/access labels, failure summary) alongside its validation aggregation
+- **Aggregation policy + score-update status** (CS-UI-011): incomplete batches and partial bundles are flagged with a `partial` badge, the aggregation line spells out passed / failed / blocked / missing counts against the expected run count, and a badge states whether approach score updates were **applied** or **held** under the partial-aggregation policy (CS-VALIDATION-012); a per-metric table shows count/mean/stddev/min/max
+- **Negative execution evidence on approaches** (CS-APPROACH-011): the approach detail page renders an "Execution Evidence" section — evidence-group counts, per-experiment negative-evidence tables (bundle, status, failure, deviations, retryability), and deduplicated suggested follow-ups
+- **Score provenance + affected roadmap** (CS-UI-013): the experiment detail page shows the execution-driven score updates for its approaches — before/after score and confidence, the rationale, and the linked ResultBundle references — plus the roadmap items that trace back to the experiment's outcomes
 - Everything is read-only projection of stored references; the UI never submits, cancels, or resubmits runs
 
 ### CS-EPIC-EVALUATION: Observability, Evaluation & Quality Metrics
@@ -906,6 +910,7 @@ Environment variables (prefix `CS_`):
 | `CS_ENFORCE_EXECUTION_BOUNDARY` | `false` | When true, block the direct repro-runner path — experiments run only via RunRequest handoff (CS-GOV-008) |
 | `CS_SCORE_EXECUTION_DELTA` | `0.15` | Score magnitude (0..1) applied to evidence-strength on a clean pass/fail outcome (CS-SCORE-011) |
 | `CS_SCORE_CONFIDENCE_DELTA` | `0.20` | Confidence magnitude (0..1) applied on execution evidence, dampened for mixed/partial outcomes (CS-SCORE-011) |
+| `CS_SCORE_UPDATE_ON_PARTIAL` | `false` | When true, partial aggregations (missing runs / partial bundles) still drive approach score updates; default holds updates until the batch completes (CS-VALIDATION-012) |
 
 ## Development
 

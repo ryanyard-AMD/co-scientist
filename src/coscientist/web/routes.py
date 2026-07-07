@@ -3,6 +3,7 @@ from fastapi.exceptions import HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from coscientist.config import settings
 from coscientist.database import get_db
 from coscientist.schemas.approach import (
     ApproachCardUpdate,
@@ -12,6 +13,7 @@ from coscientist.schemas.approach import (
 from coscientist.schemas.experiment import ExperimentCardUpdate
 from coscientist.schemas.hypothesis import HypothesisStatusEnum
 from coscientist.services import approach as approach_svc
+from coscientist.services import approach_evidence as approach_evidence_svc
 from coscientist.services import device as device_svc
 from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import execution as execution_svc
@@ -120,10 +122,11 @@ def approach_detail(
     except HTTPException as exc:
         return _error(request, exc)
     score = _try_get_scores(db, approach_id)
+    evidence = approach_evidence_svc.build_execution_evidence(db, approach_id)
     return templates.TemplateResponse(
         request,
         "approach_detail.html",
-        {"goal": goal, "approach": approach, "score": score},
+        {"goal": goal, "approach": approach, "score": score, "evidence": evidence},
     )
 
 
@@ -328,6 +331,7 @@ def experiment_detail(
         db, goal_id, experiment_id=experiment_id
     ).items
     evidence_label = governance_svc.experiment_evidence_label(db, experiment_id)
+    roadmap_items = roadmap_svc.list_for_experiment(db, experiment_id)
     return templates.TemplateResponse(
         request,
         "experiment_detail.html",
@@ -340,6 +344,7 @@ def experiment_detail(
             "aggregation": aggregation,
             "score_updates": score_updates,
             "evidence_label": evidence_label,
+            "roadmap_items": roadmap_items,
         },
     )
 
@@ -423,6 +428,7 @@ def validation_page(request: Request, goal_id: str, db: Session = Depends(get_db
             "results": result.items,
             "total": result.total,
             "execution": execution,
+            "score_update_on_partial": settings.score_update_on_partial,
         },
     )
 

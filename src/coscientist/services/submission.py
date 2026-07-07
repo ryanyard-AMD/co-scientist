@@ -95,6 +95,7 @@ def submit_experiment(
 
     preview = experiment_svc.preview_run_requests(db, experiment_id, cap=body.cap)
     total = len(preview.runs)
+    card_approach_ids = json.loads(card.approach_ids) if card.approach_ids else []
     approval_id = str(uuid.uuid4())
     policy = _build_approval_policy(card, body, approval_id)
     run_status = _run_status_for_mode(body.approval_mode, total, body.approval_threshold)
@@ -133,6 +134,8 @@ def submit_experiment(
             workspace_id=card.workspace_id,
             execution_batch_id=batch.id,
             correlation_id=batch.correlation_id,
+            hypothesis_id=card.hypothesis_id,
+            approach_ids=card_approach_ids,
             parameters=item.parameters,
             control_plane_uri=card.experiment_control_plane,
             status=run_status,

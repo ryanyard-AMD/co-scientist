@@ -419,6 +419,18 @@ def identify_evidence_gaps(db: Session, goal_id: str) -> EvidenceGapResponse:
     return EvidenceGapResponse(goal_id=goal_id, gaps=gaps, total=len(gaps))
 
 
+def list_for_experiment(
+    db: Session, experiment_id: str
+) -> list[ResearchRoadmapItemResponse]:
+    """Roadmap items that trace back to a specific experiment (CS-UI-013)."""
+    items = db.scalars(
+        select(ResearchRoadmapItem)
+        .where(ResearchRoadmapItem.source_experiment_id == experiment_id)
+        .order_by(ResearchRoadmapItem.priority_rank)
+    ).all()
+    return [_to_response(i) for i in items]
+
+
 def retire_for_experiment(db: Session, experiment_id: str, goal_id: str) -> None:
     """Mark open roadmap items linked to a completed/failed experiment as completed."""
     items = list(

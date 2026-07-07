@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from coscientist.config import settings
 from coscientist.models.execution import RunRequestReference
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.validation import ResultBundleReference, ValidationAggregation
@@ -70,6 +71,9 @@ def _bundle_to_response(b: ResultBundleReference) -> ResultBundleResponse:
         validation_status=BundleValidationStatusEnum(b.validation_status),
         metrics=json.loads(b.metrics) if b.metrics else {},
         artifacts=json.loads(b.artifacts) if b.artifacts else {},
+        manifest_uri=b.manifest_uri,
+        artifact_visibility=b.artifact_visibility,
+        access_label=b.access_label,
         deviations=json.loads(b.deviations) if b.deviations else [],
         warnings=json.loads(b.warnings) if b.warnings else [],
         provenance=json.loads(b.provenance) if b.provenance else {},
@@ -149,11 +153,17 @@ def _metric_summaries(bundles: list[ResultBundleReference]) -> dict[str, dict]:
                 collected.setdefault(name, []).append(float(value))
     summaries: dict[str, dict] = {}
     for name, values in collected.items():
+        n = len(values)
+        mean = sum(values) / n
+        # Population variance across runs — surfaces cross-run spread (CS-SCORE-012).
+        variance = sum((v - mean) ** 2 for v in values) / n
         summaries[name] = {
-            "count": len(values),
+            "count": n,
             "min": min(values),
             "max": max(values),
-            "mean": sum(values) / len(values),
+            "mean": mean,
+            "variance": variance,
+            "stddev": variance ** 0.5,
         }
     return summaries
 
@@ -258,6 +268,9 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
         validation_status=body.validation_status.value,
         metrics=json.dumps(body.metrics),
         artifacts=json.dumps(body.artifacts),
+        manifest_uri=body.manifest_uri,
+        artifact_visibility=body.artifact_visibility,
+        access_label=body.access_label,
         deviations=json.dumps(body.deviations),
         warnings=json.dumps(body.warnings),
         provenance=json.dumps(body.provenance),
@@ -294,12 +307,16 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
         },
     )
 
-    score_update_svc.apply_execution_score_update(
-        db,
-        experiment_id=body.experiment_id,
-        source_key=key,
-        result_bundle_id=body.result_bundle_id,
-    )
+    # CS-VALIDATION-012: don't drive approach scores off provisional evidence.
+    # A partial aggregation (missing runs or a partial bundle) waits for the batch
+    # to complete unless explicitly configured to update on partial evidence.
+    if not agg.is_partial or settings.score_update_on_partial:
+        score_update_svc.apply_execution_score_update(
+            db,
+            experiment_id=body.experiment_id,
+            source_key=key,
+            result_bundle_id=body.result_bundle_id,
+        )
 
     for approach_id in json.loads(bundle.approach_ids) if bundle.approach_ids else []:
         approach_evidence_svc.refresh_status_from_execution(db, approach_id)

@@ -71,10 +71,10 @@
   </div>
   {% if aggregation.metric_summaries %}
   <table>
-    <thead><tr><th>Metric</th><th>count</th><th>min</th><th>mean</th><th>max</th></tr></thead>
+    <thead><tr><th>Metric</th><th>count</th><th>min</th><th>mean</th><th>max</th><th>stddev</th></tr></thead>
     <tbody>
       {% for name, m in aggregation.metric_summaries.items() %}
-      <tr><td>{{ name }}</td><td>{{ m.count }}</td><td>{{ "%.3g"|format(m.min) }}</td><td>{{ "%.3g"|format(m.mean) }}</td><td>{{ "%.3g"|format(m.max) }}</td></tr>
+      <tr><td>{{ name }}</td><td>{{ m.count }}</td><td>{{ "%.3g"|format(m.min) }}</td><td>{{ "%.3g"|format(m.mean) }}</td><td>{{ "%.3g"|format(m.max) }}</td><td>{{ "%.3g"|format(m.stddev) }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -106,6 +106,24 @@
   {% endif %}
 </div>
 {% endfor %}
+{% endif %}
+
+{% if roadmap_items %}
+<h3>Affected roadmap items</h3>
+<p class="small muted">Roadmap follow-ups traced back to this experiment's outcomes (CS-UI-013).</p>
+<table>
+  <thead><tr><th>Item</th><th>Lane</th><th>Status</th><th>Outcome</th></tr></thead>
+  <tbody>
+    {% for it in roadmap_items %}
+    <tr>
+      <td><a href="/ui/goals/{{ goal.id }}/roadmap">{{ it.title }}</a>{% if it.provisional %} <span class="badge partial">provisional</span>{% endif %}</td>
+      <td class="small">{{ it.lane.value }}</td>
+      <td><span class="badge {{ it.status.value }}">{{ it.status.value }}</span></td>
+      <td class="small">{{ it.execution_outcome.value if it.execution_outcome else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% endif %}
 
 <h2>Editor</h2>

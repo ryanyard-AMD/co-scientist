@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # CS-EPIC-SCORE: execution-evidence score update magnitudes (0..1 rubric scale).
     score_execution_delta: float = 0.15
     score_confidence_delta: float = 0.20
+    # CS-VALIDATION-012: gate final approach-score updates on complete aggregations.
+    # When false (default), a partial aggregation (missing runs or a partial bundle)
+    # does NOT drive an approach score update — evidence is provisional until the
+    # batch completes. Set true to update scores from partial evidence.
+    score_update_on_partial: bool = False
 
 
 settings = Settings()

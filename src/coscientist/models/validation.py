@@ -62,6 +62,10 @@ class ResultBundleReference(Base):
     validation_status: Mapped[str] = mapped_column(String(24), nullable=False, default="inconclusive")
     metrics: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     artifacts: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # CS-VALIDATION-013: artifact manifest link + permission-aware access labels.
+    manifest_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    artifact_visibility: Mapped[str] = mapped_column(String(24), nullable=False, default="internal")
+    access_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deviations: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     warnings: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     provenance: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

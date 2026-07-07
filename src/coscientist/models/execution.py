@@ -61,6 +61,10 @@ class RunRequestReference(Base):
     goal_id: Mapped[str] = mapped_column(String(36), nullable=False)
     execution_batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # CS-EXEC-007: direct correlation to the Approach/Hypothesis cards this run
+    # tests, so events can be reconciled without traversing the Experiment card.
+    hypothesis_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approach_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     control_plane_uri: Mapped[str | None] = mapped_column(String(256), nullable=True)
     parameters: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

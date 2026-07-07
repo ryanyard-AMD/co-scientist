@@ -100,6 +100,9 @@ class ResultBundleIngest(BaseModel):
     validation_status: BundleValidationStatusEnum = BundleValidationStatusEnum.inconclusive
     metrics: dict[str, float] = Field(default_factory=dict)
     artifacts: dict[str, str] = Field(default_factory=dict)
+    manifest_uri: str | None = None
+    artifact_visibility: str = "internal"
+    access_label: str | None = None
     deviations: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     provenance: dict = Field(default_factory=dict)
@@ -123,6 +126,9 @@ class ResultBundleResponse(BaseModel):
     validation_status: BundleValidationStatusEnum
     metrics: dict[str, float]
     artifacts: dict[str, str]
+    manifest_uri: str | None
+    artifact_visibility: str
+    access_label: str | None
     deviations: list[str]
     warnings: list[str]
     provenance: dict
@@ -138,6 +144,8 @@ class MetricSummary(BaseModel):
     min: float
     max: float
     mean: float
+    variance: float
+    stddev: float
 
 
 class ValidationAggregationResponse(BaseModel):

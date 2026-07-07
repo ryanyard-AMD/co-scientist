@@ -20,6 +20,47 @@
 <h2>Score Explanation</h2>
 {% include "partials/score_panel.html" %}
 
+{% if evidence %}
+<h2>Execution Evidence</h2>
+<p class="small muted">Downstream execution outcomes for experiments testing this approach, including negative evidence.</p>
+<div class="row">
+  {% for name, count in evidence.evidence_groups.items() %}
+  <span class="badge" title="{{ name }}">{{ name.replace("_", " ") }}: {{ count }}</span>
+  {% endfor %}
+</div>
+{% for b in evidence.experiments %}
+<div class="panel">
+  <div class="row">
+    <h3 style="margin:0"><a href="/ui/goals/{{ goal.id }}/experiments/{{ b.experiment_id }}">{{ b.experiment_name }}</a></h3>
+    <div class="spacer"></div>
+    <span class="badge {{ b.status.value }}">{{ b.status.value }}</span>
+    <span class="badge {{ b.execution_status.value }}">exec: {{ b.execution_status.value }}</span>
+    {% if b.validation %}<span class="badge {{ b.validation.aggregate_status }}">{{ b.validation.aggregate_status }}</span>{% endif %}
+  </div>
+  {% if b.negative_evidence %}
+  <h4 class="small">Negative evidence</h4>
+  <table>
+    <thead><tr><th>Bundle</th><th>Status</th><th>Failure</th><th>Retryable</th></tr></thead>
+    <tbody>
+      {% for n in b.negative_evidence %}
+      <tr>
+        <td class="small"><code>{{ n.result_bundle_id }}</code></td>
+        <td><span class="badge {{ n.validation_status }}">{{ n.validation_status }}</span></td>
+        <td class="small">{{ n.failure_summary or n.failure_type or "—" }}{% if n.deviations %}<br><span class="muted">deviations: {{ n.deviations|join("; ") }}</span>{% endif %}</td>
+        <td class="small">{{ "yes" if n.retryable else "no" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endfor %}
+{% if evidence.suggested_followups %}
+<h3>Suggested follow-ups</h3>
+<ul class="tight">{% for f in evidence.suggested_followups %}<li class="small">{{ f }}</li>{% endfor %}</ul>
+{% endif %}
+{% endif %}
+
 <h2>Details</h2>
 {% if approach.problem_fit %}<h3>Problem fit</h3><p>{{ approach.problem_fit }}</p>{% endif %}
 {% if approach.mechanism_summary %}<h3>Mechanism</h3><p>{{ approach.mechanism_summary }}</p>{% endif %}
