@@ -16,8 +16,10 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from coscientist.models.execution import ExecutionBatchReference, RunRequestReference
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.approval import (
     ApprovalModeEnum,
@@ -28,9 +30,11 @@ from coscientist.schemas.approval import (
 from coscientist.schemas.execution import RunRequestStatusEnum
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.governance import ExecutionAuditActionEnum
+from coscientist.schemas.handoff import HandoffRequestStatusEnum, HandoffRequestTypeEnum
 from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import handoff as handoff_svc
 
 
 def _default_run_request_submitter(payload: dict) -> str:
@@ -73,6 +77,25 @@ def _build_approval_policy(
     }
 
 
+def _existing_run_for_params(
+    db: Session, experiment_id: str, parameters: dict
+) -> RunRequestReference | None:
+    """Find an already-registered RunRequest for this experiment with matching
+    parameters, so a retry reuses it instead of creating a duplicate RunRequest
+    against the Experimentation System (CS-APPROVAL-010)."""
+    target = json.dumps(parameters, sort_keys=True)
+    rows = db.scalars(
+        select(RunRequestReference).where(
+            RunRequestReference.experiment_id == experiment_id
+        )
+    ).all()
+    for r in rows:
+        stored = json.dumps(json.loads(r.parameters) if r.parameters else {}, sort_keys=True)
+        if stored == target:
+            return r
+    return None
+
+
 def submit_experiment(
     db: Session,
     experiment_id: str,
@@ -87,7 +110,11 @@ def submit_experiment(
             status_code=409,
             detail=f"Experiment must be 'approved' to submit, got {card.status!r}",
         )
-    if card.execution_batch_id:
+
+    # A prior handoff that failed can be retried into the same batch; only a
+    # fully-submitted experiment is blocked from re-submission (CS-APPROVAL-010).
+    is_retry = bool(card.execution_batch_id) and card.handoff_status == "failed"
+    if card.execution_batch_id and not is_retry:
         raise HTTPException(
             status_code=409,
             detail=f"Experiment {experiment_id!r} already submitted as batch {card.execution_batch_id!r}",
@@ -96,62 +123,138 @@ def submit_experiment(
     preview = experiment_svc.preview_run_requests(db, experiment_id, cap=body.cap)
     total = len(preview.runs)
     card_approach_ids = json.loads(card.approach_ids) if card.approach_ids else []
-    approval_id = str(uuid.uuid4())
-    policy = _build_approval_policy(card, body, approval_id)
-    run_status = _run_status_for_mode(body.approval_mode, total, body.approval_threshold)
 
-    card.handoff_status = "submitting"
-    db.flush()
-
-    batch = execution_svc.create_execution_batch(
-        db,
-        experiment_id=experiment_id,
-        goal_id=goal_id,
-        workspace_id=card.workspace_id,
-        submission_mode=card.submission_mode,
-        submitter=body.approver,
-        approval_policy=policy,
-        control_plane_uri=card.experiment_control_plane,
-        commit=False,
-    )
-    db.flush()
-
-    submitted: list[SubmittedRunRequest] = []
-    run_request_ids: list[str] = []
-    for item in preview.runs:
-        payload = {
-            "experiment_id": experiment_id,
-            "parameters": item.parameters,
-            "approval_policy": policy,
-            "correlation_id": batch.correlation_id,
-        }
-        rr_id = run_request_submitter(payload)
-        execution_svc.register_run_request(
+    if is_retry:
+        batch = db.get(ExecutionBatchReference, card.execution_batch_id)
+        policy = json.loads(batch.approval_policy) if batch.approval_policy else {}
+        approval_id = policy.get("approval_id") or str(uuid.uuid4())
+    else:
+        approval_id = str(uuid.uuid4())
+        policy = _build_approval_policy(card, body, approval_id)
+        card.handoff_status = "submitting"
+        db.flush()
+        batch = execution_svc.create_execution_batch(
             db,
-            run_request_id=rr_id,
             experiment_id=experiment_id,
             goal_id=goal_id,
             workspace_id=card.workspace_id,
-            execution_batch_id=batch.id,
-            correlation_id=batch.correlation_id,
-            hypothesis_id=card.hypothesis_id,
-            approach_ids=card_approach_ids,
-            parameters=item.parameters,
+            submission_mode=card.submission_mode,
+            submitter=body.approver,
+            approval_policy=policy,
             control_plane_uri=card.experiment_control_plane,
-            status=run_status,
             commit=False,
         )
-        run_request_ids.append(rr_id)
-        submitted.append(
-            SubmittedRunRequest(
-                run_request_id=rr_id, status=run_status.value, parameters=item.parameters
+        db.flush()
+
+    run_status = _run_status_for_mode(body.approval_mode, total, body.approval_threshold)
+
+    submitted: list[SubmittedRunRequest] = []
+    run_request_ids: list[str] = []
+    try:
+        for item in preview.runs:
+            existing = _existing_run_for_params(db, experiment_id, item.parameters)
+            if existing is not None:
+                # Idempotent retry: reuse the RunRequest already handed off.
+                rr_id = existing.run_request_id
+            else:
+                payload = {
+                    "experiment_id": experiment_id,
+                    "parameters": item.parameters,
+                    "approval_policy": policy,
+                    "correlation_id": batch.correlation_id,
+                }
+                rr_id = run_request_submitter(payload)
+                execution_svc.register_run_request(
+                    db,
+                    run_request_id=rr_id,
+                    experiment_id=experiment_id,
+                    goal_id=goal_id,
+                    workspace_id=card.workspace_id,
+                    execution_batch_id=batch.id,
+                    correlation_id=batch.correlation_id,
+                    hypothesis_id=card.hypothesis_id,
+                    approach_ids=card_approach_ids,
+                    parameters=item.parameters,
+                    control_plane_uri=card.experiment_control_plane,
+                    status=run_status,
+                    commit=False,
+                )
+            run_request_ids.append(rr_id)
+            submitted.append(
+                SubmittedRunRequest(
+                    run_request_id=rr_id, status=run_status.value, parameters=item.parameters
+                )
             )
+    except Exception as exc:  # noqa: BLE001 — preserve any handoff failure for retry
+        # Persist the batch + whatever RunRequests were already handed off so a
+        # retry doesn't duplicate them, then record the failed handoff.
+        card.execution_batch_id = batch.id
+        card.run_request_ids = json.dumps(run_request_ids)
+        card.handoff_status = "failed"
+        db.flush()
+        handoff_svc.record_handoff_request(
+            db,
+            workspace_id=card.workspace_id,
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            request_type=HandoffRequestTypeEnum.retry if is_retry else HandoffRequestTypeEnum.submit,
+            status=HandoffRequestStatusEnum.failed,
+            error=str(exc),
+            payload_summary={
+                "attempted_run_count": total,
+                "handed_off_run_count": len(run_request_ids),
+            },
+            approval_id=approval_id,
+            retryable=True,
+            run_request_ids=run_request_ids,
+            execution_batch_id=batch.id,
+            correlation_id=batch.correlation_id,
+        )
+        governance_svc.record_execution_event(
+            db,
+            workspace_id=card.workspace_id,
+            action=ExecutionAuditActionEnum.handoff_failed,
+            actor=body.approver or governance_svc.HANDOFF_AGENT_NAME,
+            experiment_id=experiment_id,
+            execution_batch_id=batch.id,
+            approval_id=approval_id,
+            run_request_ids=run_request_ids,
+            detail={"error": str(exc)},
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Handoff to the Experimentation System failed: {exc}",
         )
 
     card.execution_batch_id = batch.id
     card.run_request_ids = json.dumps(run_request_ids)
     card.handoff_status = "submitted"
     db.flush()
+
+    if is_retry:
+        handoff_svc.record_handoff_request(
+            db,
+            workspace_id=card.workspace_id,
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            request_type=HandoffRequestTypeEnum.retry,
+            status=HandoffRequestStatusEnum.acknowledged,
+            approval_id=approval_id,
+            run_request_ids=run_request_ids,
+            execution_batch_id=batch.id,
+            correlation_id=batch.correlation_id,
+        )
+        governance_svc.record_execution_event(
+            db,
+            workspace_id=card.workspace_id,
+            action=ExecutionAuditActionEnum.handoff_retried,
+            actor=body.approver or governance_svc.HANDOFF_AGENT_NAME,
+            experiment_id=experiment_id,
+            execution_batch_id=batch.id,
+            approval_id=approval_id,
+            run_request_ids=run_request_ids,
+        )
 
     batch = execution_svc.recompute_batch(db, batch.id)
 

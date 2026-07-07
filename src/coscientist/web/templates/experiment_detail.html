@@ -126,6 +126,26 @@
 </table>
 {% endif %}
 
+{% if handoff_requests %}
+<h3>Handoff control requests</h3>
+<p class="small muted">Failed handoffs, retries, and cancel/resubmit requests relayed to the Experimentation System. The co-scientist records the request and its status; execution control stays with that system (CS-APPROVAL-010/011, CS-UI-012).</p>
+<table>
+  <thead><tr><th>Type</th><th>Status</th><th>Retryable</th><th>Runs</th><th>Detail</th><th>When</th></tr></thead>
+  <tbody>
+    {% for h in handoff_requests %}
+    <tr>
+      <td><span class="badge">{{ h.request_type.value }}</span></td>
+      <td><span class="badge {{ 'refuted' if h.status.value in ('failed', 'rejected') else 'completed' }}">{{ h.status.value }}</span></td>
+      <td class="small">{{ "yes" if h.retryable else "—" }}</td>
+      <td class="small">{{ h.run_request_ids|length }}</td>
+      <td class="small">{{ h.error or (h.payload_summary.reason if h.payload_summary and h.payload_summary.reason else "—") }}</td>
+      <td class="small">{{ h.created_at.strftime("%Y-%m-%d %H:%M") if h.created_at else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <h2>Editor</h2>
 <div class="panel">
   <form hx-post="/ui/goals/{{ goal.id }}/experiments/{{ experiment.id }}" hx-target="body" hx-swap="outerHTML">

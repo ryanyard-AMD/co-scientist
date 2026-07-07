@@ -166,6 +166,80 @@ def experiment_evidence_label(db: Session, experiment_id: str) -> EvidenceLabelR
 
 
 # ---------------------------------------------------------------------------
+# CS-GOV-011: redaction of runner internals
+# ---------------------------------------------------------------------------
+
+REDACTED = "***redacted***"
+_PATH_REDACTED = "***path-redacted***"
+
+# Keys whose values are secrets — never surfaced regardless of authorization.
+_SECRET_KEY_HINTS = (
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "credential",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+    "authorization",
+)
+# Keys that expose runner internals / operator-only diagnostics — surfaced only
+# to an authorized (operator) viewer.
+_INTERNAL_KEY_HINTS = (
+    "raw_log",
+    "runner_log",
+    "logs",
+    "diagnostic",
+    "stack_trace",
+    "stacktrace",
+    "traceback",
+    "operator",
+    "node_name",
+    "hostname",
+)
+_LOCAL_PATH_PREFIXES = ("/home/", "/root/", "/var/", "/tmp/", "/mnt/", "/opt/", "/etc/")
+
+
+def _looks_like_local_path(value: str) -> bool:
+    if value.startswith(_LOCAL_PATH_PREFIXES):
+        return True
+    # Windows drive path e.g. C:\Users\...
+    return len(value) > 3 and value[1:3] == ":\\"
+
+
+def _key_matches(key: str, hints: tuple[str, ...]) -> bool:
+    k = key.lower()
+    return any(h in k for h in hints)
+
+
+def redact_runner_internals(value, *, authorized: bool = False):
+    """Redact secrets, local filesystem paths, credential names, raw runner logs,
+    and operator-only diagnostics from data bound for the UI/API (CS-GOV-011).
+
+    Secrets are always redacted. Runner internals and local paths are redacted
+    unless ``authorized`` (an operator view). Returns a redacted copy; the input
+    is not mutated.
+    """
+    if isinstance(value, dict):
+        out: dict = {}
+        for k, v in value.items():
+            if _key_matches(k, _SECRET_KEY_HINTS):
+                out[k] = REDACTED
+            elif not authorized and _key_matches(k, _INTERNAL_KEY_HINTS):
+                out[k] = REDACTED
+            else:
+                out[k] = redact_runner_internals(v, authorized=authorized)
+        return out
+    if isinstance(value, list):
+        return [redact_runner_internals(v, authorized=authorized) for v in value]
+    if isinstance(value, str) and not authorized and _looks_like_local_path(value):
+        return _PATH_REDACTED
+    return value
+
+
+# ---------------------------------------------------------------------------
 # CS-GOV-008: execution boundary
 # ---------------------------------------------------------------------------
 

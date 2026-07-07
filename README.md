@@ -148,7 +148,9 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 - **Full correlation on every RunRequest** (CS-EXEC-007): each `RunRequestReference` carries the `correlation_id`, `goal_id`, `experiment_id`, `execution_batch_id`, plus the `hypothesis_id` and `approach_ids` it tests — so events from the Experimentation System reconcile directly to Approach/Hypothesis cards without traversing the Experiment card.
 - **Approval policy on every batch** (CS-APPROVAL-008): `approval_id`, `approver`, `approved_at`, `cost_class` (defaults to the card's estimated cost), `credentialed` flag, `resource_policy` (required capabilities + overrides), and `retry_policy` are stored on the `ExecutionBatchReference`.
 - **Batch approval modes** (CS-APPROVAL-009): `approve_batch` submits all runs as `pending`; `approve_each_run` submits every run as `blocked` awaiting per-run approval; `approval_required_above_threshold` blocks runs only when the expanded count exceeds `approval_threshold`. The resulting card `execution_status` follows the batch rollup (`submitted` vs `blocked`).
-- **Idempotent**: a card that already carries an `execution_batch_id` is rejected (409); re-registering the same RunRequest returns the existing reference. Submission requires `approved` status.
+- **Idempotent**: a fully-submitted card (carries an `execution_batch_id` with `handoff_status == "submitted"`) is rejected (409); re-registering the same RunRequest returns the existing reference. Submission requires `approved` status.
+- **Failed handoff + idempotent retry** (CS-APPROVAL-010): if the external RunRequest call raises, the batch and any RunRequests already handed off are preserved, the card is marked `handoff_status = "failed"`, and a `HandoffRequest` records the error, timestamp, payload summary, approval id, and retryability (the endpoint returns 502). `POST /experiments/{id}/retry` re-runs the handoff into the *same* batch — each preview run is matched against existing `RunRequestReference` parameters so runs already accepted are reused, never duplicated.
+- **Cancel / resubmit requests** (CS-APPROVAL-011): `POST /experiments/{id}/cancel` and `.../resubmit` relay a control request to the Experimentation System (abstracted behind `handoff.cancellation_requester` / `resubmission_requester`) and record a `HandoffRequest` with the returned status. Execution control stays with that system — cancelling only records the request; run statuses change only when the system reports them back. `GET /experiments/{id}/handoff-requests` lists the recorded requests.
 
 ### CS-EPIC-VALIDATION: Agent-Driven Experiment Validation
 
@@ -268,6 +270,7 @@ The co-scientist is a planning, approval, and interpretation layer — **not** t
 - **ExecutionAuditLog** (CS-GOV-009): append-only accountability trail for every execution-related action — `handoff_submitted`, `run_status_updated`, and `result_bundle_ingested`. Each row records the submitter/actor, approval ID, Experiment Card ID, execution batch ID, RunRequest IDs, governing policy, a stable SHA-256 payload checksum, and an action detail blob. Written via `record_execution_event()`, which `flush`es into the caller's transaction and never raises
 - Queryable via `GET /goals/{id}/execution-audit` (filter by `action` and `experiment_id`)
 - **Permission-checked references** (CS-GOV-010): execution references stay scoped to their goal workspace; restricted goals disable agent actions across the execution surface
+- **Redaction of runner internals** (CS-GOV-011): `governance.redact_runner_internals()` strips secrets, credential names, local filesystem paths, raw runner logs, and operator-only diagnostics from data bound for the UI/API. Secrets are always redacted; runner internals and local paths are redacted unless the caller is an authorized (operator) viewer. Applied to `ResultBundle` artifacts and provenance whose `artifact_visibility` is `restricted`/`operator_only`
 - **Evidence labels** (CS-GOV-012): `derive_evidence_label()` labels an experiment's evidence state — `proposed`, `approved`, `queued`, `completed`, `failed`, `validation-passed`, `validation-failed`, `mixed`, or `inconclusive` — so a speculative plan is never displayed as a validated result. Precedence is validation outcome > execution lifecycle > approval lifecycle. Surfaced as a badge on the experiment detail page and via `GET /goals/{id}/experiments/{experiment_id}/evidence-label`
 
 ### CS-EPIC-UI: Web User Interface
@@ -294,6 +297,7 @@ Surfaces the execution-tracking state added by the experimentation-integration e
 - **Aggregation policy + score-update status** (CS-UI-011): incomplete batches and partial bundles are flagged with a `partial` badge, the aggregation line spells out passed / failed / blocked / missing counts against the expected run count, and a badge states whether approach score updates were **applied** or **held** under the partial-aggregation policy (CS-VALIDATION-012); a per-metric table shows count/mean/stddev/min/max
 - **Negative execution evidence on approaches** (CS-APPROACH-011): the approach detail page renders an "Execution Evidence" section — evidence-group counts, per-experiment negative-evidence tables (bundle, status, failure, deviations, retryability), and deduplicated suggested follow-ups
 - **Score provenance + affected roadmap** (CS-UI-013): the experiment detail page shows the execution-driven score updates for its approaches — before/after score and confidence, the rationale, and the linked ResultBundle references — plus the roadmap items that trace back to the experiment's outcomes
+- **Handoff control requests, read-only** (CS-UI-012): the experiment detail page lists recorded handoff-control requests — failed handoffs, retries, and cancel/resubmit relays — with type, status, retryability, and detail. This is a read-only projection of state recorded by the cancel/resubmit/retry API; the UI does not drive execution control itself (that stays with the Experimentation System)
 - Everything is read-only projection of stored references; the UI never submits, cancels, or resubmits runs
 
 ### CS-EPIC-EVALUATION: Observability, Evaluation & Quality Metrics
@@ -790,6 +794,11 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/experiments/{eid}/reject` | Reject experiment (→ superseded) |
 | POST | `/goals/{id}/experiments/{eid}/request-edit` | Request edits (→ generated) |
 | POST | `/goals/{id}/experiments/{eid}/duplicate` | Duplicate as editable copy |
+| POST | `/goals/{id}/experiments/{eid}/submit` | Hand approved card to Experimentation System as RunRequests |
+| POST | `/goals/{id}/experiments/{eid}/retry` | Retry a failed handoff without duplicating RunRequests (CS-APPROVAL-010) |
+| POST | `/goals/{id}/experiments/{eid}/cancel` | Relay a cancellation request; records status (CS-APPROVAL-011) |
+| POST | `/goals/{id}/experiments/{eid}/resubmit` | Relay a resubmission request; records status (CS-APPROVAL-011) |
+| GET | `/goals/{id}/experiments/{eid}/handoff-requests` | List recorded handoff-control requests (CS-UI-012) |
 | GET | `/goals/{id}/experiments/{eid}/decisions` | List chronological decision history |
 
 ### Validation

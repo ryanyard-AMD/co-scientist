@@ -6,6 +6,10 @@ from pydantic import BaseModel
 
 class ExecutionAuditActionEnum(str, Enum):
     handoff_submitted = "handoff_submitted"
+    handoff_failed = "handoff_failed"
+    handoff_retried = "handoff_retried"
+    cancellation_requested = "cancellation_requested"
+    resubmission_requested = "resubmission_requested"
     run_status_updated = "run_status_updated"
     result_bundle_ingested = "result_bundle_ingested"
 

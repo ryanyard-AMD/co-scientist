@@ -56,7 +56,15 @@ _BUNDLE_TO_RUN_STATUS = {
 }
 
 
-def _bundle_to_response(b: ResultBundleReference) -> ResultBundleResponse:
+def _bundle_to_response(b: ResultBundleReference, *, authorized: bool = False) -> ResultBundleResponse:
+    artifacts = json.loads(b.artifacts) if b.artifacts else {}
+    provenance = json.loads(b.provenance) if b.provenance else {}
+    # CS-GOV-011: redact runner internals (secrets, local paths, raw logs,
+    # operator diagnostics) from restricted artifacts unless viewed as operator.
+    restricted = b.artifact_visibility in ("restricted", "operator_only")
+    if restricted and not authorized:
+        artifacts = governance_svc.redact_runner_internals(artifacts, authorized=False)
+        provenance = governance_svc.redact_runner_internals(provenance, authorized=False)
     return ResultBundleResponse(
         id=b.id,
         result_bundle_id=b.result_bundle_id,
@@ -70,13 +78,13 @@ def _bundle_to_response(b: ResultBundleReference) -> ResultBundleResponse:
         execution_batch_id=b.execution_batch_id,
         validation_status=BundleValidationStatusEnum(b.validation_status),
         metrics=json.loads(b.metrics) if b.metrics else {},
-        artifacts=json.loads(b.artifacts) if b.artifacts else {},
+        artifacts=artifacts,
         manifest_uri=b.manifest_uri,
         artifact_visibility=b.artifact_visibility,
         access_label=b.access_label,
         deviations=json.loads(b.deviations) if b.deviations else [],
         warnings=json.loads(b.warnings) if b.warnings else [],
-        provenance=json.loads(b.provenance) if b.provenance else {},
+        provenance=provenance,
         failure_type=b.failure_type,
         failure_summary=b.failure_summary,
         retryable=b.retryable,

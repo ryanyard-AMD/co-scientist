@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 from coscientist.config import settings
 from coscientist.database import Base, engine
-from coscientist.models import approval, approach, critic, device, evidence, execution, experiment, feedback, governance, hypothesis, roadmap, score, synthesis, validation  # noqa: F401 — registers ORM models
+from coscientist.models import approval, approach, critic, device, evidence, execution, experiment, feedback, governance, handoff, hypothesis, roadmap, score, synthesis, validation  # noqa: F401 — registers ORM models
 from coscientist.routers import approval as approval_router
 from coscientist.routers import critic as critic_router
 from coscientist.routers import device as device_router

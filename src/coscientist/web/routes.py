@@ -20,6 +20,7 @@ from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import handoff as handoff_svc
 from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import result_bundle as result_bundle_svc
 from coscientist.services import roadmap as roadmap_svc
@@ -332,6 +333,7 @@ def experiment_detail(
     ).items
     evidence_label = governance_svc.experiment_evidence_label(db, experiment_id)
     roadmap_items = roadmap_svc.list_for_experiment(db, experiment_id)
+    handoff_requests = handoff_svc.list_handoff_requests(db, experiment_id).items
     return templates.TemplateResponse(
         request,
         "experiment_detail.html",
@@ -345,6 +347,7 @@ def experiment_detail(
             "score_updates": score_updates,
             "evidence_label": evidence_label,
             "roadmap_items": roadmap_items,
+            "handoff_requests": handoff_requests,
         },
     )
 
