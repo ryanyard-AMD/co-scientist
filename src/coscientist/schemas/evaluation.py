@@ -109,6 +109,43 @@ class DuplicateIngestionMetrics(BaseModel):
     meets_target: bool
 
 
+class StatusFreshnessMetrics(BaseModel):
+    goal_id: str
+    total_run_requests: int
+    in_flight_run_requests: int
+    stale_run_requests: int
+    max_staleness_seconds: float | None
+    mean_staleness_seconds: float | None
+    threshold_seconds: int
+    meets_target: bool
+    stale_run_request_ids: list[str]
+
+
+class FailedRunUsefulnessMetrics(BaseModel):
+    goal_id: str
+    failed_run_count: int
+    with_failure_reason: int
+    with_artifacts: int
+    retryable_count: int
+    with_roadmap_action: int
+    useful_count: int
+    usefulness_rate: float
+    usefulness_target: float
+    meets_target: bool
+
+
+class BatchAggregationQualityMetrics(BaseModel):
+    goal_id: str
+    total_batches: int
+    completed_batches: int
+    batch_completion_rate: float
+    total_aggregations: int
+    partial_aggregations: int
+    partial_aggregation_rate: float
+    mixed_aggregations: int
+    mixed_outcome_rate: float
+
+
 class EvaluationReport(BaseModel):
     goal_id: str
     approach_usefulness: ApproachUsefulnessMetrics
@@ -118,3 +155,6 @@ class EvaluationReport(BaseModel):
     handoff_success: HandoffSuccessMetrics
     execution_traceability: ExecutionTraceabilityMetrics
     duplicate_ingestion: DuplicateIngestionMetrics
+    status_freshness: StatusFreshnessMetrics
+    failed_run_usefulness: FailedRunUsefulnessMetrics
+    batch_aggregation_quality: BatchAggregationQualityMetrics

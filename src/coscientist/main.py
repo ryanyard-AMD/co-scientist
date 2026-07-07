@@ -41,6 +41,7 @@ app = FastAPI(
 
 app.include_router(governance_router.router, prefix=settings.api_prefix)
 app.include_router(governance_router.audit_router, prefix=settings.api_prefix)
+app.include_router(governance_router.label_router, prefix=settings.api_prefix)
 app.include_router(validation_router.router, prefix=settings.api_prefix)
 app.include_router(device_router.router, prefix=settings.api_prefix)
 app.include_router(roadmap_router.router, prefix=settings.api_prefix)

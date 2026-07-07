@@ -5,6 +5,7 @@ from coscientist.database import get_db
 from coscientist.schemas.governance import (
     AgentActionLogListResponse,
     AgentActionLogResponse,
+    EvidenceLabelResponse,
     ExecutionAuditActionEnum,
     ExecutionAuditLogListResponse,
 )
@@ -13,6 +14,15 @@ from coscientist.services import governance as svc
 router = APIRouter(prefix="/goals/{goal_id}/agent-logs", tags=["governance"])
 
 audit_router = APIRouter(prefix="/goals/{goal_id}/execution-audit", tags=["governance"])
+
+label_router = APIRouter(prefix="/goals/{goal_id}/experiments", tags=["governance"])
+
+
+@label_router.get("/{experiment_id}/evidence-label", response_model=EvidenceLabelResponse)
+def experiment_evidence_label(
+    goal_id: str, experiment_id: str, db: Session = Depends(get_db)
+):
+    return svc.experiment_evidence_label(db, experiment_id)
 
 
 @audit_router.get("", response_model=ExecutionAuditLogListResponse)

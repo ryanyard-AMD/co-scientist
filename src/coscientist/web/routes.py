@@ -17,6 +17,7 @@ from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 from coscientist.services import hypothesis as hypothesis_svc
 from coscientist.services import result_bundle as result_bundle_svc
 from coscientist.services import roadmap as roadmap_svc
@@ -326,6 +327,7 @@ def experiment_detail(
     score_updates = score_update_svc.list_score_updates(
         db, goal_id, experiment_id=experiment_id
     ).items
+    evidence_label = governance_svc.experiment_evidence_label(db, experiment_id)
     return templates.TemplateResponse(
         request,
         "experiment_detail.html",
@@ -337,6 +339,7 @@ def experiment_detail(
             "run_requests": run_requests,
             "aggregation": aggregation,
             "score_updates": score_updates,
+            "evidence_label": evidence_label,
         },
     )
 

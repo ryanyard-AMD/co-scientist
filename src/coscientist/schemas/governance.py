@@ -10,6 +10,17 @@ class ExecutionAuditActionEnum(str, Enum):
     result_bundle_ingested = "result_bundle_ingested"
 
 
+class EvidenceLabelResponse(BaseModel):
+    """CS-GOV-012: evidence label for an experiment so speculative plans are not
+    mistaken for validated results."""
+
+    experiment_id: str
+    label: str
+    lifecycle_status: str
+    execution_status: str
+    validation_status: str | None
+
+
 class ExecutionAuditLogResponse(BaseModel):
     model_config = {"from_attributes": True}
 

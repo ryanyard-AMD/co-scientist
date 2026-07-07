@@ -265,6 +265,7 @@ The co-scientist is a planning, approval, and interpretation layer — **not** t
 - **ExecutionAuditLog** (CS-GOV-009): append-only accountability trail for every execution-related action — `handoff_submitted`, `run_status_updated`, and `result_bundle_ingested`. Each row records the submitter/actor, approval ID, Experiment Card ID, execution batch ID, RunRequest IDs, governing policy, a stable SHA-256 payload checksum, and an action detail blob. Written via `record_execution_event()`, which `flush`es into the caller's transaction and never raises
 - Queryable via `GET /goals/{id}/execution-audit` (filter by `action` and `experiment_id`)
 - **Permission-checked references** (CS-GOV-010): execution references stay scoped to their goal workspace; restricted goals disable agent actions across the execution surface
+- **Evidence labels** (CS-GOV-012): `derive_evidence_label()` labels an experiment's evidence state — `proposed`, `approved`, `queued`, `completed`, `failed`, `validation-passed`, `validation-failed`, `mixed`, or `inconclusive` — so a speculative plan is never displayed as a validated result. Precedence is validation outcome > execution lifecycle > approval lifecycle. Surfaced as a badge on the experiment detail page and via `GET /goals/{id}/experiments/{experiment_id}/evidence-label`
 
 ### CS-EPIC-UI: Web User Interface
 
@@ -305,6 +306,9 @@ A read-only metrics layer that computes the quality targets from PRD §20 over t
   - **Handoff success** (CS-EVAL-007): from the Experiment Card handoff lifecycle, the share of attempted handoffs that reached `submitted` (target ≥ 95%), plus successful RunRequest count and retry-success rate (run requests that took ≥ 2 attempts and completed)
   - **Execution traceability** (CS-EVAL-008): every RunRequest should trace back to research intent — goal, Experiment Card, Approach Card, hypothesis (where applicable), and a `handoff_submitted` approval record; reports the fully-traceable rate (target 100%) and the ids of any untraceable run requests
   - **Idempotent ingestion** (CS-EVAL-009): verifies zero duplicate ResultBundles (by ingestion key) and zero duplicate score updates (by source_key/approach_id/dimension) — a nonzero count means the idempotency guarantee was violated
+  - **Status freshness** (CS-EVAL-010): flags in-flight RunRequests whose mirrored status has not updated within `CS_EVAL_STATUS_FRESHNESS_THRESHOLD_SECONDS`, so stale execution-status displays (polling lag) are detectable
+  - **Failed-run usefulness** (CS-EVAL-011): share of failed ResultBundles that remain useful evidence — carrying a failure reason, diagnostic artifacts, and a linked roadmap follow-up (target ≥ 90%)
+  - **Batch aggregation quality** (CS-EVAL-012): diagnostic batch-completion, partial-aggregation, and mixed-outcome rates so sweep handling can be tuned
 - Exposed via `GET /co-scientist/goals/{id}/evaluation[/...]`, the `cs eval` CLI group, and the `/ui/goals/{id}/evaluation` page
 
 ## Setup
@@ -674,6 +678,9 @@ cs eval productivity <GOAL_ID>  # estimated time saved + satisfaction rate (CS-E
 cs eval handoff <GOAL_ID>       # handoff success rate + retry success (CS-EVAL-007)
 cs eval traceability <GOAL_ID>  # run-request traceability to research intent (CS-EVAL-008)
 cs eval duplicates <GOAL_ID>    # idempotent ingestion / duplicate detection (CS-EVAL-009)
+cs eval freshness <GOAL_ID>          # stale in-flight run requests (CS-EVAL-010)
+cs eval failed-usefulness <GOAL_ID>  # failed-run usefulness (CS-EVAL-011)
+cs eval batch-quality <GOAL_ID>      # batch aggregation quality (CS-EVAL-012)
 cs eval report <GOAL_ID>        # full report as JSON
 ```
 
@@ -820,6 +827,7 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/agent-logs` | List agent action logs (filter by service) |
 | GET | `/goals/{id}/agent-logs/{log_id}` | Get a single agent action log |
 | GET | `/goals/{id}/execution-audit` | List execution audit logs (filter by `action`, `experiment_id`) |
+| GET | `/goals/{id}/experiments/{experiment_id}/evidence-label` | Evidence label for an experiment (CS-GOV-012) |
 
 Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /goals/{id}` — restricted goals return 403 from all generate endpoints (validation, device, roadmap). Set `CS_ENFORCE_EXECUTION_BOUNDARY=true` to block the direct repro-runner path so experiments run only via RunRequest handoff.
 
@@ -835,6 +843,9 @@ Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /go
 | GET | `/goals/{id}/evaluation/handoff-success` | Handoff success rate + retry success (CS-EVAL-007) |
 | GET | `/goals/{id}/evaluation/execution-traceability` | RunRequest traceability to research intent (CS-EVAL-008) |
 | GET | `/goals/{id}/evaluation/duplicate-ingestion` | Idempotent ingestion / duplicate detection (CS-EVAL-009) |
+| GET | `/goals/{id}/evaluation/status-freshness` | Stale in-flight run requests (CS-EVAL-010) |
+| GET | `/goals/{id}/evaluation/failed-run-usefulness` | Failed-run usefulness (CS-EVAL-011) |
+| GET | `/goals/{id}/evaluation/batch-aggregation-quality` | Batch aggregation quality (CS-EVAL-012) |
 
 ### Feedback
 
@@ -891,6 +902,7 @@ Environment variables (prefix `CS_`):
 | `CS_REPRO_URL` | `http://localhost:8003` | Base URL of the repro experiment runner |
 | `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
 | `CS_EVAL_MINUTES_PER_AGENT_ACTION` | `45` | Minutes-saved heuristic per successful agent action (CS-EVAL-005) |
+| `CS_EVAL_STATUS_FRESHNESS_THRESHOLD_SECONDS` | `3600` | Age after which an in-flight run request's status is stale (CS-EVAL-010) |
 | `CS_ENFORCE_EXECUTION_BOUNDARY` | `false` | When true, block the direct repro-runner path — experiments run only via RunRequest handoff (CS-GOV-008) |
 | `CS_SCORE_EXECUTION_DELTA` | `0.15` | Score magnitude (0..1) applied to evidence-strength on a clean pass/fail outcome (CS-SCORE-011) |
 | `CS_SCORE_CONFIDENCE_DELTA` | `0.20` | Confidence magnitude (0..1) applied on execution evidence, dampened for mixed/partial outcomes (CS-SCORE-011) |

@@ -9,10 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.models.experiment import ExperimentCard
 from coscientist.models.governance import AgentActionLog, ExecutionAuditLog
+from coscientist.models.validation import ValidationAggregation
 from coscientist.schemas.governance import (
     AgentActionLogListResponse,
     AgentActionLogResponse,
+    EvidenceLabelResponse,
     ExecutionAuditActionEnum,
     ExecutionAuditLogListResponse,
     ExecutionAuditLogResponse,
@@ -98,6 +101,68 @@ def get_log(db: Session, log_id: str, goal_id: str) -> AgentActionLogResponse:
     if log is None or log.workspace_id != goal_id:
         raise HTTPException(status_code=404, detail=f"Agent action log {log_id!r} not found")
     return _to_response(log)
+
+
+# ---------------------------------------------------------------------------
+# CS-GOV-012: evidence labels
+# ---------------------------------------------------------------------------
+
+# Validation aggregation outcome is the most authoritative evidence and wins.
+_VALIDATION_LABEL = {
+    "passed": "validation-passed",
+    "failed": "validation-failed",
+    "mixed": "mixed",
+    "inconclusive": "inconclusive",
+    "partial": "inconclusive",
+}
+# Otherwise the execution lifecycle drives the label.
+_EXECUTION_LABEL = {
+    "completed": "completed",
+    "failed": "failed",
+    "running": "queued",
+    "queued": "queued",
+    "submitted": "queued",
+    "submitting": "queued",
+}
+
+
+def derive_evidence_label(
+    lifecycle_status: str,
+    execution_status: str,
+    validation_status: str | None = None,
+) -> str:
+    """Label an experiment's evidence state so a speculative plan is never shown
+    as a validated result. Precedence: validation outcome > execution lifecycle >
+    approval lifecycle. Returns one of proposed, approved, queued, completed,
+    failed, validation-passed, validation-failed, mixed, inconclusive."""
+    if validation_status and validation_status in _VALIDATION_LABEL:
+        return _VALIDATION_LABEL[validation_status]
+    if execution_status and execution_status in _EXECUTION_LABEL:
+        return _EXECUTION_LABEL[execution_status]
+    if lifecycle_status in {"approved", "running", "completed"}:
+        return "approved"
+    return "proposed"
+
+
+def experiment_evidence_label(db: Session, experiment_id: str) -> EvidenceLabelResponse:
+    card = db.get(ExperimentCard, experiment_id)
+    if card is None:
+        raise HTTPException(
+            status_code=404, detail=f"Experiment card {experiment_id!r} not found"
+        )
+    agg = db.scalar(
+        select(ValidationAggregation).where(
+            ValidationAggregation.experiment_id == experiment_id
+        )
+    )
+    validation_status = agg.aggregate_status if agg is not None else None
+    return EvidenceLabelResponse(
+        experiment_id=experiment_id,
+        label=derive_evidence_label(card.status, card.execution_status, validation_status),
+        lifecycle_status=card.status,
+        execution_status=card.execution_status,
+        validation_status=validation_status,
+    )
 
 
 # ---------------------------------------------------------------------------

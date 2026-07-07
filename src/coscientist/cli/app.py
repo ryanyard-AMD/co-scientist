@@ -1874,6 +1874,76 @@ def eval_duplicates(goal_id: str = typer.Argument(...)):
         db.close()
 
 
+@eval_app.command("freshness")
+def eval_freshness(goal_id: str = typer.Argument(...)):
+    """Execution-status freshness — stale in-flight RunRequests (CS-EVAL-010)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.status_freshness(db, goal_id)
+        table = Table(title="Status Freshness")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Gate")
+        table.add_row("Stale in-flight run requests", str(m.stale_run_requests), _gate(m.meets_target))
+        console.print(table)
+        max_s = "n/a" if m.max_staleness_seconds is None else f"{m.max_staleness_seconds:.0f}s"
+        mean_s = "n/a" if m.mean_staleness_seconds is None else f"{m.mean_staleness_seconds:.0f}s"
+        console.print(
+            f"total={m.total_run_requests} in_flight={m.in_flight_run_requests} "
+            f"max={max_s} mean={mean_s} threshold={m.threshold_seconds}s"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("failed-usefulness")
+def eval_failed_usefulness(goal_id: str = typer.Argument(...)):
+    """Failed-run usefulness — failures that still guide next work (CS-EVAL-011)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.failed_run_usefulness(db, goal_id)
+        table = Table(title=f"Failed-Run Usefulness ({m.failed_run_count} failed runs)")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Useful failures",
+            f"{m.usefulness_rate:.0%}",
+            f"≥{m.usefulness_target:.0%}",
+            _gate(m.meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"reason={m.with_failure_reason} artifacts={m.with_artifacts} "
+            f"retryable={m.retryable_count} roadmap={m.with_roadmap_action} useful={m.useful_count}"
+        )
+    finally:
+        db.close()
+
+
+@eval_app.command("batch-quality")
+def eval_batch_quality(goal_id: str = typer.Argument(...)):
+    """Batch aggregation quality — completion/partial/mixed rates (CS-EVAL-012)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.batch_aggregation_quality(db, goal_id)
+        table = Table(title="Batch Aggregation Quality")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_row("Batch completion", f"{m.batch_completion_rate:.0%}")
+        table.add_row("Partial aggregation", f"{m.partial_aggregation_rate:.0%}")
+        table.add_row("Mixed outcome", f"{m.mixed_outcome_rate:.0%}")
+        console.print(table)
+        console.print(
+            f"batches={m.total_batches} completed={m.completed_batches} "
+            f"aggregations={m.total_aggregations} partial={m.partial_aggregations} "
+            f"mixed={m.mixed_aggregations}"
+        )
+    finally:
+        db.close()
+
+
 @feedback_app.command("add")
 def feedback_add(
     goal_id: str = typer.Argument(...),

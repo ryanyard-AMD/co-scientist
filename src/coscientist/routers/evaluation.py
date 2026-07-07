@@ -4,13 +4,16 @@ from sqlalchemy.orm import Session
 from coscientist.database import get_db
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
+    BatchAggregationQualityMetrics,
     DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
     ExecutionTraceabilityMetrics,
     ExperimentQualityMetrics,
+    FailedRunUsefulnessMetrics,
     HandoffSuccessMetrics,
     ProductivityMetrics,
+    StatusFreshnessMetrics,
 )
 from coscientist.services import evaluation as svc
 
@@ -55,3 +58,18 @@ def execution_traceability(goal_id: str, db: Session = Depends(get_db)):
 @router.get("/duplicate-ingestion", response_model=DuplicateIngestionMetrics)
 def duplicate_ingestion(goal_id: str, db: Session = Depends(get_db)):
     return svc.duplicate_ingestion(db, goal_id)
+
+
+@router.get("/status-freshness", response_model=StatusFreshnessMetrics)
+def status_freshness(goal_id: str, db: Session = Depends(get_db)):
+    return svc.status_freshness(db, goal_id)
+
+
+@router.get("/failed-run-usefulness", response_model=FailedRunUsefulnessMetrics)
+def failed_run_usefulness(goal_id: str, db: Session = Depends(get_db)):
+    return svc.failed_run_usefulness(db, goal_id)
+
+
+@router.get("/batch-aggregation-quality", response_model=BatchAggregationQualityMetrics)
+def batch_aggregation_quality(goal_id: str, db: Session = Depends(get_db)):
+    return svc.batch_aggregation_quality(db, goal_id)

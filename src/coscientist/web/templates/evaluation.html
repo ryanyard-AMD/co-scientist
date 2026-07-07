@@ -87,4 +87,42 @@
   </table>
   <p class="small muted">bundles {{ di.total_result_bundles }} · distinct keys {{ di.distinct_ingestion_keys }} · score updates {{ di.total_score_updates }} · distinct {{ di.distinct_score_update_keys }}</p>
 </div>
+
+{% set sf = report.status_freshness %}
+<div class="panel">
+  <h3 style="margin-top:0">Status Freshness <span class="muted small">CS-EVAL-010 · {{ sf.in_flight_run_requests }} in flight</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Stale in-flight run requests</td><td>{{ sf.stale_run_requests }}</td><td>{{ gate(sf.meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">total {{ sf.total_run_requests }} · in flight {{ sf.in_flight_run_requests }} · max {{ "n/a" if sf.max_staleness_seconds is none else "%.0fs"|format(sf.max_staleness_seconds) }} · mean {{ "n/a" if sf.mean_staleness_seconds is none else "%.0fs"|format(sf.mean_staleness_seconds) }} · threshold {{ sf.threshold_seconds }}s</p>
+</div>
+
+{% set fu = report.failed_run_usefulness %}
+<div class="panel">
+  <h3 style="margin-top:0">Failed-Run Usefulness <span class="muted small">CS-EVAL-011 · {{ fu.failed_run_count }} failed runs</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Useful failures</td><td>{{ "%.0f%%"|format(fu.usefulness_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(fu.usefulness_target * 100) }}</td><td>{{ gate(fu.meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">reason {{ fu.with_failure_reason }} · artifacts {{ fu.with_artifacts }} · retryable {{ fu.retryable_count }} · roadmap {{ fu.with_roadmap_action }} · useful {{ fu.useful_count }}</p>
+</div>
+
+{% set bq = report.batch_aggregation_quality %}
+<div class="panel">
+  <h3 style="margin-top:0">Batch Aggregation Quality <span class="muted small">CS-EVAL-012 · {{ bq.total_batches }} batches</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>Batch completion</td><td>{{ "%.0f%%"|format(bq.batch_completion_rate * 100) }}</td></tr>
+      <tr><td>Partial aggregation</td><td>{{ "%.0f%%"|format(bq.partial_aggregation_rate * 100) }}</td></tr>
+      <tr><td>Mixed outcome</td><td>{{ "%.0f%%"|format(bq.mixed_outcome_rate * 100) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">completed {{ bq.completed_batches }}/{{ bq.total_batches }} · aggregations {{ bq.total_aggregations }} · partial {{ bq.partial_aggregations }} · mixed {{ bq.mixed_aggregations }}</p>
+</div>
 {% endblock %}

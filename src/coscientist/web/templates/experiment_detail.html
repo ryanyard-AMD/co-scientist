@@ -6,6 +6,7 @@
   <h1>{{ experiment.name }}</h1>
   <span class="badge {{ experiment.status.value }}" title="Lifecycle state">{{ experiment.status.value }}</span>
   <span class="badge {{ experiment.execution_status.value }}" title="Execution status">exec: {{ experiment.execution_status.value }}</span>
+  {% if evidence_label %}<span class="badge {{ evidence_label.label }}" title="Evidence label — CS-GOV-012">{{ evidence_label.label }}</span>{% endif %}
   <span class="badge">{{ experiment.experiment_type.value }}</span>
 </div>
 

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -6,20 +7,28 @@ from sqlalchemy.orm import Session
 
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
-from coscientist.models.execution import RunAttemptReference, RunRequestReference
+from coscientist.models.execution import (
+    ExecutionBatchReference,
+    RunAttemptReference,
+    RunRequestReference,
+)
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.governance import AgentActionLog, ExecutionAuditLog
+from coscientist.models.roadmap import ResearchRoadmapItem
 from coscientist.models.score import ScoreUpdate
-from coscientist.models.validation import ResultBundleReference
+from coscientist.models.validation import ResultBundleReference, ValidationAggregation
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
+    BatchAggregationQualityMetrics,
     DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
     ExecutionTraceabilityMetrics,
     ExperimentQualityMetrics,
+    FailedRunUsefulnessMetrics,
     HandoffSuccessMetrics,
     ProductivityMetrics,
+    StatusFreshnessMetrics,
     UnsupportedClaim,
 )
 from coscientist.services import experiment as experiment_svc
@@ -34,6 +43,11 @@ UNSUPPORTED_TARGET = 0.05
 ACCEPTANCE_TARGET = 0.70
 VALIDITY_TARGET = 0.85
 HANDOFF_SUCCESS_TARGET = 0.95
+FAILED_RUN_USEFULNESS_TARGET = 0.90
+
+# RunRequest statuses that are still in flight (awaiting a status update from the
+# Experimentation System). Anything else is terminal and cannot go stale.
+_RUN_REQUEST_IN_FLIGHT = {"pending", "queued", "running", "submitting", "submitted"}
 
 # Experiment lifecycle statuses that imply the card was approved for execution.
 _EXPERIMENT_APPROVED = {"approved", "running", "completed", "failed"}
@@ -425,6 +439,139 @@ def duplicate_ingestion(db: Session, goal_id: str) -> DuplicateIngestionMetrics:
     )
 
 
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def status_freshness(db: Session, goal_id: str) -> StatusFreshnessMetrics:
+    """CS-EVAL-010: measure how stale in-flight RunRequest status is.
+
+    The co-scientist mirrors execution status from the Experimentation System;
+    an in-flight RunRequest whose ``latest_update_at`` is older than the
+    configured threshold indicates polling lag / a stale display.
+    """
+    goal_svc.get(db, goal_id)
+    run_requests = db.scalars(
+        select(RunRequestReference).where(RunRequestReference.goal_id == goal_id)
+    ).all()
+    threshold = settings.eval_status_freshness_threshold_seconds
+    now = datetime.now(timezone.utc)
+
+    in_flight = 0
+    stale_ids: list[str] = []
+    staleness: list[float] = []
+    for rr in run_requests:
+        if rr.status not in _RUN_REQUEST_IN_FLIGHT:
+            continue
+        in_flight += 1
+        age = (now - _as_utc(rr.latest_update_at)).total_seconds()
+        staleness.append(age)
+        if age > threshold:
+            stale_ids.append(rr.run_request_id)
+
+    return StatusFreshnessMetrics(
+        goal_id=goal_id,
+        total_run_requests=len(run_requests),
+        in_flight_run_requests=in_flight,
+        stale_run_requests=len(stale_ids),
+        max_staleness_seconds=max(staleness) if staleness else None,
+        mean_staleness_seconds=(sum(staleness) / len(staleness)) if staleness else None,
+        threshold_seconds=threshold,
+        meets_target=len(stale_ids) == 0,
+        stale_run_request_ids=stale_ids,
+    )
+
+
+def failed_run_usefulness(db: Session, goal_id: str) -> FailedRunUsefulnessMetrics:
+    """CS-EVAL-011: measure whether failed runs remain useful evidence.
+
+    A failed ResultBundle is "useful" when it records a failure reason, carries
+    diagnostic artifacts, and has a linked roadmap follow-up action — so failures
+    still guide the next experiment rather than being dead ends.
+    """
+    goal_svc.get(db, goal_id)
+    bundles = db.scalars(
+        select(ResultBundleReference).where(
+            ResultBundleReference.goal_id == goal_id,
+            ResultBundleReference.validation_status == "failed",
+        )
+    ).all()
+
+    experiments_with_roadmap = set(
+        db.scalars(
+            select(ResearchRoadmapItem.source_experiment_id).where(
+                ResearchRoadmapItem.workspace_id == goal_id,
+                ResearchRoadmapItem.source_experiment_id.is_not(None),
+            )
+        )
+    )
+
+    with_reason = with_artifacts = retryable = with_roadmap = useful = 0
+    for b in bundles:
+        has_reason = bool(b.failure_type or b.failure_summary)
+        try:
+            has_artifacts = bool(json.loads(b.artifacts or "{}"))
+        except json.JSONDecodeError:
+            has_artifacts = bool(b.artifacts)
+        has_roadmap = b.experiment_id in experiments_with_roadmap
+        with_reason += has_reason
+        with_artifacts += has_artifacts
+        retryable += bool(b.retryable)
+        with_roadmap += has_roadmap
+        if has_reason and has_artifacts and has_roadmap:
+            useful += 1
+
+    total = len(bundles)
+    rate = _rate(useful, total)
+    return FailedRunUsefulnessMetrics(
+        goal_id=goal_id,
+        failed_run_count=total,
+        with_failure_reason=with_reason,
+        with_artifacts=with_artifacts,
+        retryable_count=retryable,
+        with_roadmap_action=with_roadmap,
+        useful_count=useful,
+        usefulness_rate=rate,
+        usefulness_target=FAILED_RUN_USEFULNESS_TARGET,
+        meets_target=_meets_min(rate, FAILED_RUN_USEFULNESS_TARGET, total),
+    )
+
+
+def batch_aggregation_quality(db: Session, goal_id: str) -> BatchAggregationQualityMetrics:
+    """CS-EVAL-012: diagnostic quality of batch/sweep handling.
+
+    Reports batch completion rate, partial-aggregation rate, and mixed-outcome
+    rate so sweep handling can be tuned. Purely informational — no pass/fail gate.
+    """
+    goal_svc.get(db, goal_id)
+    batches = db.scalars(
+        select(ExecutionBatchReference).where(ExecutionBatchReference.goal_id == goal_id)
+    ).all()
+    completed_batches = sum(
+        1 for b in batches if b.total_count > 0 and b.completed_count >= b.total_count
+    )
+
+    aggregations = db.scalars(
+        select(ValidationAggregation).where(ValidationAggregation.goal_id == goal_id)
+    ).all()
+    partial = sum(1 for a in aggregations if a.is_partial)
+    mixed = sum(1 for a in aggregations if a.aggregate_status == "mixed")
+
+    total_batches = len(batches)
+    total_agg = len(aggregations)
+    return BatchAggregationQualityMetrics(
+        goal_id=goal_id,
+        total_batches=total_batches,
+        completed_batches=completed_batches,
+        batch_completion_rate=_rate(completed_batches, total_batches),
+        total_aggregations=total_agg,
+        partial_aggregations=partial,
+        partial_aggregation_rate=_rate(partial, total_agg),
+        mixed_aggregations=mixed,
+        mixed_outcome_rate=_rate(mixed, total_agg),
+    )
+
+
 def get_report(db: Session, goal_id: str) -> EvaluationReport:
     return EvaluationReport(
         goal_id=goal_id,
@@ -435,4 +582,7 @@ def get_report(db: Session, goal_id: str) -> EvaluationReport:
         handoff_success=handoff_success(db, goal_id),
         execution_traceability=execution_traceability(db, goal_id),
         duplicate_ingestion=duplicate_ingestion(db, goal_id),
+        status_freshness=status_freshness(db, goal_id),
+        failed_run_usefulness=failed_run_usefulness(db, goal_id),
+        batch_aggregation_quality=batch_aggregation_quality(db, goal_id),
     )
