@@ -1241,6 +1241,129 @@ def approval_submit(
         db.close()
 
 
+@approval_app.command("retry")
+def approval_retry(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    approver: str | None = typer.Option(None, "--approver"),
+):
+    """Retry a failed handoff into the same batch, without creating duplicate RunRequests."""
+    from fastapi import HTTPException
+
+    from coscientist.schemas.approval import SubmissionRequest
+    from coscientist.services import submission as submission_svc
+    db = _get_session()
+    try:
+        body = SubmissionRequest(approver=approver)
+        result = submission_svc.submit_experiment(db, experiment_id, goal_id, body)
+        console.print(
+            f"[green]Retried[/green] experiment {experiment_id[:8]}… → batch {result.execution_batch_id[:8]}…"
+        )
+        console.print(
+            f"{result.run_request_count} RunRequest(s), handoff_status=[bold]{result.handoff_status}[/bold]"
+        )
+    except HTTPException as exc:
+        console.print(f"[red]Retry failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
+@approval_app.command("cancel")
+def approval_cancel(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    requester: str | None = typer.Option(None, "--requester"),
+    reason: str | None = typer.Option(None, "--reason"),
+):
+    """Relay a cancellation request to the Experimentation System and record its status.
+
+    The co-scientist does not stop execution itself — control stays with that system.
+    """
+    from fastapi import HTTPException
+
+    from coscientist.services import handoff as handoff_svc
+    db = _get_session()
+    try:
+        result = handoff_svc.request_cancellation(
+            db, experiment_id, goal_id, requester=requester, reason=reason
+        )
+        console.print(
+            f"[yellow]Cancellation requested[/yellow] for experiment {experiment_id[:8]}… → status [bold]{result.status.value}[/bold]"
+        )
+        console.print(f"Handoff request ID: {result.id}")
+    except HTTPException as exc:
+        console.print(f"[red]Cancel failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
+@approval_app.command("resubmit")
+def approval_resubmit(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    requester: str | None = typer.Option(None, "--requester"),
+    reason: str | None = typer.Option(None, "--reason"),
+):
+    """Relay a resubmission request to the Experimentation System and record its status.
+
+    The co-scientist does not re-run experiments itself — control stays with that system.
+    """
+    from fastapi import HTTPException
+
+    from coscientist.services import handoff as handoff_svc
+    db = _get_session()
+    try:
+        result = handoff_svc.request_resubmission(
+            db, experiment_id, goal_id, requester=requester, reason=reason
+        )
+        console.print(
+            f"[cyan]Resubmission requested[/cyan] for experiment {experiment_id[:8]}… → status [bold]{result.status.value}[/bold]"
+        )
+        console.print(f"Handoff request ID: {result.id}")
+    except HTTPException as exc:
+        console.print(f"[red]Resubmit failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
+@approval_app.command("handoff-requests")
+def approval_handoff_requests(
+    experiment_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+):
+    """List recorded handoff-control requests (failed handoffs, retries, cancel/resubmit)."""
+    from coscientist.services import handoff as handoff_svc
+    db = _get_session()
+    try:
+        result = handoff_svc.list_handoff_requests(db, experiment_id)
+        table = Table(title=f"Handoff Requests: {experiment_id[:8]}…")
+        table.add_column("Type")
+        table.add_column("Status")
+        table.add_column("Retryable")
+        table.add_column("Runs")
+        table.add_column("Detail", max_width=50)
+        table.add_column("Created")
+        for h in result.items:
+            detail = h.error or (
+                h.payload_summary.get("reason") if h.payload_summary else None
+            ) or "—"
+            table.add_row(
+                h.request_type.value,
+                h.status.value,
+                "yes" if h.retryable else "—",
+                str(len(h.run_request_ids)),
+                str(detail)[:80],
+                h.created_at.strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
+        console.print(f"[bold]{result.total} handoff request(s)[/bold]")
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Validation commands
 # ---------------------------------------------------------------------------

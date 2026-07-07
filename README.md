@@ -643,6 +643,10 @@ cs approval request-edit <EXPERIMENT_ID> <GOAL_ID> --reason "..."
 cs approval history <EXPERIMENT_ID> <GOAL_ID>
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID>
 cs approval submit <EXPERIMENT_ID> <GOAL_ID> [--mode approve_batch|approve_each_run|approval_required_above_threshold] [--approver <ID>] [--threshold <N>] [--credentialed]
+cs approval retry <EXPERIMENT_ID> <GOAL_ID> [--approver <ID>]              # retry a failed handoff without duplicating RunRequests (CS-APPROVAL-010)
+cs approval cancel <EXPERIMENT_ID> <GOAL_ID> [--requester <ID>] [--reason "..."]   # relay a cancellation request; records status (CS-APPROVAL-011)
+cs approval resubmit <EXPERIMENT_ID> <GOAL_ID> [--requester <ID>] [--reason "..."] # relay a resubmission request; records status (CS-APPROVAL-011)
+cs approval handoff-requests <EXPERIMENT_ID> <GOAL_ID>                     # list recorded handoff-control requests
 ```
 
 ### Validation
