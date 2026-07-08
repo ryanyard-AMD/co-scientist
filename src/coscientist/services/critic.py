@@ -116,8 +116,12 @@ def _run_critic_agent(
         "You are an adversarial scientific critic. You are given ONE approach card and the "
         "evidence chunks it cites. Judge it on three axes: (1) grounding fidelity — do the "
         "card's mechanism, metrics, and claims actually follow from the cited evidence, or "
-        "does it overclaim; (2) device fit — is it viable for the stated device constraints; "
-        "(3) maturity honesty — does the claimed maturity match the evidence. Record your "
+        "does it overclaim; (2) device fit — is it viable for the described device and its "
+        "acoustic architecture (judge against the goal description, not the speaker_count "
+        "field in isolation: e.g. a parametric-array loudspeaker is a single directional "
+        "source that steers via an ultrasonic element array, so speaker_count=1 does not "
+        "imply zero spatial degrees of freedom); (3) maturity honesty — does the claimed "
+        "maturity match the evidence. Record your "
         "review by calling the record_critique tool. Cite ONLY evidence_id values provided in "
         "the chunks; never invent ids. Choose verdict 'advance' (sound), 'revise' (fixable "
         "issues), or 'refute' (unsound or device-mismatched)."
@@ -127,7 +131,9 @@ def _run_critic_agent(
     device_block = "none"
     if dc:
         device_block = (
-            f"form_factor={dc.form_factor or '-'}, speaker_count={dc.speaker_count or '-'}"
+            f"form_factor={dc.form_factor or '-'}, speaker_count={dc.speaker_count or '-'}, "
+            f"compute_budget={dc.compute_budget or '-'}, "
+            f"setup_time_minutes={dc.setup_time_minutes or '-'}"
         )
 
     metrics = [
@@ -159,8 +165,12 @@ def _run_critic_agent(
             + f"Text: {rec.chunk_text[:1500]}"
         )
 
+    goal_block = f"Target application: {goal.target_application}"
+    if goal.description:
+        goal_block += f"\nDescription: {goal.description}"
+
     user_message = (
-        f"## Goal\n{goal.target_application}\n\n"
+        f"## Goal\n{goal_block}\n\n"
         f"## Device constraints\n{device_block}\n\n"
         f"## Approach card\n{card_block}\n\n"
         f"## Cited evidence ({len(evidence)})\n"
