@@ -12,9 +12,27 @@ from coscientist.schemas.ontology import (
     TermResponse,
     TermUpdate,
 )
+from coscientist.schemas.taxonomy import TaxonomyDeriveRequest, TaxonomyDeriveResult
 from coscientist.services import ontology as svc
+from coscientist.services import taxonomy as taxonomy_svc
 
 router = APIRouter(prefix="/ontology", tags=["ontology"])
+
+
+@router.post("/derive", response_model=TaxonomyDeriveResult)
+def derive_taxonomy(
+    goal_id: str = Query(...),
+    body: TaxonomyDeriveRequest = TaxonomyDeriveRequest(),
+    db: Session = Depends(get_db),
+):
+    return taxonomy_svc.derive_taxonomy(
+        db,
+        goal_id,
+        top_k=body.top_k,
+        max_families=body.max_families,
+        dry_run=body.dry_run,
+        pinned=body.pinned,
+    )
 
 
 @router.post("/terms", response_model=TermResponse, status_code=201)
@@ -26,11 +44,14 @@ def create_term(body: TermCreate, db: Session = Depends(get_db)):
 def list_terms(
     category: OntologyCategoryEnum | None = Query(default=None),
     status: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
-    items, total = svc.list_terms(db, category=category, status=status, skip=skip, limit=limit)
+    items, total = svc.list_terms(
+        db, category=category, status=status, workspace_id=workspace_id, skip=skip, limit=limit
+    )
     return TermListResponse(items=items, total=total)
 
 

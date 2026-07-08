@@ -63,6 +63,8 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 - 63 seed terms across all categories, seeded via Alembic migration or the idempotent `cs ontology seed` command (also seeds `related_to` method relationships from `domain.RELATED_METHODS`)
 - CRUD API + merge operation (merges keywords, moves relationships, updates evidence records, deprecates source)
 - Scout automatically loads ontology terms from DB for classification
+- **Corpus-derived, goal-scoped method taxonomy** (`cs ontology derive <goal_id>`): instead of forcing every goal into the fixed 7 seed method families, Claude induces the method families actually present in that goal's corpus from a broad retrieval sample, and persists them as goal-scoped `OntologyTerm`s (`workspace_id == goal_id`). Terms with `workspace_id = NULL` are the shared global seed. Scout's term loader is goal-aware: per category, goal-scoped terms override the global seed when present (methods use the derived set; metric/hardware/failure_mode stay global). A goal with no derived taxonomy falls back to the global seed. Use `--dry-run` to review induced families without persisting, and `cs ontology list -w <goal_id>` to inspect derived terms.
+- **Pinned method families** (`cs goal pin <goal_id> <family>...` or `cs goal create --pin`): induction is a sample-plus-LLM step, so a given `derive` may or may not name a goal's defining technologies as standalone families. A goal can declare *must-have* families (stored as `pinned_method_families`, canonicalized to snake_case) that induction is instructed to include and that are guaranteed to be persisted — reserved against the `--max-families` budget and never truncated — even if the agent omits them. `cs ontology derive --pin <family>` adds ad-hoc pins on top of the goal's declared set for a single run.
 
 ### CS-EPIC-APPROACH: Approach Card Generation and Curation
 
@@ -564,9 +566,10 @@ curl -X PATCH localhost:8001/co-scientist/goals/<GOAL_ID> \
 
 ### Goals
 ```bash
-cs goal create --name <NAME> --app <APP>
+cs goal create --name <NAME> --app <APP> [--pin FAMILY ...]
 cs goal list [--status draft|active|archived]
 cs goal show <GOAL_ID>
+cs goal pin <GOAL_ID> <FAMILY> [<FAMILY> ...]   # set must-have method families for taxonomy induction
 cs goal activate <GOAL_ID>
 cs goal archive <GOAL_ID>
 cs goal delete <GOAL_ID>
@@ -583,10 +586,11 @@ cs scout synthesis <GOAL_ID> [--method METHOD] [--scout-run RUN_ID]
 ### Ontology
 ```bash
 cs ontology seed                    # idempotently seed default terms + method relationships
-cs ontology list [--category method|metric|hardware|failure_mode|acoustic_goal|scene_assumption]
+cs ontology list [--category method|metric|hardware|failure_mode|acoustic_goal|scene_assumption] [-w GOAL_ID]
 cs ontology show <TERM_ID>
 cs ontology add --name <NAME> --category <CAT> --keywords '["kw1","kw2"]'
 cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
+cs ontology derive <GOAL_ID> [--top-k 30] [--max-families 12] [--dry-run] [--pin FAMILY ...]  # induce goal-scoped method taxonomy from corpus
 ```
 
 ### Approaches
@@ -875,8 +879,9 @@ Agent actions can be disabled per goal by setting `is_restricted` via `PATCH /go
 
 | Method | Path | Description |
 |--------|------|-------------|
+| POST | `/ontology/derive` | Derive a goal-scoped method taxonomy from the corpus (Claude-induced) |
 | POST | `/ontology/terms` | Create an ontology term |
-| GET | `/ontology/terms` | List terms (filter by category, status) |
+| GET | `/ontology/terms` | List terms (filter by category, status, workspace_id) |
 | GET | `/ontology/terms/{id}` | Get term details |
 | PATCH | `/ontology/terms/{id}` | Update term fields |
 | DELETE | `/ontology/terms/{id}` | Delete a deprecated term |

@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class GoalStatusEnum(str, Enum):
@@ -43,6 +43,7 @@ class GoalCreate(BaseModel):
     success_criteria: list[SuccessCriterion]
     device_constraints: DeviceConstraints | None = None
     is_restricted: bool = False
+    pinned_method_families: list[str] = Field(default_factory=list)
 
 
 class GoalUpdate(BaseModel):
@@ -52,6 +53,7 @@ class GoalUpdate(BaseModel):
     success_criteria: list[SuccessCriterion] | None = None
     device_constraints: DeviceConstraints | None = None
     is_restricted: bool | None = None
+    pinned_method_families: list[str] | None = None
 
 
 class GoalStatusUpdate(BaseModel):
@@ -69,6 +71,7 @@ class GoalResponse(BaseModel):
     device_constraints: DeviceConstraints | None
     status: GoalStatusEnum
     is_restricted: bool
+    pinned_method_families: list[str] = Field(default_factory=list)
     workspace_id: str
     created_at: datetime
     updated_at: datetime

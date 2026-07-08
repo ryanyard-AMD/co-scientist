@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -22,6 +23,17 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     GoalStatusEnum.archived: set(),
 }
 
+_CANON_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _canonicalize_pins(names: list[str]) -> list[str]:
+    out: list[str] = []
+    for name in names:
+        canon = _CANON_RE.sub("_", name.strip().lower()).strip("_")
+        if canon and canon not in out:
+            out.append(canon)
+    return out
+
 
 def _to_response(goal: ResearchGoal) -> GoalResponse:
     criteria = [SuccessCriterion(**c) for c in json.loads(goal.success_criteria)]
@@ -30,6 +42,7 @@ def _to_response(goal: ResearchGoal) -> GoalResponse:
         if goal.device_constraints
         else None
     )
+    pins = json.loads(goal.pinned_method_families) if goal.pinned_method_families else []
     return GoalResponse(
         id=goal.id,
         name=goal.name,
@@ -39,6 +52,7 @@ def _to_response(goal: ResearchGoal) -> GoalResponse:
         device_constraints=constraints,
         status=GoalStatusEnum(goal.status),
         is_restricted=goal.is_restricted,
+        pinned_method_families=pins,
         workspace_id=goal.workspace_id,
         created_at=goal.created_at,
         updated_at=goal.updated_at,
@@ -64,6 +78,7 @@ def create(db: Session, data: GoalCreate) -> GoalResponse:
         device_constraints=(
             data.device_constraints.model_dump_json() if data.device_constraints else None
         ),
+        pinned_method_families=json.dumps(_canonicalize_pins(data.pinned_method_families)),
         status=GoalStatusEnum.draft,
         is_restricted=data.is_restricted,
         workspace_id=goal_id,
@@ -116,6 +131,10 @@ def update(db: Session, goal_id: str, data: GoalUpdate) -> GoalResponse:
         goal.device_constraints = data.device_constraints.model_dump_json()
     if data.is_restricted is not None:
         goal.is_restricted = data.is_restricted
+    if data.pinned_method_families is not None:
+        goal.pinned_method_families = json.dumps(
+            _canonicalize_pins(data.pinned_method_families)
+        )
     goal.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(goal)

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from coscientist.clients.retrieval import (
@@ -24,7 +24,7 @@ from coscientist.domain import (
     get_related_methods,
 )
 from coscientist.models.evidence import EvidenceRecord
-from coscientist.models.ontology import OntologyTerm
+from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.models.synthesis import EvidenceSynthesis
 from coscientist.schemas.scout import (
     AgentSynthesisOutput,
@@ -312,13 +312,38 @@ def _assess_sparsity(
     return warnings
 
 
-def _load_ontology_terms(db: Session):
-    all_terms = list(db.scalars(
-        select(OntologyTerm).where(OntologyTerm.status == "active")
+def _load_ontology_terms(db: Session, workspace_id: str | None = None):
+    """Load active ontology terms, preferring goal-scoped terms over the global
+    seed. Global terms have workspace_id NULL; a goal derives its own taxonomy
+    (workspace_id == goal_id). Per category, if the goal has any scoped term the
+    global terms of that category are dropped (goal wins) — so a derived method
+    taxonomy replaces the static 7 while metric/hardware/failure stay global.
+    """
+    rows = list(db.scalars(
+        select(OntologyTerm).where(
+            OntologyTerm.status == "active",
+            or_(
+                OntologyTerm.workspace_id.is_(None),
+                OntologyTerm.workspace_id == workspace_id,
+            ) if workspace_id is not None else OntologyTerm.workspace_id.is_(None),
+        )
     ).all())
+
+    scoped_categories = {
+        t.category for t in rows
+        if workspace_id is not None and t.workspace_id == workspace_id
+    }
+    all_terms = [
+        t for t in rows
+        if t.category not in scoped_categories or t.workspace_id == workspace_id
+    ]
+
     method_terms = [t for t in all_terms if t.category == "method"]
-    from coscientist.models.ontology import OntologyRelationship
-    all_rels = list(db.scalars(select(OntologyRelationship)).all())
+    kept_ids = {t.id for t in all_terms}
+    all_rels = [
+        r for r in db.scalars(select(OntologyRelationship)).all()
+        if r.source_term_id in kept_ids and r.target_term_id in kept_ids
+    ]
     related_map = get_related_methods(all_terms, all_rels)
     return all_terms, method_terms, related_map
 
@@ -484,8 +509,9 @@ def run_scout(
 ) -> ScoutResultResponse:
     goal = goal_svc.get(db, goal_id)
 
-    # Load ontology terms from DB (falls back gracefully if tables empty)
-    all_terms, method_terms, related_map = _load_ontology_terms(db)
+    # Load ontology terms from DB (falls back gracefully if tables empty).
+    # Goal-scoped (corpus-derived) method families override the global seed.
+    all_terms, method_terms, related_map = _load_ontology_terms(db, goal.workspace_id)
     use_db_terms = len(all_terms) > 0
 
     queries = _decompose_goal_to_queries(

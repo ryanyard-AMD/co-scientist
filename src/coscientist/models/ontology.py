@@ -19,13 +19,17 @@ class OntologyTerm(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     keywords: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    # NULL = shared global term (the seed taxonomy); non-NULL = goal-scoped term
+    # (workspace_id == goal_id) derived from that goal's corpus.
+    workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        UniqueConstraint("category", "canonical_name", name="uq_category_name"),
+        UniqueConstraint("category", "canonical_name", "workspace_id", name="uq_category_name_ws"),
         Index("ix_ontology_terms_category", "category"),
         Index("ix_ontology_terms_status", "status"),
+        Index("ix_ontology_terms_workspace", "workspace_id"),
     )
 
 

@@ -34,6 +34,7 @@ def _term_to_response(term: OntologyTerm) -> TermResponse:
         description=term.description,
         keywords=json.loads(term.keywords),
         status=term.status,
+        workspace_id=term.workspace_id,
         created_at=term.created_at,
         updated_at=term.updated_at,
     )
@@ -111,6 +112,7 @@ def list_terms(
     db: Session,
     category: OntologyCategoryEnum | None = None,
     status: str | None = None,
+    workspace_id: str | None = None,
     skip: int = 0,
     limit: int = 100,
 ) -> tuple[list[TermResponse], int]:
@@ -119,6 +121,8 @@ def list_terms(
         q = q.where(OntologyTerm.category == category.value)
     if status is not None:
         q = q.where(OntologyTerm.status == status)
+    if workspace_id is not None:
+        q = q.where(OntologyTerm.workspace_id == workspace_id)
 
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     rows = db.scalars(q.order_by(OntologyTerm.category, OntologyTerm.canonical_name).offset(skip).limit(limit)).all()

@@ -47,6 +47,7 @@ class TermResponse(BaseModel):
     description: str | None
     keywords: list[str]
     status: str
+    workspace_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

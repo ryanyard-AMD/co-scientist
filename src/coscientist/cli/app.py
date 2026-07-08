@@ -63,6 +63,7 @@ from coscientist.services import ontology as ontology_svc
 from coscientist.services import score as score_svc
 from coscientist.services import scout as scout_svc
 from coscientist.services import critic as critic_svc
+from coscientist.services import taxonomy as taxonomy_svc
 
 app = typer.Typer(no_args_is_help=True)
 goal_app = typer.Typer(no_args_is_help=True, help="Manage research goals")
@@ -120,6 +121,9 @@ def goal_create(
     constraints: Optional[str] = typer.Option(
         None, "--constraints", help="JSON object of device constraints"
     ),
+    pin: Optional[list[str]] = typer.Option(
+        None, "--pin", help="Must-have method family for taxonomy induction (repeatable)"
+    ),
 ):
     """Create a new research goal."""
     parsed_criteria: list[SuccessCriterion] = []
@@ -137,6 +141,7 @@ def goal_create(
         target_application=app_target,
         success_criteria=parsed_criteria,
         device_constraints=parsed_constraints,
+        pinned_method_families=list(pin) if pin else [],
     )
     db = _get_session()
     try:
@@ -173,6 +178,25 @@ def goal_show(goal_id: str = typer.Argument(...)):
     try:
         result = svc.get(db, goal_id)
         console.print_json(result.model_dump_json(indent=2))
+    finally:
+        db.close()
+
+
+@goal_app.command("pin")
+def goal_pin(
+    goal_id: str = typer.Argument(...),
+    family: list[str] = typer.Argument(
+        ..., help="Must-have method families (replaces the existing pin set)"
+    ),
+):
+    """Set the goal's must-have method families for taxonomy induction."""
+    db = _get_session()
+    try:
+        result = svc.update(db, goal_id, GoalUpdate(pinned_method_families=family))
+        console.print(
+            f"[green]Pinned families for goal {goal_id[:8]}…: "
+            f"{', '.join(result.pinned_method_families) or '(none)'}[/green]"
+        )
     finally:
         db.close()
 
@@ -385,15 +409,21 @@ def ontology_list(
         None, "--category", "-c", help="Filter by category"
     ),
     status: Optional[str] = typer.Option(None, "--status", "-s"),
+    workspace: Optional[str] = typer.Option(
+        None, "--workspace", "-w", help="Filter by goal/workspace id (goal-scoped terms)"
+    ),
 ):
     """List ontology terms."""
     db = _get_session()
     try:
-        items, total = ontology_svc.list_terms(db, category=category, status=status)
+        items, total = ontology_svc.list_terms(
+            db, category=category, status=status, workspace_id=workspace
+        )
         table = Table(title=f"Ontology Terms ({total} total)")
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Name")
         table.add_column("Category")
+        table.add_column("Scope")
         table.add_column("Status", style="green")
         table.add_column("Keywords", max_width=40)
         for t in items:
@@ -401,10 +431,66 @@ def ontology_list(
                 t.id,
                 t.canonical_name,
                 t.category.value,
+                "global" if t.workspace_id is None else t.workspace_id[:8] + "…",
                 t.status,
                 ", ".join(t.keywords[:3]) + ("…" if len(t.keywords) > 3 else ""),
             )
         console.print(table)
+    finally:
+        db.close()
+
+
+@ontology_app.command("derive")
+def ontology_derive(
+    goal_id: str = typer.Argument(..., help="Goal id to derive a taxonomy for"),
+    top_k: int = typer.Option(30, "--top-k", "-k", help="Chunks per sampling query"),
+    max_families: int = typer.Option(12, "--max-families", help="Max families to induce"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Induce and print without persisting"
+    ),
+    pin: Optional[list[str]] = typer.Option(
+        None, "--pin", help="Must-have family (repeatable); adds to the goal's pins"
+    ),
+):
+    """Derive a corpus-driven, goal-scoped method-family taxonomy."""
+    from fastapi import HTTPException
+
+    db = _get_session()
+    try:
+        result = taxonomy_svc.derive_taxonomy(
+            db,
+            goal_id,
+            top_k=top_k,
+            max_families=max_families,
+            dry_run=dry_run,
+            pinned=list(pin) if pin else None,
+        )
+        label = "Induced (dry-run, not saved)" if result.dry_run else "Derived & saved"
+        table = Table(
+            title=(
+                f"{label}: {len(result.families)} families "
+                f"({result.chunks_sampled} chunks / {result.papers_sampled} papers)"
+            )
+        )
+        table.add_column("Family", style="cyan")
+        table.add_column("Related")
+        table.add_column("Keywords", max_width=50)
+        for fam in result.families:
+            table.add_row(
+                fam.canonical_name,
+                ", ".join(fam.related_to),
+                ", ".join(fam.keywords[:5]) + ("…" if len(fam.keywords) > 5 else ""),
+            )
+        console.print(table)
+        if not result.dry_run:
+            console.print(
+                f"[green]Saved {result.terms_created} terms, "
+                f"{result.relationships_created} relationships "
+                f"scoped to goal {result.workspace_id[:8]}…[/green]"
+            )
+    except HTTPException as exc:
+        console.print(f"[red]Error {exc.status_code}: {exc.detail}[/red]")
+        raise typer.Exit(1)
     finally:
         db.close()
 

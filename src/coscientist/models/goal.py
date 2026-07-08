@@ -19,6 +19,9 @@ class ResearchGoal(Base):
     target_application: Mapped[str] = mapped_column(String(256), nullable=False)
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list
     device_constraints: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON obj
+    # Must-have method families the taxonomy induction always includes (JSON list
+    # of canonical snake_case names). NULL/[] = pure corpus-derived taxonomy.
+    pinned_method_families: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     is_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     workspace_id: Mapped[str] = mapped_column(String(36), nullable=False)
