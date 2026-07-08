@@ -989,19 +989,22 @@ def revise_approaches(
         )
 
         applied = False
-        revised_card_resp: ApproachCardResponse | None = None
         revised_id: str | None = None
         if request.apply:
             card.status = ApproachStatusEnum.superseded.value
             card.merged_into_id = new_card.id
             card.updated_at = now
             db.add(new_card)
+            # Commit per card so a long batch is resumable: a partial run leaves
+            # completed revisions persisted, and a re-run skips them (the source is
+            # now 'superseded' and the new card has no critique).
+            db.commit()
+            db.refresh(new_card)
             applied = True
             applied_count += 1
             revised_id = new_card.id
-            revised_card_resp = _to_response(new_card)
-        else:
-            revised_card_resp = _to_response(new_card)
+
+        revised_card_resp = _to_response(new_card)
 
         revisions.append(ApproachRevisionResponse(
             source_approach_id=card.id,
@@ -1014,9 +1017,6 @@ def revise_approaches(
             applied=applied,
             revised_card=revised_card_resp,
         ))
-
-    if request.apply:
-        db.commit()
 
     return ReviseRunResponse(
         revise_run_id=revise_run_id,
