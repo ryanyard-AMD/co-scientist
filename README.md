@@ -407,6 +407,17 @@ cs critic show <GOAL_ID>            # read full critiques (issues, strengths)
 cs critic run <GOAL_ID> --apply     # apply verdicts (prompts for confirmation; -y to skip)
 ```
 
+Cards the critic marks `revise` stay `generated` — rework them with the LLM instead of
+by hand. The revise agent rewrites each such card to address its critique (grounding,
+device fit, maturity), creating a new card (`revised_from_id` → source) and superseding
+the source. Dry-run by default; `--apply` persists:
+
+```bash
+cs approach revise <GOAL_ID>             # dry run: propose revisions, persist nothing
+cs approach revise <GOAL_ID> --apply     # supersede sources with revised cards (-y to skip prompt)
+cs critic run <GOAL_ID>                  # re-critique the revised cards, aiming for advance
+```
+
 ### 4. Score and compare approaches
 
 Hypothesis generation requires **at least 2 scored approaches**.
