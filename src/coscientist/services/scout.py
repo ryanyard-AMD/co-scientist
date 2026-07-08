@@ -51,11 +51,11 @@ _SYNTHESIS_TOOL = {
     "description": "Record the grounded synthesis of one method family's evidence.",
     "input_schema": {
         "type": "object",
+        # Structured fields are declared BEFORE synthesis_text so that if the
+        # model hits the output-token cap on a long narrative, the truncation
+        # falls on the narrative tail rather than dropping the structured data
+        # that downstream stages (approach cards, scoring) consume.
         "properties": {
-            "synthesis_text": {
-                "type": "string",
-                "description": "Narrative synthesis grounded in the supplied chunks.",
-            },
             "key_findings": {"type": "array", "items": {"type": "string"}},
             "reported_metrics": {
                 "type": "array",
@@ -73,6 +73,10 @@ _SYNTHESIS_TOOL = {
             "failure_modes": {"type": "array", "items": {"type": "string"}},
             "open_questions": {"type": "array", "items": {"type": "string"}},
             "cited_evidence_ids": {"type": "array", "items": {"type": "string"}},
+            "synthesis_text": {
+                "type": "string",
+                "description": "Narrative synthesis grounded in the supplied chunks.",
+            },
         },
         "required": ["synthesis_text", "cited_evidence_ids"],
     },
@@ -388,7 +392,11 @@ def _run_synthesis_agent(
         "summary and record it by calling the record_synthesis tool. "
         "Cite ONLY the evidence_id values provided in the chunks; never invent ids. "
         "Every reported metric and finding must trace to chunks you were given. "
-        "cited_evidence_ids must list every evidence_id you relied on."
+        "cited_evidence_ids must list every evidence_id you relied on. "
+        "Always populate the structured fields (key_findings, reported_metrics, "
+        "hardware_requirements, failure_modes, open_questions) before writing the "
+        "narrative synthesis_text. Keep synthesis_text focused: at most ~2500 "
+        "characters (roughly 400 words), so the full record always fits."
     )
 
     chunk_blocks = []
@@ -413,7 +421,7 @@ def _run_synthesis_agent(
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=system_prompt,
         tools=[_SYNTHESIS_TOOL],
         tool_choice={"type": "tool", "name": "record_synthesis"},
