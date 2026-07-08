@@ -206,3 +206,21 @@ def test_revise_without_api_key_raises(db_session, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest())
     assert exc.value.status_code == 422
+
+
+def test_str_list_fields_coerce_dict_items():
+    # The model sometimes wraps string-list items as {"type": "string", "value": ...}.
+    out = AgentRevisionOutput(
+        name="X",
+        maturity="simulated",
+        key_assumptions=[
+            {"type": "string", "value": "assumption one"},
+            "assumption two",
+        ],
+        hardware_requirements=[{"type": "string", "value": "mic array"}],
+        cited_evidence_ids=[{"type": "string", "value": "abc"}, "def"],
+        revision_summary="ok",
+    )
+    assert out.key_assumptions == ["assumption one", "assumption two"]
+    assert out.hardware_requirements == ["mic array"]
+    assert out.cited_evidence_ids == ["abc", "def"]

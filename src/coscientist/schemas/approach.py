@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ApproachStatusEnum(str, Enum):
@@ -126,6 +126,28 @@ class AgentRevisionOutput(BaseModel):
     risks_and_limitations: list[RiskItem] = Field(default_factory=list)
     cited_evidence_ids: list[str] = Field(default_factory=list)
     revision_summary: str
+
+    @field_validator(
+        "key_assumptions",
+        "hardware_requirements",
+        "unresolved_questions",
+        "suggested_experiments",
+        "cited_evidence_ids",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_str_items(cls, v: object) -> object:
+        # The model occasionally wraps items as {"type": "string", "value": "..."}
+        # instead of emitting plain strings. Unwrap those to their value.
+        if not isinstance(v, list):
+            return v
+        out: list[object] = []
+        for item in v:
+            if isinstance(item, dict) and "value" in item:
+                out.append(item["value"])
+            else:
+                out.append(item)
+        return out
 
 
 class ApproachCardResponse(BaseModel):
