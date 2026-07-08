@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     scout_include_artifacts: bool = True
     scout_use_claims: bool = True
     scout_claims_top_k: int = 25
+    # CS Phase 3: augment each record's method_families/metric_names from the
+    # corpus's per-paper Method/Metric entity nodes (GraphRAG), mapped into the
+    # canonical taxonomy. Purely additive over keyword classification.
+    scout_use_entities: bool = True
     # Taxonomy induction grounding: feed the corpus's real Method entity nodes
     # (from sampled papers) into the induction prompt so canonical_names reconcile
     # with the GraphRAG graph. Topic clusters are gated separately because the

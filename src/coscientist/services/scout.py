@@ -789,6 +789,9 @@ def run_scout(
                 )
             )
 
+        if settings.scout_use_entities:
+            _enrich_entities(all_records, client, all_terms, use_db_terms)
+
         _enrich_paper_metadata(all_records, client)
     finally:
         if retrieval_client is None:
@@ -860,6 +863,56 @@ def run_scout(
 
 def _strength_rank(s: str) -> int:
     return {"none": 0, "weak": 1, "strong": 2}.get(s, 0)
+
+
+def _enrich_entities(
+    records: list[EvidenceRecord],
+    client: RetrievalClient,
+    all_terms,
+    use_db_terms: bool,
+) -> None:
+    """Augment method_families and metric_names from per-paper GraphRAG entity nodes.
+
+    The corpus index extracts Method/Metric entity nodes per paper. Their curated
+    names are mapped into the co-scientist canonical taxonomy via the same keyword
+    classifier, then unioned into each record's existing (keyword-derived) tags.
+    Purely additive — a keyword match is never dropped, and papers whose entity
+    lookup fails or yields nothing simply keep the classify_text result.
+    """
+    terms = all_terms if use_db_terms else None
+    unique_papers = {r.paper_id for r in records}
+    per_paper: dict[str, tuple[list[str], list[str]]] = {}
+    for paper_id in unique_papers:
+        try:
+            ents = client.get_paper_entities(paper_id)
+        except Exception:
+            continue
+        methods: list[str] = []
+        for m in (ents.get("methods") or []):
+            name = (m.get("name") or "").strip()
+            if name:
+                methods.extend(classify_text(name, terms=terms)["method_families"])
+        metrics: list[str] = []
+        for mt in (ents.get("metrics") or []):
+            name = (mt.get("name") or "").strip()
+            if name:
+                metrics.extend(classify_text(name, terms=terms)["metrics"])
+        per_paper[paper_id] = (
+            list(dict.fromkeys(methods)),
+            list(dict.fromkeys(metrics)),
+        )
+
+    for rec in records:
+        enrich = per_paper.get(rec.paper_id)
+        if not enrich:
+            continue
+        e_methods, e_metrics = enrich
+        if e_methods:
+            existing = json.loads(rec.method_families) if rec.method_families else []
+            rec.method_families = json.dumps(list(dict.fromkeys(existing + e_methods)))
+        if e_metrics:
+            existing = json.loads(rec.metric_names) if rec.metric_names else []
+            rec.metric_names = json.dumps(list(dict.fromkeys(existing + e_metrics)))
 
 
 def _enrich_paper_metadata(
