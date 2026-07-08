@@ -222,6 +222,25 @@ class RetrievalClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_method_entity(self, name: str) -> dict:
+        """Method entity node: {name, description, category, entity_type, papers}."""
+        resp = self._client.get(f"/api/v1/entities/methods/{name}")
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_topic_clusters(self, *, k: int = 8, timeout: float | None = None) -> list[dict]:
+        """k-means embedding clusters over the whole corpus (noisy, whole-corpus).
+
+        This endpoint recomputes clusters on demand and can be slow, so callers
+        pass a bounded timeout and treat failures as "no hint".
+        """
+        resp = self._client.get(
+            "/api/v1/advanced/topics/clusters", params={"k": k}, timeout=timeout
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
     def close(self) -> None:
         self._client.close()
 

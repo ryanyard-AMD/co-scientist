@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     scout_include_artifacts: bool = True
     scout_use_claims: bool = True
     scout_claims_top_k: int = 25
+    # Taxonomy induction grounding: feed the corpus's real Method entity nodes
+    # (from sampled papers) into the induction prompt so canonical_names reconcile
+    # with the GraphRAG graph. Topic clusters are gated separately because the
+    # /advanced/topics/clusters endpoint recomputes k-means on demand and is slow.
+    taxonomy_ground_in_corpus: bool = True
+    taxonomy_use_topic_clusters: bool = False
+    taxonomy_cluster_k: int = 8
+    taxonomy_cluster_timeout: float = 20.0
     approach_min_evidence: int = 2
     hypothesis_max_per_run: int = 20
     hypothesis_complementary_high: float = 0.6

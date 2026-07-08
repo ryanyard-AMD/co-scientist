@@ -34,6 +34,9 @@ from coscientist.services import governance as governance_svc
 _MAX_SAMPLE_CHUNKS = 120
 _SNIPPET_CHARS = 800
 _NAME_RE = re.compile(r"[^a-z0-9]+")
+# Bound the entity fan-out so grounding never dominates derivation latency.
+_MAX_HINT_PAPERS = 15
+_MAX_METHOD_HINTS = 40
 
 
 def _canonicalize(name: str) -> str:
@@ -84,8 +87,65 @@ def _sample_corpus(goal, top_k: int, client: RetrievalClient) -> list:
     return chunks
 
 
+def _gather_corpus_hints(client: RetrievalClient, chunks: list) -> tuple[list[str], list[str]]:
+    """Pull GraphRAG grounding for taxonomy induction: Method entity nodes from
+    the sampled papers, plus (optionally) whole-corpus topic clusters. Both are
+    best-effort — failures degrade to no hint rather than blocking derivation."""
+    method_names: list[str] = []
+    if settings.taxonomy_ground_in_corpus:
+        seen_papers: set[str] = set()
+        seen_methods: set[str] = set()
+        for chunk in chunks:
+            pid = chunk.paper_id
+            if pid in seen_papers:
+                continue
+            seen_papers.add(pid)
+            if len(seen_papers) > _MAX_HINT_PAPERS:
+                break
+            try:
+                ents = client.get_paper_entities(pid)
+            except Exception:
+                continue
+            for method in (ents.get("methods") or []):
+                name = (method.get("name") or "").strip()
+                key = name.lower()
+                if name and key not in seen_methods:
+                    seen_methods.add(key)
+                    method_names.append(name)
+            if len(method_names) >= _MAX_METHOD_HINTS:
+                method_names = method_names[:_MAX_METHOD_HINTS]
+                break
+
+    cluster_hints: list[str] = []
+    if settings.taxonomy_use_topic_clusters:
+        try:
+            clusters = client.list_topic_clusters(
+                k=settings.taxonomy_cluster_k,
+                timeout=settings.taxonomy_cluster_timeout,
+            )
+        except Exception:
+            clusters = []
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            terms = cluster.get("terms") or cluster.get("keywords") or cluster.get("top_terms")
+            if isinstance(terms, list) and terms:
+                cluster_hints.append(", ".join(str(t) for t in terms[:6]))
+                continue
+            label = cluster.get("label") or cluster.get("topic") or cluster.get("name")
+            if label:
+                cluster_hints.append(str(label))
+    return method_names, cluster_hints
+
+
 def _induce_taxonomy(
-    db: Session, goal, chunks: list, max_families: int, pinned: list[str] | None = None
+    db: Session,
+    goal,
+    chunks: list,
+    max_families: int,
+    pinned: list[str] | None = None,
+    method_hints: list[str] | None = None,
+    cluster_hints: list[str] | None = None,
 ) -> AgentTaxonomyOutput:
     system_prompt = (
         "You are a scientific taxonomy induction agent. You are given retrieved "
@@ -108,6 +168,23 @@ def _induce_taxonomy(
             f"still include it with the best supporting surface forms you can find. "
             f"Induce the remaining families from the corpus to fill the rest of the "
             f"{max_families}-family budget."
+        )
+    if method_hints:
+        hint_list = ", ".join(method_hints)
+        system_prompt += (
+            " The corpus GraphRAG index already extracted these METHOD entity nodes "
+            f"from the sampled papers (Title Case surface forms): {hint_list}. When a "
+            "family you induce corresponds to one of these nodes, align its "
+            "canonical_name to the node (snake_cased) so the taxonomy reconciles with "
+            "the corpus graph. Treat these as grounding hints, not a required output "
+            "set — only include families actually supported by the chunks."
+        )
+    if cluster_hints:
+        cluster_list = "; ".join(cluster_hints)
+        system_prompt += (
+            " Embedding-based topic clusters over the whole corpus (noisy, may include "
+            f"off-domain papers) suggest these groupings: {cluster_list}. Use only as "
+            "weak hints."
         )
     chunk_blocks = []
     for chunk in chunks:
@@ -301,8 +378,12 @@ def derive_taxonomy(
             effective_pins.append(canon)
 
     client = retrieval_client or RetrievalClient()
+    method_hints: list[str] = []
+    cluster_hints: list[str] = []
     try:
         chunks = _sample_corpus(goal, top_k, client)
+        if chunks:
+            method_hints, cluster_hints = _gather_corpus_hints(client, chunks)
     finally:
         if retrieval_client is None:
             client.close()
@@ -313,7 +394,10 @@ def derive_taxonomy(
             detail="Corpus sampling returned no chunks; cannot derive a taxonomy.",
         )
 
-    raw = _induce_taxonomy(db, goal, chunks, max_families, effective_pins)
+    raw = _induce_taxonomy(
+        db, goal, chunks, max_families, effective_pins,
+        method_hints=method_hints, cluster_hints=cluster_hints,
+    )
     families = _normalize_families(raw.families, max_families, effective_pins)
     if not families:
         raise HTTPException(

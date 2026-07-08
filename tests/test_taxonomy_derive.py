@@ -1,8 +1,10 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 
+from coscientist.config import settings
 from coscientist.clients.retrieval import QueryResponse
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.schemas.goal import GoalCreate, SuccessCriterion
@@ -29,7 +31,7 @@ def _create_goal(db, name="PSZ PAL Test"):
 
 
 def _fake_induce(*families):
-    def _inner(db, goal, chunks, max_families, pinned=None):
+    def _inner(db, goal, chunks, max_families, pinned=None, **kwargs):
         return AgentTaxonomyOutput(families=list(families))
     return _inner
 
@@ -202,6 +204,122 @@ def test_derive_pin_override_supplements_goal_pins(db_session):
         )
     names = {t.canonical_name for t in _method_terms(db_session, goal.workspace_id)}
     assert {"parametric_array_loudspeaker", "spherical_microphone_array"} <= names
+
+
+def _fake_anthropic_capture(captured):
+    """Fake anthropic.Anthropic whose messages.create records the system prompt."""
+    tool_use = SimpleNamespace(type="tool_use", input={
+        "families": [{"canonical_name": "acoustic_contrast_control",
+                      "keywords": ["acoustic contrast"]}],
+    })
+    message = SimpleNamespace(
+        content=[tool_use],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+
+    class _Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return message
+
+    class _Client:
+        def __init__(self, **kwargs):
+            self.messages = _Messages()
+
+    return _Client
+
+
+class _MethodNodeClient(MockRetrievalClient):
+    def get_paper_entities(self, paper_id):
+        if paper_id == "paper_1":
+            return {"methods": [
+                {"name": "Acoustic Contrast Control", "category": "audio"},
+                {"name": "Beamforming", "category": "audio"},
+            ]}
+        return {}
+
+
+def test_method_node_hints_injected_into_prompt(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    captured: dict = {}
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_MethodNodeClient()
+        )
+    system = captured["system"]
+    assert "METHOD entity nodes" in system
+    assert "Acoustic Contrast Control" in system
+    assert "Beamforming" in system
+
+
+def test_no_method_hints_when_entities_empty(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    captured: dict = {}
+    # Default mock's get_paper_entities returns {} → no method nodes to ground on.
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=MockRetrievalClient()
+        )
+    assert "METHOD entity nodes" not in captured["system"]
+
+
+def test_topic_clusters_gated_off_by_default(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    called = {"clusters": False}
+
+    class _ClusterClient(MockRetrievalClient):
+        def list_topic_clusters(self, **kwargs):
+            called["clusters"] = True
+            return [{"terms": ["a", "b"]}]
+
+    captured: dict = {}
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_ClusterClient()
+        )
+    assert called["clusters"] is False
+    assert "topic clusters" not in captured["system"]
+
+
+def test_topic_clusters_injected_when_enabled(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "taxonomy_use_topic_clusters", True)
+    goal = _create_goal(db_session)
+
+    class _ClusterClient(MockRetrievalClient):
+        def list_topic_clusters(self, **kwargs):
+            return [{"terms": ["contrast", "bright zone", "dark zone"]}]
+
+    captured: dict = {}
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_ClusterClient()
+        )
+    system = captured["system"]
+    assert "topic clusters" in system
+    assert "contrast, bright zone, dark zone" in system
+
+
+def test_cluster_failure_degrades_gracefully(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "taxonomy_use_topic_clusters", True)
+    goal = _create_goal(db_session)
+
+    class _BoomClient(MockRetrievalClient):
+        def list_topic_clusters(self, **kwargs):
+            raise RuntimeError("cluster endpoint timed out")
+
+    captured: dict = {}
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        result = taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_BoomClient()
+        )
+    # A failed cluster fetch must not break derivation nor add a cluster hint.
+    assert result.dry_run is True
+    assert "topic clusters" not in captured["system"]
 
 
 def test_normalize_pins_survive_truncation(db_session):

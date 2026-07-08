@@ -170,5 +170,11 @@ class MockRetrievalClient:
     def get_paper_entities(self, paper_id):
         return {}
 
+    def get_method_entity(self, name):
+        return {}
+
+    def list_topic_clusters(self, **kwargs):
+        return []
+
     def close(self):
         pass
