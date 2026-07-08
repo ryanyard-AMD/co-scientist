@@ -746,9 +746,17 @@ def _run_revise_agent(
         "degrees of freedom). Do NOT inherit generic hardware (e.g. large loudspeaker arrays) "
         "from the source papers — explain how the method maps onto THIS device's drives/signal "
         "path; (3) maturity — set maturity to match the evidence (simulation-only results are "
-        "'simulated', never 'measured' or 'validated'). Record the revision by calling the "
-        "record_revision tool. Cite ONLY evidence_id values provided in the chunks; never invent "
-        "ids. Preserve the card's method_family scope; keep the name unless it misdescribes the method."
+        "'simulated', never 'measured' or 'validated'). "
+        "Do NOT empty the structured fields: hardware_requirements must list the concrete hardware "
+        "the approach needs on the TARGET device (rewrite generic source-paper hardware into "
+        "device-specific items — e.g. ultrasonic transducer element array + carrier driver, the "
+        "spherical mic array as the verification/ATF sensor, DSP/edge compute), not just prose in "
+        "device_relevance; risks_and_limitations must retain the source card's still-valid failure "
+        "modes and add the device-adaptation risks (attach an evidence_id where a risk is grounded "
+        "in a cited chunk). Use device_relevance for the narrative, the structured lists for the "
+        "itemised content. Record the revision by calling the record_revision tool. Cite ONLY "
+        "evidence_id values provided in the chunks; never invent ids. Preserve the card's "
+        "method_family scope; keep the name unless it misdescribes the method."
     )
 
     dc = goal.device_constraints
@@ -812,7 +820,7 @@ def _run_revise_agent(
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=system_prompt,
         tools=[_REVISION_TOOL],
         tool_choice={"type": "tool", "name": "record_revision"},
