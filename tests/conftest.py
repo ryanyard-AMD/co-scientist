@@ -12,7 +12,9 @@ from coscientist.clients.retrieval import (
     ChunkResult,
     ClaimResult,
     ClaimSearchResponse,
+    ComparePaper,
     DocumentMetadata,
+    PaperComparison,
     QueryResponse,
 )
 
@@ -175,6 +177,16 @@ class MockRetrievalClient:
 
     def list_topic_clusters(self, **kwargs):
         return []
+
+    def compare_papers(self, paper_ids, *, dimensions=None, **kwargs):
+        dims = dimensions or ["problem", "methods", "results", "limitations"]
+        return PaperComparison(
+            papers=[ComparePaper(paper_id=pid, title=f"Paper {pid}") for pid in paper_ids],
+            dimensions={d: {pid: f"{d} of {pid}" for pid in paper_ids} for d in dims},
+            summary="mock comparison summary",
+            cited_chunk_ids=[],
+            chunks_used=len(paper_ids),
+        )
 
     def close(self):
         pass

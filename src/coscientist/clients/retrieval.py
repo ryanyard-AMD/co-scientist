@@ -88,6 +88,20 @@ class ClaimSearchResponse(BaseModel):
     total: int = 0
 
 
+class ComparePaper(BaseModel):
+    paper_id: str
+    title: str | None = None
+
+
+class PaperComparison(BaseModel):
+    papers: list[ComparePaper] = []
+    # dimension -> {paper_id: comparison text}
+    dimensions: dict[str, dict[str, str]] = {}
+    summary: str | None = None
+    cited_chunk_ids: list[str] = []
+    chunks_used: int = 0
+
+
 class EvidencePack(BaseModel):
     paper_id: str
     title: str
@@ -216,6 +230,24 @@ class RetrievalClient:
         resp = self._client.get(f"/api/v1/documents/{document_id}")
         resp.raise_for_status()
         return DocumentMetadata.model_validate(resp.json())
+
+    def compare_papers(
+        self,
+        paper_ids: list[str],
+        *,
+        dimensions: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> PaperComparison:
+        """Cross-paper comparison along named dimensions (problem/methods/results/
+        limitations by default). Returns per-dimension, per-paper synthesis text."""
+        payload: dict = {"paper_ids": paper_ids}
+        if dimensions:
+            payload["dimensions"] = dimensions
+        resp = self._client.post(
+            "/api/v1/synthesis/compare", json=payload, timeout=timeout
+        )
+        resp.raise_for_status()
+        return PaperComparison.model_validate(resp.json())
 
     def get_paper_entities(self, paper_id: str) -> dict:
         resp = self._client.get(f"/api/v1/entities/papers/{paper_id}")

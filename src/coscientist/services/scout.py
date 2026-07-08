@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from coscientist.clients.retrieval import (
     ChunkResult,
     MetadataFilter,
+    PaperComparison,
     RetrievalClient,
 )
 from coscientist.config import settings
@@ -930,6 +931,27 @@ def _enrich_paper_metadata(
     for rec in records:
         if rec.paper_id in cache:
             rec.year = cache[rec.paper_id]
+
+
+def compare_papers(
+    paper_ids: list[str],
+    *,
+    dimensions: list[str] | None = None,
+    retrieval_client: RetrievalClient | None = None,
+) -> PaperComparison:
+    """Cross-paper comparison via the retrieval synthesis surface.
+
+    Thin passthrough to the retrieval /synthesis/compare endpoint — useful when
+    weighing candidate baselines in Approach/Experiment. Does not persist.
+    """
+    if not paper_ids:
+        raise HTTPException(status_code=422, detail="At least one paper_id is required")
+    client = retrieval_client or RetrievalClient()
+    try:
+        return client.compare_papers(paper_ids, dimensions=dimensions)
+    finally:
+        if retrieval_client is None:
+            client.close()
 
 
 def get_evidence(

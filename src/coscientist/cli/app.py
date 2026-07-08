@@ -386,6 +386,42 @@ def scout_synthesis(
         db.close()
 
 
+@scout_app.command("compare")
+def scout_compare(
+    paper: list[str] = typer.Option(
+        ..., "--paper", "-p", help="Paper id to compare (repeat for each paper)"
+    ),
+    dim: Optional[list[str]] = typer.Option(
+        None, "--dim", "-d",
+        help="Comparison dimension (repeat); defaults to problem/methods/results/limitations",
+    ),
+):
+    """Compare papers side-by-side along named dimensions (retrieval synthesis)."""
+    if len(paper) < 2:
+        console.print("[yellow]Provide at least two --paper ids to compare.[/yellow]")
+        raise typer.Exit(code=1)
+    try:
+        comparison = scout_svc.compare_papers(paper, dimensions=dim or None)
+    except Exception as exc:  # network / server errors surface cleanly to the CLI
+        console.print(f"[red]Comparison failed: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    title_by_id = {p.paper_id: (p.title or p.paper_id) for p in comparison.papers}
+    ordered_ids = [p.paper_id for p in comparison.papers] or paper
+    table = Table(title=f"Paper comparison ({comparison.chunks_used} chunks used)")
+    table.add_column("Dimension", style="cyan", no_wrap=True)
+    for pid in ordered_ids:
+        table.add_column(title_by_id.get(pid, pid)[:40], max_width=50)
+    for dimension, per_paper in comparison.dimensions.items():
+        row = [dimension]
+        for pid in ordered_ids:
+            row.append(per_paper.get(pid, "-"))
+        table.add_row(*row)
+    console.print(table)
+    if comparison.summary:
+        console.print(f"\n[bold]Summary:[/bold] {comparison.summary}")
+
+
 # --- Ontology commands ---
 
 
