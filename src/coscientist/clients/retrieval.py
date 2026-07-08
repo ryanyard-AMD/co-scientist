@@ -62,6 +62,32 @@ class QueryResponse(BaseModel):
     artifact_results: list[ArtifactResult] = []
 
 
+class ClaimRelationship(BaseModel):
+    relation: str  # SUPPORTS | CONTRADICTS | EXTENDS
+    target_claim_id: str
+    rationale: str = ""
+
+
+class ClaimResult(BaseModel):
+    claim_id: str
+    text: str
+    claim_type: str  # finding | hypothesis | contribution | limitation
+    paper_id: str
+    title: str | None = None
+    chunk_ids: list[str] = []
+    confidence: float | None = None
+    score: float = 0.0
+    vector_score: float | None = None
+    fulltext_score: float | None = None
+    relationships: list[ClaimRelationship] = []
+
+
+class ClaimSearchResponse(BaseModel):
+    query: str
+    claims: list[ClaimResult] = []
+    total: int = 0
+
+
 class EvidencePack(BaseModel):
     paper_id: str
     title: str
@@ -139,6 +165,27 @@ class RetrievalClient:
         resp = self._client.post("/api/v1/query", json=payload)
         resp.raise_for_status()
         return QueryResponse.model_validate(resp.json())
+
+    def search_claims(
+        self,
+        query: str,
+        *,
+        top_k: int = 25,
+        filters: MetadataFilter | None = None,
+    ) -> ClaimSearchResponse:
+        """Query-time claim retrieval across the corpus.
+
+        Returns typed claims (finding/hypothesis/contribution/limitation) grounded
+        to chunk_ids, each with SUPPORTS/CONTRADICTS/EXTENDS edges to other claims.
+        """
+        payload: dict = {"query": query, "top_k": top_k}
+        if filters:
+            filter_dict = filters.model_dump(exclude_none=True)
+            if filter_dict:
+                payload["filters"] = filter_dict
+        resp = self._client.post("/api/v1/claims/search", json=payload)
+        resp.raise_for_status()
+        return ClaimSearchResponse.model_validate(resp.json())
 
     def get_evidence_pack(
         self,

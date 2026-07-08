@@ -388,19 +388,27 @@ def _run_synthesis_agent(
     """
     system_prompt = (
         "You are a scientific evidence synthesis agent. You are given retrieved "
-        "literature chunks for ONE method family. Synthesize them into a grounded "
-        "summary and record it by calling the record_synthesis tool. "
-        "Cite ONLY the evidence_id values provided in the chunks; never invent ids. "
-        "Every reported metric and finding must trace to chunks you were given. "
+        "literature chunks and extracted claims for ONE method family. Synthesize "
+        "them into a grounded summary and record it by calling the record_synthesis "
+        "tool. Cite ONLY the evidence_id values provided; never invent ids. "
+        "Every reported metric and finding must trace to evidence you were given. "
         "cited_evidence_ids must list every evidence_id you relied on. "
+        "Extracted claims are pre-grounded findings — use them directly: prefer "
+        "'finding'/'contribution' claims for key_findings, 'limitation' claims and "
+        "CONTRADICTS edges for failure_modes, and 'hypothesis' claims plus "
+        "unresolved contradictions for open_questions. "
         "Always populate the structured fields (key_findings, reported_metrics, "
         "hardware_requirements, failure_modes, open_questions) before writing the "
         "narrative synthesis_text. Keep synthesis_text focused: at most ~2500 "
         "characters (roughly 400 words), so the full record always fits."
     )
 
+    chunk_recs = [r for r in records if r.record_kind != "claim"]
+    claim_recs = [r for r in records if r.record_kind == "claim"]
+    claim_text_by_id = {r.source_claim_id: r.chunk_text for r in claim_recs if r.source_claim_id}
+
     chunk_blocks = []
-    for rec in records:
+    for rec in chunk_recs:
         chunk_blocks.append(
             f"### evidence_id: {rec.id}\n"
             f"Title: {rec.title}"
@@ -409,11 +417,36 @@ def _run_synthesis_agent(
             + (f"Section: {rec.section_title}\n" if rec.section_title else "")
             + f"Text: {rec.chunk_text[:1500]}"
         )
+
+    claim_blocks = []
+    for rec in claim_recs:
+        edges = json.loads(rec.claim_relationships) if rec.claim_relationships else []
+        edge_lines = []
+        for e in edges:
+            target = claim_text_by_id.get(e.get("target_claim_id"))
+            if target:
+                line = f"  {e.get('relation')} \"{target[:160]}\""
+                if e.get("rationale"):
+                    line += f" — {e['rationale'][:160]}"
+                edge_lines.append(line)
+        conf = f", confidence={rec.confidence:.2f}" if rec.confidence is not None else ""
+        claim_blocks.append(
+            f"### evidence_id: {rec.id} [claim:{rec.claim_type}{conf}]\n"
+            f"Title: {rec.title}\n"
+            f"Claim: {rec.chunk_text[:1500]}"
+            + (("\nRelationships:\n" + "\n".join(edge_lines)) if edge_lines else "")
+        )
+
     user_message = (
         f"## Method family\n{method_family}\n\n"
         f"## Goal\n{goal_id}\n\n"
-        f"## Evidence chunks ({len(records)})\n"
+        f"## Evidence chunks ({len(chunk_blocks)})\n"
         + "\n\n".join(chunk_blocks)
+        + (
+            f"\n\n## Extracted claims (grounded findings) ({len(claim_blocks)})\n"
+            + "\n\n".join(claim_blocks)
+            if claim_blocks else ""
+        )
         + "\n\nSynthesize the evidence above for this method family."
     )
 
@@ -507,6 +540,74 @@ def _synthesize_groups(
 
     db.commit()
     return rows
+
+
+def _ingest_claims(
+    client,
+    goal,
+    scout_run_id: str,
+    method_names: list[str],
+    all_terms,
+    use_db_terms: bool,
+    now: datetime,
+) -> list[EvidenceRecord]:
+    """Fetch corpus claims per method family and persist them as evidence records.
+
+    Claims are grounded findings extracted upstream (GraphRAG). We ingest them as
+    first-class EvidenceRecords (record_kind="claim") so they flow through grouping
+    and synthesis alongside chunks, carrying claim_type, confidence, and the
+    SUPPORTS/CONTRADICTS/EXTENDS edges the synthesis agent uses.
+    """
+    app = goal.target_application.replace("_", " ")
+    records: list[EvidenceRecord] = []
+    seen_claim_ids: set[str] = set()
+    for family in method_names:
+        query = f"{app} {family.replace('_', ' ')}"
+        try:
+            resp = client.search_claims(query, top_k=settings.scout_claims_top_k)
+        except Exception:
+            continue
+        for claim in resp.claims:
+            if claim.claim_id in seen_claim_ids:
+                continue
+            seen_claim_ids.add(claim.claim_id)
+            classification = classify_text(
+                claim.text, terms=all_terms if use_db_terms else None
+            )
+            families = classification["method_families"] or [family]
+            records.append(EvidenceRecord(
+                id=str(uuid.uuid4()),
+                workspace_id=goal.workspace_id,
+                scout_run_id=scout_run_id,
+                query_text=query,
+                paper_id=claim.paper_id,
+                title=claim.title or "",
+                year=None,
+                section_title=None,
+                page_number=None,
+                chunk_id=claim.chunk_ids[0] if claim.chunk_ids else claim.claim_id,
+                chunk_index=0,
+                chunk_text=claim.text,
+                score=claim.score,
+                vector_score=claim.vector_score,
+                fulltext_score=claim.fulltext_score,
+                method_families=json.dumps(families),
+                metric_names=json.dumps(classification["metrics"]),
+                hardware_assumptions=json.dumps(classification["hardware"]),
+                failure_modes=json.dumps(classification["failure_modes"]),
+                is_primary_method=False,
+                claim_type=claim.claim_type,
+                confidence=claim.confidence,
+                source_claim_id=claim.claim_id,
+                claim_relationships=json.dumps([e.model_dump() for e in claim.relationships]),
+                evidence_strength="none",
+                is_substantive=True,
+                record_kind="claim",
+                source_id=None,
+                source_type=None,
+                created_at=now,
+            ))
+    return records
 
 
 def run_scout(
@@ -674,6 +775,19 @@ def run_scout(
                         source_type=art.artifact_type,
                         created_at=now,
                     ))
+
+        if settings.scout_use_claims:
+            claim_method_names = (
+                [t.canonical_name for t in method_terms]
+                if use_db_terms
+                else list(METHOD_FAMILIES.keys())
+            )
+            all_records.extend(
+                _ingest_claims(
+                    client, goal, scout_run_id, claim_method_names,
+                    all_terms, use_db_terms, now,
+                )
+            )
 
         _enrich_paper_metadata(all_records, client)
     finally:

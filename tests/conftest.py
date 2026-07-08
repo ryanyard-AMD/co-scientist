@@ -10,6 +10,8 @@ from coscientist.models import approval, approach, critic, device, evidence, exe
 from coscientist.clients.retrieval import (
     ArtifactResult,
     ChunkResult,
+    ClaimResult,
+    ClaimSearchResponse,
     DocumentMetadata,
     QueryResponse,
 )
@@ -119,8 +121,10 @@ class MockRetrievalClient:
         self,
         chunks: list[ChunkResult] | None = None,
         artifacts: list[ArtifactResult] | None = None,
+        claims: list[ClaimResult] | None = None,
     ):
         self._artifacts = artifacts or []
+        self._claims = claims or []
         self._chunks = chunks or [
             make_chunk(),
             make_chunk(
@@ -156,6 +160,11 @@ class MockRetrievalClient:
             original_filename="test.pdf",
             ingestion_status="embedded",
             year=2023,
+        )
+
+    def search_claims(self, query, **kwargs):
+        return ClaimSearchResponse(
+            query=query, claims=self._claims, total=len(self._claims)
         )
 
     def get_paper_entities(self, paper_id):

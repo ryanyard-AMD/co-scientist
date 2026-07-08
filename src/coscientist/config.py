@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     scout_min_score: float = 0.0
     scout_min_chunk_words: int = 5
     scout_include_artifacts: bool = True
+    scout_use_claims: bool = True
+    scout_claims_top_k: int = 25
     approach_min_evidence: int = 2
     hypothesis_max_per_run: int = 20
     hypothesis_complementary_high: float = 0.6

@@ -41,6 +41,8 @@ class EvidenceRecord(Base):
 
     claim_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_claim_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_relationships: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of edges
     evidence_strength: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
 
     is_substantive: Mapped[bool] = mapped_column(nullable=False, default=True)
