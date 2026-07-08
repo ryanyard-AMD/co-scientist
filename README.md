@@ -100,6 +100,15 @@ LLM critic that reviews `generated` approach cards before scoring, catching reas
 - **Recommend-only by default** — writes critiques and transitions nothing; opt-in `--apply` acts on verdicts (`advance`→`reviewed`, `refute`→`refuted`; `revise` never transitions)
 - Each run logged via the governance agent-action audit trail
 
+#### Closing the `revise` loop (`cs approach revise <goal_id>`)
+
+The critic marks fixable cards `revise` but leaves them `generated`; `revise` reworks them with an LLM instead of a human. For each card whose latest critique verdict is `revise`, Claude receives the card, its critique (grounding / device-fit / maturity issues), and the card's cited evidence, then rewrites it via forced tool-use to: re-ground overclaims to the cited evidence, re-map `device_relevance`/`hardware_requirements` onto the goal's actual target device (rather than inheriting the source paper's rig), and correct maturity to match the evidence.
+
+- **Supersede with provenance** — a revision creates a *new* card (`revised_from_id` → source) and marks the source `superseded`; the audit trail is preserved
+- Same grounding guard: invented `cited_evidence_ids` are stripped before the revised card's evidence links are built
+- **Dry run by default** — proposes revisions without persisting; opt-in `--apply` writes the new cards and supersedes their sources
+- `POST /goals/{id}/approaches/revise` (`{apply, method_families?}`); each agent call logged in the governance audit trail
+
 ### CS-EPIC-SCORE: Evidence-Linked Rubric Scoring
 
 Transparent, evidence-linked scoring system for evaluating and comparing approach cards across 10 weighted dimensions.

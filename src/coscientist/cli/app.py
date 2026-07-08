@@ -20,6 +20,7 @@ from coscientist.schemas.goal import (
 from coscientist.schemas.approach import (
     ApproachGenerateRequest,
     ApproachMergeRequest,
+    ApproachReviseRequest,
     ApproachStatusEnum,
 )
 from coscientist.schemas.hypothesis import (
@@ -678,6 +679,64 @@ def approach_merge(
             target_approach_id=target,
         ))
         console.print(f"[green]Merged into {result.name} ({result.id[:8]}…)[/green]")
+    finally:
+        db.close()
+
+
+@approach_app.command("revise")
+def approach_revise(
+    goal_id: str = typer.Argument(...),
+    apply: bool = typer.Option(False, "--apply", help="Persist revisions (supersede source cards)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip --apply confirmation"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
+    as_json: bool = typer.Option(False, "--json", help="Output raw JSON"),
+):
+    """Revise approach cards whose latest critique verdict is 'revise'.
+
+    Sends each card + its critique + cited evidence to the LLM, which rewrites it to
+    address grounding / device-fit / maturity issues. Dry run by default; --apply
+    supersedes each source card with its revised version.
+    """
+    if apply and not yes:
+        typer.confirm(
+            "Apply revisions? This supersedes source cards with LLM-revised versions.",
+            abort=True,
+        )
+    db = _get_session()
+    try:
+        request = ApproachReviseRequest(
+            apply=apply,
+            method_families=[method] if method else None,
+        )
+        result = approach_svc.revise_approaches(db, goal_id, request)
+        if as_json:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+        console.print(f"[green]Revise run {result.revise_run_id[:8]}… complete[/green]")
+        if result.revised_count == 0:
+            console.print("[yellow]No cards with a 'revise' verdict to revise.[/yellow]")
+            return
+        table = Table(title=f"Revisions ({result.revised_count} cards)")
+        table.add_column("Method")
+        table.add_column("Maturity", justify="center")
+        table.add_column("Applied", justify="center")
+        table.add_column("New card", no_wrap=True)
+        table.add_column("Summary")
+        for r in result.revisions:
+            mat = r.maturity_before
+            if r.maturity_after != r.maturity_before:
+                mat = f"{r.maturity_before}→{r.maturity_after}"
+            table.add_row(
+                r.method_family,
+                mat,
+                "✓" if r.applied else "-",
+                (r.revised_approach_id[:8] + "…") if r.revised_approach_id else "(dry run)",
+                (r.revision_summary[:80] + "…") if len(r.revision_summary) > 80 else r.revision_summary,
+            )
+        console.print(table)
+        console.print(f"  revised: {result.revised_count}, applied: {result.applied_count}")
+        if not apply:
+            console.print("[dim]  Re-run with --apply to supersede source cards with these revisions.[/dim]")
     finally:
         db.close()
 

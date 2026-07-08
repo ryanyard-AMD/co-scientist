@@ -1,17 +1,21 @@
 import json
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import anthropic
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
+from coscientist.models.critic import ApproachCritique
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.synthesis import EvidenceSynthesis
 from coscientist.schemas.approach import (
+    AgentRevisionOutput,
     ApproachCardCreate,
     ApproachCardResponse,
     ApproachCardUpdate,
@@ -19,15 +23,19 @@ from coscientist.schemas.approach import (
     ApproachGenerateResponse,
     ApproachMaturityEnum,
     ApproachMergeRequest,
+    ApproachRevisionResponse,
+    ApproachReviseRequest,
     ApproachStatusEnum,
     DuplicateWarning,
     EvidenceLink,
     EvidenceTypeEnum,
     ReportedMetric,
+    ReviseRunResponse,
     RiskItem,
 )
 from coscientist.schemas.goal import GoalResponse
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     ApproachStatusEnum.generated:          {ApproachStatusEnum.reviewed, ApproachStatusEnum.refuted, ApproachStatusEnum.superseded},
@@ -64,6 +72,7 @@ def _to_response(card: ApproachCard) -> ApproachCardResponse:
         maturity=ApproachMaturityEnum(card.maturity),
         generation_run_id=card.generation_run_id,
         merged_into_id=card.merged_into_id,
+        revised_from_id=card.revised_from_id,
         created_at=card.created_at,
         updated_at=card.updated_at,
     )
@@ -631,3 +640,380 @@ def merge_approaches(db: Session, data: ApproachMergeRequest) -> ApproachCardRes
     db.commit()
     db.refresh(target)
     return _to_response(target)
+
+
+_REVISION_TOOL = {
+    "name": "record_revision",
+    "description": "Record a revised version of one approach card that addresses the critic's issues.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Card name (usually unchanged)."},
+            "problem_fit": {"type": "string"},
+            "mechanism_summary": {
+                "type": "string",
+                "description": "How the method works, grounded strictly in cited evidence.",
+            },
+            "device_relevance": {
+                "type": "string",
+                "description": (
+                    "How the method maps onto the goal's actual target device and its "
+                    "acoustic architecture — do NOT inherit generic hardware from source papers."
+                ),
+            },
+            "maturity": {
+                "type": "string",
+                "enum": ["theoretical", "simulated", "measured", "validated"],
+                "description": "Honest maturity: simulation-only results are 'simulated', not 'measured'/'validated'.",
+            },
+            "key_assumptions": {"type": "array", "items": {"type": "string"}},
+            "hardware_requirements": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Hardware the approach needs on the TARGET device, not the source paper's rig.",
+            },
+            "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+            "suggested_experiments": {"type": "array", "items": {"type": "string"}},
+            "reported_metrics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "metric_name": {"type": "string"},
+                        "value": {"type": "string"},
+                        "unit": {"type": "string"},
+                        "source_evidence_id": {"type": "string"},
+                    },
+                    "required": ["metric_name"],
+                },
+            },
+            "risks_and_limitations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "failure_mode": {"type": "string"},
+                        "severity": {"type": "string"},
+                        "evidence_id": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "cited_evidence_ids": {"type": "array", "items": {"type": "string"}},
+            "revision_summary": {
+                "type": "string",
+                "description": "What changed and why, mapped to the critic's grounding/device-fit/maturity issues.",
+            },
+        },
+        "required": ["name", "maturity", "revision_summary", "cited_evidence_ids"],
+    },
+}
+
+
+def _evidence_for_card(db: Session, card: ApproachCardResponse) -> list[EvidenceRecord]:
+    evidence_ids = [el.evidence_id for el in card.evidence_links]
+    if not evidence_ids:
+        return []
+    return list(db.scalars(
+        select(EvidenceRecord).where(EvidenceRecord.id.in_(evidence_ids))
+    ).all())
+
+
+def _run_revise_agent(
+    db: Session,
+    goal: GoalResponse,
+    card: ApproachCardResponse,
+    critique: ApproachCritique,
+    evidence: list[EvidenceRecord],
+) -> AgentRevisionOutput:
+    """Ask Claude to rewrite one approach card to address its critique.
+
+    The model sees the card, the critic's issue lists, and the evidence the card
+    cites. It may cite only those evidence_ids; invented ids are stripped by the
+    caller before persistence.
+    """
+    system_prompt = (
+        "You are a scientific editor revising ONE approach card to resolve an adversarial "
+        "critic's issues. You are given the card, the critic's grounding / device-fit / maturity "
+        "issues, and the evidence chunks the card cites. Produce a revised card that: "
+        "(1) grounding — every claim, metric, and mechanism detail follows from the cited "
+        "evidence; remove or soften anything that overclaims; (2) device fit — rewrite "
+        "device_relevance and hardware_requirements for the goal's ACTUAL target device and its "
+        "acoustic architecture (judge against the goal description, not the speaker_count field "
+        "in isolation: e.g. a parametric-array loudspeaker is a single directional source that "
+        "steers via an ultrasonic element array, so speaker_count=1 does not imply zero spatial "
+        "degrees of freedom). Do NOT inherit generic hardware (e.g. large loudspeaker arrays) "
+        "from the source papers — explain how the method maps onto THIS device's drives/signal "
+        "path; (3) maturity — set maturity to match the evidence (simulation-only results are "
+        "'simulated', never 'measured' or 'validated'). Record the revision by calling the "
+        "record_revision tool. Cite ONLY evidence_id values provided in the chunks; never invent "
+        "ids. Preserve the card's method_family scope; keep the name unless it misdescribes the method."
+    )
+
+    dc = goal.device_constraints
+    device_block = "none"
+    if dc:
+        device_block = (
+            f"form_factor={dc.form_factor or '-'}, speaker_count={dc.speaker_count or '-'}, "
+            f"compute_budget={dc.compute_budget or '-'}, "
+            f"setup_time_minutes={dc.setup_time_minutes or '-'}"
+        )
+
+    goal_block = f"Target application: {goal.target_application}"
+    if goal.description:
+        goal_block += f"\nDescription: {goal.description}"
+
+    metrics = [f"{m.metric_name}={m.value}" for m in card.reported_metrics]
+    risks = [r.failure_mode or r.description for r in card.risks_and_limitations]
+    card_block = (
+        f"Name: {card.name}\n"
+        f"Method family: {card.method_family}\n"
+        f"Claimed maturity: {card.maturity.value}\n"
+        f"Problem fit: {card.problem_fit}\n"
+        f"Device relevance (claimed): {card.device_relevance or '-'}\n"
+        f"Mechanism summary:\n{card.mechanism_summary}\n"
+        f"Reported metrics: {metrics or 'none'}\n"
+        f"Hardware requirements: {card.hardware_requirements or 'none'}\n"
+        f"Risks/limitations: {risks or 'none'}\n"
+        f"Unresolved questions: {card.unresolved_questions or 'none'}"
+    )
+
+    critique_block = (
+        f"Verdict: {critique.verdict}\n"
+        f"Summary: {critique.summary}\n"
+        f"Grounding issues: {json.loads(critique.grounding_issues) if critique.grounding_issues else []}\n"
+        f"Device-fit issues: {json.loads(critique.device_fit_issues) if critique.device_fit_issues else []}\n"
+        f"Maturity issues: {json.loads(critique.maturity_issues) if critique.maturity_issues else []}"
+    )
+
+    chunk_blocks = []
+    for rec in evidence:
+        chunk_blocks.append(
+            f"### evidence_id: {rec.id}\n"
+            f"Title: {rec.title}"
+            + (f" ({rec.year})" if rec.year else "")
+            + "\n"
+            + (f"Section: {rec.section_title}\n" if rec.section_title else "")
+            + f"Text: {rec.chunk_text[:1500]}"
+        )
+
+    user_message = (
+        f"## Goal\n{goal_block}\n\n"
+        f"## Device constraints\n{device_block}\n\n"
+        f"## Approach card (to revise)\n{card_block}\n\n"
+        f"## Critic issues to resolve\n{critique_block}\n\n"
+        f"## Cited evidence ({len(evidence)})\n"
+        + ("\n\n".join(chunk_blocks) if chunk_blocks else "(no linked evidence)")
+        + "\n\nRevise the approach card above to resolve every critic issue."
+    )
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
+    message = client.messages.create(
+        model=settings.validation_model,
+        max_tokens=4096,
+        system=system_prompt,
+        tools=[_REVISION_TOOL],
+        tool_choice={"type": "tool", "name": "record_revision"},
+        messages=[{"role": "user", "content": user_message}],
+    )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal.id,
+        service="approach",
+        action="revise_approach",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=(json.dumps(tool_use.input)[:512] if tool_use else "no tool_use block"),
+    )
+    if tool_use is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Revise agent did not return a record_revision tool call",
+        )
+    try:
+        return AgentRevisionOutput(**tool_use.input)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Revise agent returned invalid output: {exc}",
+        )
+
+
+def _build_revised_card(
+    source: ApproachCard,
+    output: AgentRevisionOutput,
+    valid_ids: set[str],
+    conf_by_id: dict[str, float | None],
+    revise_run_id: str,
+    now: datetime,
+) -> ApproachCard:
+    """Assemble a new ApproachCard from a revision output, keeping evidence
+    grounding: only cited ids that were supplied survive into links/sources."""
+    cited = [eid for eid in output.cited_evidence_ids if eid in valid_ids]
+    fallback = cited[0] if cited else None
+
+    evidence_links: list[dict] = []
+
+    def _link(field: str, eid: str | None) -> None:
+        if eid and eid in valid_ids:
+            evidence_links.append({
+                "evidence_id": eid,
+                "evidence_type": "direct",
+                "claim_field": field,
+                "confidence": conf_by_id.get(eid),
+            })
+
+    metrics: list[dict] = []
+    for m in output.reported_metrics:
+        src = m.source_evidence_id if m.source_evidence_id in valid_ids else fallback
+        metrics.append({
+            "metric_name": m.metric_name,
+            "value": m.value,
+            "unit": m.unit,
+            "source_evidence_id": src,
+            "confidence": conf_by_id.get(src),
+            "evidence_type": "direct",
+        })
+        _link("reported_metrics", src)
+
+    risks: list[dict] = []
+    for r in output.risks_and_limitations:
+        eid = r.evidence_id if r.evidence_id in valid_ids else fallback
+        risks.append({
+            "description": r.description,
+            "failure_mode": r.failure_mode,
+            "severity": r.severity,
+            "evidence_id": eid,
+        })
+        _link("risks_and_limitations", eid)
+
+    for field in ("mechanism_summary", "problem_fit", "hardware_requirements", "key_assumptions", "device_relevance"):
+        for eid in cited:
+            _link(field, eid)
+
+    return ApproachCard(
+        id=str(uuid.uuid4()),
+        workspace_id=source.workspace_id,
+        name=output.name or source.name,
+        method_family=source.method_family,
+        domain=source.domain,
+        problem_fit=output.problem_fit,
+        mechanism_summary=output.mechanism_summary,
+        key_assumptions=json.dumps(output.key_assumptions),
+        reported_metrics=json.dumps(metrics),
+        hardware_requirements=json.dumps(output.hardware_requirements),
+        device_relevance=output.device_relevance,
+        risks_and_limitations=json.dumps(risks),
+        unresolved_questions=json.dumps(output.unresolved_questions),
+        suggested_experiments=json.dumps(output.suggested_experiments),
+        evidence_links=json.dumps(evidence_links),
+        status=ApproachStatusEnum.generated.value,
+        maturity=output.maturity.value,
+        generation_run_id=revise_run_id,
+        merged_into_id=None,
+        revised_from_id=source.id,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _latest_critique(db: Session, approach_id: str) -> ApproachCritique | None:
+    return db.scalar(
+        select(ApproachCritique)
+        .where(ApproachCritique.approach_id == approach_id)
+        .order_by(ApproachCritique.created_at.desc())
+        .limit(1)
+    )
+
+
+def revise_approaches(
+    db: Session,
+    goal_id: str,
+    request: ApproachReviseRequest,
+) -> ReviseRunResponse:
+    goal = goal_svc.get(db, goal_id)
+
+    if not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=422,
+            detail="Revise requires an Anthropic API key (set CS_ANTHROPIC_API_KEY).",
+        )
+
+    q = select(ApproachCard).where(
+        ApproachCard.workspace_id == goal_id,
+        ApproachCard.status == ApproachStatusEnum.generated.value,
+    )
+    if request.method_families:
+        q = q.where(ApproachCard.method_family.in_(request.method_families))
+    cards = list(db.scalars(q.order_by(ApproachCard.method_family)).all())
+
+    revise_run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    revisions: list[ApproachRevisionResponse] = []
+    applied_count = 0
+
+    for card in cards:
+        critique = _latest_critique(db, card.id)
+        if critique is None or critique.verdict != "revise":
+            continue
+
+        card_response = _to_response(card)
+        evidence = _evidence_for_card(db, card_response)
+        valid_ids = {e.id for e in evidence}
+        conf_by_id = {e.id: e.confidence for e in evidence}
+
+        output = _run_revise_agent(db, goal, card_response, critique, evidence)
+
+        new_card = _build_revised_card(
+            source=card,
+            output=output,
+            valid_ids=valid_ids,
+            conf_by_id=conf_by_id,
+            revise_run_id=revise_run_id,
+            now=now,
+        )
+
+        applied = False
+        revised_card_resp: ApproachCardResponse | None = None
+        revised_id: str | None = None
+        if request.apply:
+            card.status = ApproachStatusEnum.superseded.value
+            card.merged_into_id = new_card.id
+            card.updated_at = now
+            db.add(new_card)
+            applied = True
+            applied_count += 1
+            revised_id = new_card.id
+            revised_card_resp = _to_response(new_card)
+        else:
+            revised_card_resp = _to_response(new_card)
+
+        revisions.append(ApproachRevisionResponse(
+            source_approach_id=card.id,
+            source_status=card.status,
+            method_family=card.method_family,
+            revised_approach_id=revised_id,
+            revision_summary=output.revision_summary,
+            maturity_before=card_response.maturity.value,
+            maturity_after=output.maturity.value,
+            applied=applied,
+            revised_card=revised_card_resp,
+        ))
+
+    if request.apply:
+        db.commit()
+
+    return ReviseRunResponse(
+        revise_run_id=revise_run_id,
+        goal_id=goal_id,
+        revised_count=len(revisions),
+        applied_count=applied_count,
+        revisions=revisions,
+    )

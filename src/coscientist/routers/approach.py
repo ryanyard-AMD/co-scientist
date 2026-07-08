@@ -11,9 +11,11 @@ from coscientist.schemas.approach import (
     ApproachGenerateResponse,
     ApproachListResponse,
     ApproachMergeRequest,
+    ApproachReviseRequest,
     ApproachStatusEnum,
     ApproachStatusUpdate,
     DuplicateWarning,
+    ReviseRunResponse,
 )
 from coscientist.services import approach as svc
 from coscientist.services import approach_evidence as evidence_svc
@@ -38,6 +40,11 @@ def find_duplicates(goal_id: str, db: Session = Depends(get_db)):
 @router.post("/merge", response_model=ApproachCardResponse)
 def merge_approaches(goal_id: str, body: ApproachMergeRequest, db: Session = Depends(get_db)):
     return svc.merge_approaches(db, body)
+
+
+@router.post("/revise", response_model=ReviseRunResponse)
+def revise_approaches(goal_id: str, body: ApproachReviseRequest, db: Session = Depends(get_db)):
+    return svc.revise_approaches(db, goal_id, body)
 
 
 @router.post("", response_model=ApproachCardResponse, status_code=201)

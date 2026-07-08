@@ -99,6 +99,35 @@ class ApproachMergeRequest(BaseModel):
     target_approach_id: str
 
 
+class ApproachReviseRequest(BaseModel):
+    """Revise approach cards whose latest critique verdict is 'revise'.
+
+    apply=False is a dry run: the LLM proposes revisions but nothing is
+    persisted. apply=True writes each revised card and supersedes its source.
+    """
+
+    apply: bool = False
+    method_families: list[str] | None = None
+
+
+class AgentRevisionOutput(BaseModel):
+    """Schema the revise agent must return for one approach card."""
+
+    name: str
+    problem_fit: str | None = None
+    mechanism_summary: str | None = None
+    device_relevance: str | None = None
+    maturity: ApproachMaturityEnum
+    key_assumptions: list[str] = Field(default_factory=list)
+    hardware_requirements: list[str] = Field(default_factory=list)
+    unresolved_questions: list[str] = Field(default_factory=list)
+    suggested_experiments: list[str] = Field(default_factory=list)
+    reported_metrics: list[ReportedMetric] = Field(default_factory=list)
+    risks_and_limitations: list[RiskItem] = Field(default_factory=list)
+    cited_evidence_ids: list[str] = Field(default_factory=list)
+    revision_summary: str
+
+
 class ApproachCardResponse(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -121,8 +150,31 @@ class ApproachCardResponse(BaseModel):
     maturity: ApproachMaturityEnum
     generation_run_id: str | None
     merged_into_id: str | None
+    revised_from_id: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ApproachRevisionResponse(BaseModel):
+    """One card's revision: what it was, what it became, and why."""
+
+    source_approach_id: str
+    source_status: str
+    method_family: str
+    revised_approach_id: str | None
+    revision_summary: str
+    maturity_before: str
+    maturity_after: str
+    applied: bool
+    revised_card: ApproachCardResponse | None = None
+
+
+class ReviseRunResponse(BaseModel):
+    revise_run_id: str
+    goal_id: str
+    revised_count: int
+    applied_count: int
+    revisions: list[ApproachRevisionResponse] = Field(default_factory=list)
 
 
 class ApproachListResponse(BaseModel):

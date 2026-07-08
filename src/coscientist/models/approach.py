@@ -32,6 +32,7 @@ class ApproachCard(Base):
     maturity: Mapped[str] = mapped_column(String(32), nullable=False, default="theoretical")
     generation_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     merged_into_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    revised_from_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=_utcnow, onupdate=_utcnow)
 
