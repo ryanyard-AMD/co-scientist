@@ -247,6 +247,43 @@ def test_apply_retries_then_succeeds_on_valid_citations(db_session, monkeypatch)
     assert approach_svc.get(db_session, card.id).status == ApproachStatusEnum.superseded
 
 
+def test_apply_resolves_prefix_citations(db_session, monkeypatch):
+    # The agent sometimes emits 8-char id prefixes instead of full uuids; those
+    # must resolve to the supplied evidence, not be stripped as invalid.
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    _generate_card(db_session, goal)
+    _critique(db_session, goal)
+
+    def _prefix_revision(db, g, card, critique, evidence):
+        full_id = evidence[0].id
+        return AgentRevisionOutput(
+            name=card.name,
+            problem_fit="Revised",
+            mechanism_summary="Revised",
+            device_relevance="Revised",
+            maturity=ApproachMaturityEnum.simulated,
+            key_assumptions=["a"],
+            hardware_requirements=["hw"],
+            unresolved_questions=["q"],
+            suggested_experiments=["e"],
+            reported_metrics=[],
+            risks_and_limitations=[],
+            cited_evidence_ids=[full_id[:8]],  # prefix only
+            revision_summary="Cited by prefix.",
+        )
+
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_prefix_revision):
+        result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
+
+    rev = result.revisions[0]
+    assert rev.skipped_reason is None
+    revised = approach_svc.get(db_session, rev.revised_approach_id)
+    linked_ids = {el.evidence_id for el in revised.evidence_links}
+    assert linked_ids  # prefix resolved to the full supplied id
+    assert all(len(x) > 8 for x in linked_ids)  # stored as full uuids, not prefixes
+
+
 def test_non_revise_verdict_is_skipped(db_session, monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
     goal = _create_goal(db_session)

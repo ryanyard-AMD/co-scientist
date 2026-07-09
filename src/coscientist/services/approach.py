@@ -866,6 +866,25 @@ def _run_revise_agent(
         )
 
 
+def _resolve_evidence_id(eid: str | None, valid_ids: set[str]) -> str | None:
+    """Map an agent-cited id to a supplied evidence id, or None if unresolvable.
+
+    The agent sometimes emits an 8+ char id *prefix* (e.g. '4fc8a9ec') instead of
+    the full uuid — especially on cards whose prose is saturated with short-form
+    references. Resolve such a prefix when exactly one supplied id starts with it;
+    uuid prefixes of 8 hex chars make collisions negligible at these corpus sizes.
+    """
+    if not eid:
+        return None
+    if eid in valid_ids:
+        return eid
+    if len(eid) >= 8:
+        matches = [v for v in valid_ids if v.startswith(eid)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 def _build_revised_card(
     source: ApproachCard,
     output: AgentRevisionOutput,
@@ -876,23 +895,28 @@ def _build_revised_card(
 ) -> ApproachCard:
     """Assemble a new ApproachCard from a revision output, keeping evidence
     grounding: only cited ids that were supplied survive into links/sources."""
-    cited = [eid for eid in output.cited_evidence_ids if eid in valid_ids]
+    cited: list[str] = []
+    for eid in output.cited_evidence_ids:
+        rid = _resolve_evidence_id(eid, valid_ids)
+        if rid and rid not in cited:
+            cited.append(rid)
     fallback = cited[0] if cited else None
 
     evidence_links: list[dict] = []
 
     def _link(field: str, eid: str | None) -> None:
-        if eid and eid in valid_ids:
+        rid = _resolve_evidence_id(eid, valid_ids)
+        if rid:
             evidence_links.append({
-                "evidence_id": eid,
+                "evidence_id": rid,
                 "evidence_type": "direct",
                 "claim_field": field,
-                "confidence": conf_by_id.get(eid),
+                "confidence": conf_by_id.get(rid),
             })
 
     metrics: list[dict] = []
     for m in output.reported_metrics:
-        src = m.source_evidence_id if m.source_evidence_id in valid_ids else fallback
+        src = _resolve_evidence_id(m.source_evidence_id, valid_ids) or fallback
         metrics.append({
             "metric_name": m.metric_name,
             "value": m.value,
@@ -905,7 +929,7 @@ def _build_revised_card(
 
     risks: list[dict] = []
     for r in output.risks_and_limitations:
-        eid = r.evidence_id if r.evidence_id in valid_ids else fallback
+        eid = _resolve_evidence_id(r.evidence_id, valid_ids) or fallback
         risks.append({
             "description": r.description,
             "failure_mode": r.failure_mode,
