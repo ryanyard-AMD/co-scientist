@@ -722,19 +722,27 @@ def approach_revise(
         table.add_column("Applied", justify="center")
         table.add_column("New card", no_wrap=True)
         table.add_column("Summary")
+        skipped = 0
         for r in result.revisions:
             mat = r.maturity_before
             if r.maturity_after != r.maturity_before:
                 mat = f"{r.maturity_before}→{r.maturity_after}"
+            if r.skipped_reason:
+                skipped += 1
+                new_card = f"[red]skipped[/red]"
+                summary = f"[red]{r.skipped_reason}[/red]"
+            else:
+                new_card = (r.revised_approach_id[:8] + "…") if r.revised_approach_id else "(dry run)"
+                summary = (r.revision_summary[:80] + "…") if len(r.revision_summary) > 80 else r.revision_summary
             table.add_row(
                 r.method_family,
                 mat,
                 "✓" if r.applied else "-",
-                (r.revised_approach_id[:8] + "…") if r.revised_approach_id else "(dry run)",
-                (r.revision_summary[:80] + "…") if len(r.revision_summary) > 80 else r.revision_summary,
+                new_card,
+                summary,
             )
         console.print(table)
-        console.print(f"  revised: {result.revised_count}, applied: {result.applied_count}")
+        console.print(f"  revised: {result.revised_count}, applied: {result.applied_count}, skipped: {skipped}")
         if not apply:
             console.print("[dim]  Re-run with --apply to supersede source cards with these revisions.[/dim]")
     finally:

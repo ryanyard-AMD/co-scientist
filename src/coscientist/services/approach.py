@@ -755,8 +755,11 @@ def _run_revise_agent(
         "modes and add the device-adaptation risks (attach an evidence_id where a risk is grounded "
         "in a cited chunk). Use device_relevance for the narrative, the structured lists for the "
         "itemised content. Record the revision by calling the record_revision tool. Cite ONLY "
-        "evidence_id values provided in the chunks; never invent ids. Preserve the card's "
-        "method_family scope; keep the name unless it misdescribes the method."
+        "evidence_id values provided in the chunks; never invent ids. Populate cited_evidence_ids "
+        "with EVERY evidence_id your revised claims rely on — this list is the card's grounding "
+        "record, so a revision that references ids only inline in prose but leaves "
+        "cited_evidence_ids empty will be rejected. Preserve the card's method_family scope; keep "
+        "the name unless it misdescribes the method."
     )
 
     dc = goal.device_constraints
@@ -987,6 +990,25 @@ def revise_approaches(
             revise_run_id=revise_run_id,
             now=now,
         )
+
+        # A revision that grounds nothing (empty cited_evidence_ids, or all cited
+        # ids invalid) yields a card the critic can never verify — it is guaranteed
+        # to come back 'revise'. Skip it: leave the source 'generated' so a re-run
+        # retries, rather than superseding a good card with a citation-less one.
+        if not json.loads(new_card.evidence_links):
+            revisions.append(ApproachRevisionResponse(
+                source_approach_id=card.id,
+                source_status=card.status,
+                method_family=card.method_family,
+                revised_approach_id=None,
+                revision_summary=output.revision_summary,
+                maturity_before=card_response.maturity.value,
+                maturity_after=output.maturity.value,
+                applied=False,
+                revised_card=None,
+                skipped_reason="revision produced no valid evidence citations",
+            ))
+            continue
 
         applied = False
         revised_id: str | None = None

@@ -175,6 +175,49 @@ def test_apply_strips_invented_citations(db_session, monkeypatch):
     assert linked_ids  # at least the real citation survived
 
 
+def _fake_revision_no_citations():
+    # Cites only invalid ids: every citation is stripped, so the built card ends
+    # up with zero evidence_links.
+    def _inner(db, goal, card, critique, evidence):
+        return AgentRevisionOutput(
+            name=card.name,
+            problem_fit="Revised prose citing ids only inline (bad)",
+            mechanism_summary="Revised mechanism",
+            device_relevance="Maps onto the PAL",
+            maturity=ApproachMaturityEnum.simulated,
+            key_assumptions=["a"],
+            hardware_requirements=["hw"],
+            unresolved_questions=["q"],
+            suggested_experiments=["e"],
+            reported_metrics=[],
+            risks_and_limitations=[],
+            cited_evidence_ids=["invented-only"],
+            revision_summary="Softened claims but returned no valid citations.",
+        )
+    return _inner
+
+
+def test_apply_skips_revision_with_no_valid_citations(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    card = _generate_card(db_session, goal)
+    _critique(db_session, goal)
+    before = _card_count(db_session, goal.id)
+
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_fake_revision_no_citations()):
+        result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
+
+    rev = result.revisions[0]
+    assert rev.skipped_reason is not None
+    assert rev.applied is False
+    assert rev.revised_approach_id is None
+    assert rev.revised_card is None
+    assert result.applied_count == 0
+    # Nothing persisted; the source stays generated so a re-run can retry it.
+    assert _card_count(db_session, goal.id) == before
+    assert approach_svc.get(db_session, card.id).status == ApproachStatusEnum.generated
+
+
 def test_non_revise_verdict_is_skipped(db_session, monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
     goal = _create_goal(db_session)

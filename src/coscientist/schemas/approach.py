@@ -205,6 +205,7 @@ class ApproachRevisionResponse(BaseModel):
     maturity_after: str
     applied: bool
     revised_card: ApproachCardResponse | None = None
+    skipped_reason: str | None = None
 
 
 class ReviseRunResponse(BaseModel):
