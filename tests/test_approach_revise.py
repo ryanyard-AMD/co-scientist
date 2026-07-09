@@ -215,12 +215,17 @@ def test_str_list_fields_coerce_dict_items():
         maturity="simulated",
         key_assumptions=[
             {"type": "string", "value": "assumption one"},
-            "assumption two",
+            {"item": "assumption two"},
+            "assumption three",
         ],
         hardware_requirements=[{"type": "string", "value": "mic array"}],
-        cited_evidence_ids=[{"type": "string", "value": "abc"}, "def"],
+        cited_evidence_ids=[{"item": "abc"}, "def"],
         revision_summary="ok",
     )
-    assert out.key_assumptions == ["assumption one", "assumption two"]
+    assert out.key_assumptions == [
+        "assumption one",
+        "assumption two",
+        "assumption three",
+    ]
     assert out.hardware_requirements == ["mic array"]
     assert out.cited_evidence_ids == ["abc", "def"]

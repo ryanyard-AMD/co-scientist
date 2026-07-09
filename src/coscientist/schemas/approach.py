@@ -110,6 +110,24 @@ class ApproachReviseRequest(BaseModel):
     method_families: list[str] | None = None
 
 
+def _unwrap_str(item: object) -> object:
+    """Best-effort unwrap of a model-emitted string that came back as a dict.
+
+    Handles shapes like {"type": "string", "value": "x"} and {"item": "x"}.
+    Prefers common content keys; falls back to the sole string value.
+    """
+    if not isinstance(item, dict):
+        return item
+    for key in ("value", "item", "text", "content", "string"):
+        val = item.get(key)
+        if isinstance(val, str):
+            return val
+    str_vals = [v for v in item.values() if isinstance(v, str)]
+    if len(str_vals) == 1:
+        return str_vals[0]
+    return item
+
+
 class AgentRevisionOutput(BaseModel):
     """Schema the revise agent must return for one approach card."""
 
@@ -137,16 +155,14 @@ class AgentRevisionOutput(BaseModel):
     )
     @classmethod
     def _coerce_str_items(cls, v: object) -> object:
-        # The model occasionally wraps items as {"type": "string", "value": "..."}
-        # instead of emitting plain strings. Unwrap those to their value.
+        # The model occasionally wraps items in a single-key dict, e.g.
+        # {"type": "string", "value": "..."} or {"item": "..."}, instead of
+        # emitting plain strings. Unwrap those to the contained string.
         if not isinstance(v, list):
             return v
         out: list[object] = []
         for item in v:
-            if isinstance(item, dict) and "value" in item:
-                out.append(item["value"])
-            else:
-                out.append(item)
+            out.append(_unwrap_str(item))
         return out
 
 
