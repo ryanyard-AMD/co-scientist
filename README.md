@@ -106,7 +106,7 @@ The critic marks fixable cards `revise` but leaves them `generated`; `revise` re
 
 - **Supersede with provenance** — a revision creates a *new* card (`revised_from_id` → source) and marks the source `superseded`; the audit trail is preserved
 - Same grounding guard: invented `cited_evidence_ids` are stripped before the revised card's evidence links are built
-- **Citation-less revisions are skipped** — if a revision cites nothing valid (empty `cited_evidence_ids`, or all ids invalid) the resulting card would have no evidence links and the critic could never verify it; such a revision is skipped (reported with `skipped_reason`) and its source is left `generated` so a re-run retries it, rather than superseding a good card with an ungrounded one
+- **Citation-less revisions are retried, then skipped** — a revision that cites nothing valid (empty `cited_evidence_ids`, or all ids invalid) would have no evidence links and the critic could never verify it. Because this failure is stochastic, the agent is retried up to `approach_revise_max_attempts` (default 3); if every attempt comes back citation-less the revision is skipped (reported with `skipped_reason`) and its source is left `generated` so a later run retries it, rather than superseding a good card with an ungrounded one
 - **Dry run by default** — proposes revisions without persisting; opt-in `--apply` writes the new cards and supersedes their sources
 - `POST /goals/{id}/approaches/revise` (`{apply, method_families?}`); each agent call logged in the governance audit trail
 

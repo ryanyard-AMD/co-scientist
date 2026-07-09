@@ -980,22 +980,30 @@ def revise_approaches(
         valid_ids = {e.id for e in evidence}
         conf_by_id = {e.id: e.confidence for e in evidence}
 
-        output = _run_revise_agent(db, goal, card_response, critique, evidence)
-
-        new_card = _build_revised_card(
-            source=card,
-            output=output,
-            valid_ids=valid_ids,
-            conf_by_id=conf_by_id,
-            revise_run_id=revise_run_id,
-            now=now,
-        )
+        # The agent stochastically returns a citation-less draft (empty or fully
+        # invalid cited_evidence_ids). Retry a few times before giving up rather
+        # than skipping on a single unlucky draw.
+        output = None
+        new_card = None
+        for _ in range(max(1, settings.approach_revise_max_attempts)):
+            output = _run_revise_agent(db, goal, card_response, critique, evidence)
+            candidate = _build_revised_card(
+                source=card,
+                output=output,
+                valid_ids=valid_ids,
+                conf_by_id=conf_by_id,
+                revise_run_id=revise_run_id,
+                now=now,
+            )
+            if json.loads(candidate.evidence_links):
+                new_card = candidate
+                break
 
         # A revision that grounds nothing (empty cited_evidence_ids, or all cited
         # ids invalid) yields a card the critic can never verify — it is guaranteed
         # to come back 'revise'. Skip it: leave the source 'generated' so a re-run
         # retries, rather than superseding a good card with a citation-less one.
-        if not json.loads(new_card.evidence_links):
+        if new_card is None:
             revisions.append(ApproachRevisionResponse(
                 source_approach_id=card.id,
                 source_status=card.status,

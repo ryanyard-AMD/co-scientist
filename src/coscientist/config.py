@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     taxonomy_cluster_k: int = 8
     taxonomy_cluster_timeout: float = 20.0
     approach_min_evidence: int = 2
+    # The revise agent occasionally returns a citation-less draft (empty or fully
+    # invalid cited_evidence_ids), which the skip guard would drop. Because this is
+    # stochastic, retry the agent up to this many times before skipping.
+    approach_revise_max_attempts: int = 3
     hypothesis_max_per_run: int = 20
     hypothesis_complementary_high: float = 0.6
     hypothesis_complementary_low: float = 0.4

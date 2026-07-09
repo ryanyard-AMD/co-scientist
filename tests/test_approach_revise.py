@@ -199,14 +199,16 @@ def _fake_revision_no_citations():
 
 def test_apply_skips_revision_with_no_valid_citations(db_session, monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "approach_revise_max_attempts", 2)
     goal = _create_goal(db_session)
     card = _generate_card(db_session, goal)
     _critique(db_session, goal)
     before = _card_count(db_session, goal.id)
 
-    with patch.object(approach_svc, "_run_revise_agent", side_effect=_fake_revision_no_citations()):
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_fake_revision_no_citations()) as agent:
         result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
 
+    assert agent.call_count == 2  # retried up to the max before skipping
     rev = result.revisions[0]
     assert rev.skipped_reason is not None
     assert rev.applied is False
@@ -216,6 +218,33 @@ def test_apply_skips_revision_with_no_valid_citations(db_session, monkeypatch):
     # Nothing persisted; the source stays generated so a re-run can retry it.
     assert _card_count(db_session, goal.id) == before
     assert approach_svc.get(db_session, card.id).status == ApproachStatusEnum.generated
+
+
+def test_apply_retries_then_succeeds_on_valid_citations(db_session, monkeypatch):
+    # First attempt yields no valid citations; retry produces a grounded card.
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "approach_revise_max_attempts", 3)
+    goal = _create_goal(db_session)
+    card = _generate_card(db_session, goal)
+    _critique(db_session, goal)
+
+    bad = _fake_revision_no_citations()
+    good = _fake_revision()
+
+    def _side_effect(db, g, c, crit, ev):
+        if agent.call_count == 1:
+            return bad(db, g, c, crit, ev)
+        return good(db, g, c, crit, ev)
+
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_side_effect) as agent:
+        result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
+
+    assert agent.call_count == 2
+    rev = result.revisions[0]
+    assert rev.skipped_reason is None
+    assert rev.applied is True
+    assert rev.revised_approach_id is not None
+    assert approach_svc.get(db_session, card.id).status == ApproachStatusEnum.superseded
 
 
 def test_non_revise_verdict_is_skipped(db_session, monkeypatch):
