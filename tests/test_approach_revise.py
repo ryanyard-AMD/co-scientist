@@ -10,6 +10,7 @@ from sqlalchemy import select
 from conftest import GOAL_PAYLOAD
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
+from coscientist.models.critic import ApproachCritique
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.schemas.approach import (
     AgentRevisionOutput,
@@ -268,7 +269,9 @@ def test_apply_resolves_prefix_citations(db_session, monkeypatch):
             unresolved_questions=["q"],
             suggested_experiments=["e"],
             reported_metrics=[],
-            risks_and_limitations=[],
+            risks_and_limitations=[
+                RiskItem(description="r", failure_mode="fm", evidence_id=full_id),
+            ],
             cited_evidence_ids=[full_id[:8]],  # prefix only
             revision_summary="Cited by prefix.",
         )
@@ -282,6 +285,139 @@ def test_apply_resolves_prefix_citations(db_session, monkeypatch):
     linked_ids = {el.evidence_id for el in revised.evidence_links}
     assert linked_ids  # prefix resolved to the full supplied id
     assert all(len(x) > 8 for x in linked_ids)  # stored as full uuids, not prefixes
+
+
+def _fake_revision_missing_field(*, drop):
+    # Emits valid citations but empties one structured field. Evidence-dense
+    # cards make the model drop trailing fields (esp. unresolved_questions);
+    # _apply_field_fallbacks should backfill from the source card / critique
+    # rather than skip the otherwise-good revision.
+    def _inner(db, goal, card, critique, evidence):
+        real_id = evidence[0].id if evidence else "none"
+        risks = [] if drop == "risks" else [
+            RiskItem(description="d", failure_mode="fm", evidence_id=real_id),
+        ]
+        questions = [] if drop == "questions" else ["an open question"]
+        return AgentRevisionOutput(
+            name=card.name,
+            problem_fit="Revised",
+            mechanism_summary="Revised",
+            device_relevance="Maps onto the PAL",
+            maturity=ApproachMaturityEnum.simulated,
+            key_assumptions=["a"],
+            hardware_requirements=["hw"],
+            unresolved_questions=questions,
+            suggested_experiments=["e"],
+            reported_metrics=[],
+            risks_and_limitations=risks,
+            cited_evidence_ids=[real_id],
+            revision_summary="Valid citations but emptied a structured field.",
+        )
+    return _inner
+
+
+def test_apply_backfills_empty_unresolved_questions(db_session, monkeypatch):
+    # The agent drops unresolved_questions; the fallback backfills it (from the
+    # source card or the critique's gaps) so the revision applies instead of
+    # being skipped on a field the model won't reliably produce.
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    _generate_card(db_session, goal)
+    _critique(db_session, goal)
+
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_fake_revision_missing_field(drop="questions")):
+        result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
+
+    rev = result.revisions[0]
+    assert rev.skipped_reason is None
+    assert rev.applied is True
+    revised = approach_svc.get(db_session, rev.revised_approach_id)
+    assert revised.unresolved_questions  # backfilled, not empty
+
+
+def test_apply_backfills_empty_risks(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    card = _generate_card(db_session, goal)
+    # Give the source card risks so the fallback has something to carry over.
+    src = db_session.get(ApproachCard, card.id)
+    src.risks_and_limitations = json.dumps([{"description": "source risk", "failure_mode": "fm"}])
+    db_session.commit()
+    _critique(db_session, goal)
+
+    with patch.object(approach_svc, "_run_revise_agent", side_effect=_fake_revision_missing_field(drop="risks")):
+        result = approach_svc.revise_approaches(db_session, goal.id, ApproachReviseRequest(apply=True))
+
+    rev = result.revisions[0]
+    assert rev.skipped_reason is None
+    assert rev.applied is True
+    revised = approach_svc.get(db_session, rev.revised_approach_id)
+    assert revised.risks_and_limitations  # carried over from source
+
+
+def test_field_fallback_prefers_source_then_critique():
+    src = ApproachCard(
+        unresolved_questions=json.dumps(["source question"]),
+        risks_and_limitations=json.dumps([{"description": "source risk"}]),
+    )
+    cand = ApproachCard(
+        unresolved_questions=json.dumps([]),
+        risks_and_limitations=json.dumps([]),
+    )
+    crit = ApproachCritique(
+        device_fit_issues=json.dumps(["device gap"]),
+        maturity_issues=json.dumps(["maturity gap"]),
+    )
+    approach_svc._apply_field_fallbacks(cand, src, crit)
+    assert json.loads(cand.unresolved_questions) == ["source question"]  # source wins
+    assert json.loads(cand.risks_and_limitations) == [{"description": "source risk"}]
+
+
+def test_field_fallback_uses_critique_gaps_when_source_empty():
+    src = ApproachCard(
+        unresolved_questions=json.dumps([]),
+        risks_and_limitations=json.dumps([{"description": "r"}]),
+    )
+    cand = ApproachCard(
+        unresolved_questions=json.dumps([]),
+        risks_and_limitations=json.dumps([{"description": "x"}]),
+    )
+    crit = ApproachCritique(
+        device_fit_issues=json.dumps(["device gap A", "device gap B"]),
+        maturity_issues=json.dumps(["maturity gap"]),
+    )
+    approach_svc._apply_field_fallbacks(cand, src, crit)
+    # device-fit gaps preferred over maturity gaps
+    assert json.loads(cand.unresolved_questions) == ["device gap A", "device gap B"]
+
+
+def test_field_fallback_noop_when_populated():
+    src = ApproachCard(
+        unresolved_questions=json.dumps(["source"]),
+        risks_and_limitations=json.dumps([{"description": "source"}]),
+    )
+    cand = ApproachCard(
+        unresolved_questions=json.dumps(["original question"]),
+        risks_and_limitations=json.dumps([{"description": "original"}]),
+    )
+    crit = ApproachCritique(device_fit_issues=json.dumps(["gap"]), maturity_issues=json.dumps([]))
+    approach_svc._apply_field_fallbacks(cand, src, crit)
+    assert json.loads(cand.unresolved_questions) == ["original question"]
+    assert json.loads(cand.risks_and_limitations) == [{"description": "original"}]
+
+
+def test_field_fallback_leaves_empty_when_nothing_to_fill():
+    # Agent empty, source empty, critique empty → guard still catches it.
+    src = ApproachCard(unresolved_questions=json.dumps([]), risks_and_limitations=json.dumps([]))
+    cand = ApproachCard(
+        evidence_links=json.dumps([{"evidence_id": "e1"}]),
+        unresolved_questions=json.dumps([]),
+        risks_and_limitations=json.dumps([]),
+    )
+    crit = ApproachCritique(device_fit_issues=json.dumps([]), maturity_issues=json.dumps([]))
+    approach_svc._apply_field_fallbacks(cand, src, crit)
+    assert json.loads(cand.unresolved_questions) == []
+    assert approach_svc._revision_reject_reason(cand) == "revision emptied risks_and_limitations"
 
 
 def test_non_revise_verdict_is_skipped(db_session, monkeypatch):

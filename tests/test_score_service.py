@@ -299,6 +299,19 @@ def test_risk_penalty_capped_at_02(db_session):
     assert result.risk_penalty == 0.2
 
 
+def test_risk_penalty_maxed_when_no_risks_disclosed(db_session):
+    goal = _create_goal(db_session)
+    card = approach_svc.create(db_session, goal.id, ApproachCardCreate(
+        name="Undisclosed",
+        method_family="beamforming",
+        risks_and_limitations=[],
+    ))
+    approach_svc.transition(db_session, card.id, ApproachStatusEnum.reviewed)
+
+    result = svc.score_approach(db_session, card.id)
+    assert result.risk_penalty == 0.2
+
+
 def test_score_approach_not_found(db_session):
     with pytest.raises(Exception) as exc_info:
         svc.score_approach(db_session, "nonexistent")

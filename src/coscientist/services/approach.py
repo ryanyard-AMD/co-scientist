@@ -753,7 +753,11 @@ def _run_revise_agent(
         "spherical mic array as the verification/ATF sensor, DSP/edge compute), not just prose in "
         "device_relevance; risks_and_limitations must retain the source card's still-valid failure "
         "modes and add the device-adaptation risks (attach an evidence_id where a risk is grounded "
-        "in a cited chunk). reported_metrics must contain ONLY figures actually measured or "
+        "in a cited chunk). unresolved_questions must NEVER be empty: the critic's maturity and "
+        "device-fit gaps that this revision cannot close with the cited evidence (e.g. no "
+        "PAL-specific measured data, PAL nonlinear-demodulation effects on zone control, latency "
+        "budget feasibility) are exactly the open questions to record here — do not silently drop "
+        "them. reported_metrics must contain ONLY figures actually measured or "
         "simulated on the target device's acoustic architecture; a number obtained on a different "
         "rig (e.g. a conventional multi-loudspeaker array, an EDL array, or a spherical LOUDSPEAKER "
         "array) does NOT belong in reported_metrics — move it into device_relevance prose clearly "
@@ -885,6 +889,54 @@ def _resolve_evidence_id(eid: str | None, valid_ids: set[str]) -> str | None:
     return None
 
 
+def _apply_field_fallbacks(
+    candidate: ApproachCard,
+    source: ApproachCard,
+    critique: ApproachCritique,
+) -> None:
+    """Backfill structured fields the agent left empty, from grounded sources.
+
+    Evidence-dense cards push the model to drop trailing structured fields (esp.
+    unresolved_questions) under output-token pressure — no amount of retrying
+    coaxes them back. Rather than skip an otherwise-good revision, backfill:
+    reuse the source card's content where present, else the critic's own
+    enumerated device-fit / maturity gaps. Those gaps are open questions, not
+    evidence claims, so they need no citation and are already grounded in the
+    critique the revision is answering.
+    """
+    if not json.loads(candidate.unresolved_questions or "[]"):
+        src_uq = json.loads(source.unresolved_questions or "[]")
+        if src_uq:
+            candidate.unresolved_questions = json.dumps(src_uq)
+        else:
+            gaps = json.loads(critique.device_fit_issues or "[]") or json.loads(
+                critique.maturity_issues or "[]"
+            )
+            if gaps:
+                candidate.unresolved_questions = json.dumps(gaps)
+    if not json.loads(candidate.risks_and_limitations or "[]"):
+        src_risks = json.loads(source.risks_and_limitations or "[]")
+        if src_risks:
+            candidate.risks_and_limitations = json.dumps(src_risks)
+
+
+def _revision_reject_reason(candidate: ApproachCard) -> str | None:
+    """Return why a revised card is unusable, or None if it passes.
+
+    A revise-verdict card always carries the critic's grounding, device-fit, and
+    maturity objections, so a revision that empties these structured fields is
+    guaranteed to come back 'revise' — reject it so the retry loop redraws rather
+    than superseding a good card with a degraded one.
+    """
+    if not json.loads(candidate.evidence_links or "[]"):
+        return "revision produced no valid evidence citations"
+    if not json.loads(candidate.risks_and_limitations or "[]"):
+        return "revision emptied risks_and_limitations"
+    if not json.loads(candidate.unresolved_questions or "[]"):
+        return "revision emptied unresolved_questions"
+    return None
+
+
 def _build_revised_card(
     source: ApproachCard,
     output: AgentRevisionOutput,
@@ -1013,11 +1065,14 @@ def revise_approaches(
         valid_ids = {e.id for e in evidence}
         conf_by_id = {e.id: e.confidence for e in evidence}
 
-        # The agent stochastically returns a citation-less draft (empty or fully
-        # invalid cited_evidence_ids). Retry a few times before giving up rather
-        # than skipping on a single unlucky draw.
+        # The agent stochastically returns a draft that is unusable: citation-less
+        # (empty or fully invalid cited_evidence_ids), or with the structured
+        # fields emptied. Each is guaranteed to come back 'revise' from the critic,
+        # so retry a few times before giving up rather than superseding a good card
+        # with a degraded one.
         output = None
         new_card = None
+        reject_reason = "revision produced no valid evidence citations"
         for _ in range(max(1, settings.approach_revise_max_attempts)):
             output = _run_revise_agent(db, goal, card_response, critique, evidence)
             candidate = _build_revised_card(
@@ -1028,14 +1083,14 @@ def revise_approaches(
                 revise_run_id=revise_run_id,
                 now=now,
             )
-            if json.loads(candidate.evidence_links):
+            _apply_field_fallbacks(candidate, card, critique)
+            reject_reason = _revision_reject_reason(candidate)
+            if reject_reason is None:
                 new_card = candidate
                 break
 
-        # A revision that grounds nothing (empty cited_evidence_ids, or all cited
-        # ids invalid) yields a card the critic can never verify — it is guaranteed
-        # to come back 'revise'. Skip it: leave the source 'generated' so a re-run
-        # retries, rather than superseding a good card with a citation-less one.
+        # Skip an unusable revision: leave the source 'generated' so a re-run
+        # retries, rather than superseding a good card with a degraded one.
         if new_card is None:
             revisions.append(ApproachRevisionResponse(
                 source_approach_id=card.id,
@@ -1047,7 +1102,7 @@ def revise_approaches(
                 maturity_after=output.maturity.value,
                 applied=False,
                 revised_card=None,
-                skipped_reason="revision produced no valid evidence citations",
+                skipped_reason=reject_reason,
             ))
             continue
 

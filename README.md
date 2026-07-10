@@ -107,6 +107,8 @@ The critic marks fixable cards `revise` but leaves them `generated`; `revise` re
 - **Supersede with provenance** — a revision creates a *new* card (`revised_from_id` → source) and marks the source `superseded`; the audit trail is preserved
 - Same grounding guard: invented `cited_evidence_ids` are stripped before the revised card's evidence links are built. Citations emitted as an 8+ char id *prefix* (a common model quirk on evidence-dense cards) are resolved to the full supplied id when the prefix is unambiguous, rather than being discarded
 - **Citation-less revisions are retried, then skipped** — a revision that cites nothing valid (empty `cited_evidence_ids`, or all ids invalid) would have no evidence links and the critic could never verify it. Because this failure is stochastic, the agent is retried up to `approach_revise_max_attempts` (default 3); if every attempt comes back citation-less the revision is skipped (reported with `skipped_reason`) and its source is left `generated` so a later run retries it, rather than superseding a good card with an ungrounded one
+- **Structured fields are never silently emptied** — on evidence-dense cards the agent can drop `unresolved_questions` or `risks_and_limitations` under output-token pressure. Before a revision is accepted these fields are deterministically backfilled: `unresolved_questions` falls back to the source card's questions, then to the critic's enumerated `device_fit_issues`/`maturity_issues`; `risks_and_limitations` falls back to the source card's risks. A revision that still has no citations, risks, or unresolved questions after backfill is rejected and retried (`_revision_reject_reason`)
+- `--method`/`-m` is repeatable, so several families can be revised in one invocation (`cs approach revise <GOAL_ID> -m pressure_matching -m beamforming`)
 - **Dry run by default** — proposes revisions without persisting; opt-in `--apply` writes the new cards and supersedes their sources
 - `POST /goals/{id}/approaches/revise` (`{apply, method_families?}`); each agent call logged in the governance audit trail
 
@@ -116,6 +118,7 @@ Transparent, evidence-linked scoring system for evaluating and comparing approac
 
 - **RubricScore** with 10 dimensions: evidence_strength, reproducibility, acoustic_performance, robustness, realtime_feasibility, hardware_feasibility, calibration_burden, composability, measurement_clarity, device_relevance
 - Formula: `final_score = Σ(weight_i × score_i) - risk_penalty`
+- **Risk penalty**: `0.05` per disclosed `high`-severity risk, capped at `0.2`. A card that discloses **no risks at all** is treated as *unassessed* (not risk-free) and takes the full `0.2` cap — so omitting risks can never beat honest disclosure
 - 5 weight profiles: default, fastest_prototype, scientific_novelty, robustness, product_feasibility
 - Each dimension score includes rationale, confidence, evidence links, and low-confidence flag
 - Algorithmic scoring from approach card fields and evidence metadata
@@ -416,6 +419,7 @@ the source. Dry-run by default; `--apply` persists:
 ```bash
 cs approach revise <GOAL_ID>             # dry run: propose revisions, persist nothing
 cs approach revise <GOAL_ID> --apply     # supersede sources with revised cards (-y to skip prompt)
+cs approach revise <GOAL_ID> -m pressure_matching -m beamforming  # limit to families (repeatable)
 cs critic run <GOAL_ID>                  # re-critique the revised cards, aiming for advance
 ```
 

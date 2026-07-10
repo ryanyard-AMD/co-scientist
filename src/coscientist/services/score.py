@@ -388,6 +388,10 @@ _DIMENSION_SCORERS = {
 
 
 def _compute_risk_penalty(approach: ApproachCardResponse) -> float:
+    # A card that discloses no risks at all is unassessed, not risk-free —
+    # penalize it at the cap so omission never beats honest disclosure.
+    if not approach.risks_and_limitations:
+        return 0.2
     high_risks = sum(
         1 for r in approach.risks_and_limitations
         if r.severity and r.severity.lower() == "high"

@@ -688,7 +688,9 @@ def approach_revise(
     goal_id: str = typer.Argument(...),
     apply: bool = typer.Option(False, "--apply", help="Persist revisions (supersede source cards)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip --apply confirmation"),
-    method: Optional[str] = typer.Option(None, "--method", "-m", help="Filter by method family"),
+    method: Optional[list[str]] = typer.Option(
+        None, "--method", "-m", help="Filter by method family (repeatable)"
+    ),
     as_json: bool = typer.Option(False, "--json", help="Output raw JSON"),
 ):
     """Revise approach cards whose latest critique verdict is 'revise'.
@@ -706,7 +708,7 @@ def approach_revise(
     try:
         request = ApproachReviseRequest(
             apply=apply,
-            method_families=[method] if method else None,
+            method_families=list(method) if method else None,
         )
         result = approach_svc.revise_approaches(db, goal_id, request)
         if as_json:
