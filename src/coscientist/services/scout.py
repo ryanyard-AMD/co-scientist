@@ -500,6 +500,14 @@ def _synthesize_groups(
     now = datetime.now(timezone.utc)
     rows: list[EvidenceSynthesis] = []
 
+    # Idempotent (re)synthesis: drop any syntheses already stored for this run so
+    # a resumed or repeated call replaces prior rows instead of duplicating them.
+    for stale in db.scalars(
+        select(EvidenceSynthesis).where(EvidenceSynthesis.scout_run_id == scout_run_id)
+    ).all():
+        db.delete(stale)
+    db.flush()
+
     for group in groups.groups:
         group_records = [
             record_by_id[eid]
@@ -537,9 +545,12 @@ def _synthesize_groups(
             created_at=now,
         )
         db.add(row)
+        # Commit per family so an interruption keeps the families already done
+        # instead of discarding the whole run's synthesis work. `cs scout
+        # synthesize` can then resume the remaining families.
+        db.commit()
         rows.append(row)
 
-    db.commit()
     return rows
 
 
@@ -609,6 +620,20 @@ def _ingest_claims(
                 created_at=now,
             ))
     return records
+
+
+def _clear_prior_scout(db: Session, goal_id: str) -> None:
+    """Delete a goal's existing scout evidence + syntheses so a fresh full run
+    replaces the prior snapshot instead of accumulating orphaned records."""
+    for syn in db.scalars(
+        select(EvidenceSynthesis).where(EvidenceSynthesis.workspace_id == goal_id)
+    ).all():
+        db.delete(syn)
+    for rec in db.scalars(
+        select(EvidenceRecord).where(EvidenceRecord.workspace_id == goal_id)
+    ).all():
+        db.delete(rec)
+    db.flush()
 
 
 def run_scout(
@@ -817,6 +842,11 @@ def run_scout(
         related_map=related_map if use_db_terms else None,
     )
 
+    # A full run is a fresh snapshot: drop the goal's prior evidence so repeated
+    # or previously-interrupted runs don't accumulate orphaned records. A
+    # method-filtered run only touches its subset, so it appends instead.
+    if all_records and not request.method_families:
+        _clear_prior_scout(db, goal.workspace_id)
     for record in all_records:
         db.add(record)
     db.commit()
@@ -860,6 +890,54 @@ def run_scout(
         summary=summary,
         syntheses=syntheses,
     )
+
+
+def _latest_scout_run_id(db: Session, goal_id: str) -> str | None:
+    return db.scalar(
+        select(EvidenceRecord.scout_run_id)
+        .where(EvidenceRecord.workspace_id == goal_id)
+        .order_by(EvidenceRecord.created_at.desc())
+        .limit(1)
+    )
+
+
+def synthesize_run(
+    db: Session,
+    goal_id: str,
+    *,
+    scout_run_id: str | None = None,
+) -> list[EvidenceSynthesisResponse]:
+    """(Re)synthesize already-ingested evidence for a scout run — no retrieval.
+
+    Resumes a run whose synthesis was interrupted (or replaces a prior one),
+    working from the evidence already committed by `run_scout`. Defaults to the
+    goal's most recent scout run.
+    """
+    goal_svc.get(db, goal_id)
+    if not settings.anthropic_api_key:
+        raise HTTPException(status_code=422, detail="ANTHROPIC_API_KEY not configured")
+
+    run_id = scout_run_id or _latest_scout_run_id(db, goal_id)
+    if run_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No scout evidence for goal; run `cs scout run` first",
+        )
+
+    records = list(db.scalars(
+        select(EvidenceRecord).where(
+            EvidenceRecord.workspace_id == goal_id,
+            EvidenceRecord.scout_run_id == run_id,
+        )
+    ).all())
+    if not records:
+        raise HTTPException(
+            status_code=404, detail=f"No evidence for scout run {run_id!r}"
+        )
+
+    groups = _compute_groups_from_records(records, "method_family")
+    rows = _synthesize_groups(db, goal_id, run_id, records, groups)
+    return [_synthesis_to_response(r) for r in rows]
 
 
 def _strength_rank(s: str) -> int:

@@ -379,10 +379,19 @@ cs goal activate <GOAL_ID>
 ```bash
 cs scout run <GOAL_ID>
 cs scout run <GOAL_ID> --synthesize             # also run Claude synthesis per method family
+cs scout synthesize <GOAL_ID>                   # (re)synthesize already-ingested evidence, no re-retrieval
 cs scout summary <GOAL_ID>          # check evidence counts and sparsity warnings
 cs scout evidence <GOAL_ID> --group-by method   # review method families found
 cs scout synthesis <GOAL_ID>                    # read the per-family Claude syntheses
 ```
+
+A full `cs scout run` is a **snapshot**: it replaces the goal's prior evidence so
+repeated or interrupted runs don't accumulate orphaned records (a `--method`-filtered
+run appends to the current snapshot instead). Synthesis commits **per method family**,
+so if a run is interrupted the completed families are kept — resume the rest with
+`cs scout synthesize <GOAL_ID>` (defaults to the latest run; pass `--scout-run` to
+target a specific one), which re-runs synthesis over the already-ingested evidence
+without hitting retrieval again.
 
 ### 3. Generate and review approach cards
 
@@ -607,6 +616,7 @@ cs goal delete <GOAL_ID>
 ### Scout
 ```bash
 cs scout run <GOAL_ID> [--method METHOD] [--top-k N] [--synthesize]
+cs scout synthesize <GOAL_ID> [--scout-run RUN_ID]   # (re)synthesize ingested evidence; resumes an interrupted run
 cs scout evidence <GOAL_ID> [--group-by method|metric|hardware|failure_mode]
 cs scout summary <GOAL_ID>
 cs scout synthesis <GOAL_ID> [--method METHOD] [--scout-run RUN_ID]

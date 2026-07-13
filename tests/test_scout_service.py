@@ -364,3 +364,70 @@ def test_substantive_weighted_strength(db_session):
     assert acc_groups
     assert acc_groups[0].substantive_paper_count == 0
     assert acc_groups[0].evidence_strength == EvidenceStrengthEnum.none_
+
+
+# --- Resumable synthesis + fresh-run evidence replacement ---
+
+
+def test_synthesize_run_resumes_from_committed_evidence(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    # Evidence-only run (synthesis interrupted / never requested).
+    run = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    assert scout_svc.get_syntheses(db_session, goal.id) == []
+
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis):
+        rows = scout_svc.synthesize_run(db_session, goal.id)
+    assert len(rows) > 0
+    fetched = scout_svc.get_syntheses(db_session, goal.id, scout_run_id=run.scout_run_id)
+    assert len(fetched) == len(rows)
+
+
+def test_synthesize_run_is_idempotent(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis):
+        first = scout_svc.synthesize_run(db_session, goal.id)
+        second = scout_svc.synthesize_run(db_session, goal.id)
+    # Re-running replaces prior rows rather than duplicating them.
+    assert len(second) == len(first)
+    assert len(scout_svc.get_syntheses(db_session, goal.id)) == len(first)
+
+
+def test_synthesize_run_no_evidence_raises(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    with pytest.raises(HTTPException) as exc:
+        scout_svc.synthesize_run(db_session, goal.id)
+    assert exc.value.status_code == 404
+
+
+def test_full_rerun_replaces_prior_evidence(db_session):
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    first = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    second = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    # A fresh full run is a snapshot: only the latest run's evidence remains.
+    items, total = scout_svc.get_evidence(db_session, goal.id)
+    assert total == second.evidence_count
+    assert all(i.scout_run_id == second.scout_run_id for i in items)
+    assert first.scout_run_id != second.scout_run_id
+
+
+def test_method_filtered_run_appends(db_session):
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    _, before = scout_svc.get_evidence(db_session, goal.id)
+    scout_svc.run_scout(
+        db_session,
+        goal.id,
+        ScoutRunRequest(method_families=["acoustic_contrast_control"]),
+        retrieval_client=mock,
+    )
+    _, after = scout_svc.get_evidence(db_session, goal.id)
+    # A method-filtered run must not wipe the prior full snapshot.
+    assert after >= before

@@ -282,6 +282,24 @@ def scout_run(
         db.close()
 
 
+@scout_app.command("synthesize")
+def scout_synthesize(
+    goal_id: str = typer.Argument(...),
+    scout_run_id: Optional[str] = typer.Option(
+        None, "--scout-run", "-s", help="Scout run to synthesize (default: latest)"
+    ),
+):
+    """(Re)synthesize already-ingested evidence — resumes an interrupted run."""
+    db = _get_session()
+    try:
+        rows = scout_svc.synthesize_run(db, goal_id, scout_run_id=scout_run_id)
+        console.print(f"[green]Synthesized {len(rows)} method families[/green]")
+        for r in rows:
+            console.print(f"  - {r.method_family}")
+    finally:
+        db.close()
+
+
 @scout_app.command("evidence")
 def scout_evidence(
     goal_id: str = typer.Argument(...),
