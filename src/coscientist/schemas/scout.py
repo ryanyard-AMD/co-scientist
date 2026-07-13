@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class EvidenceStrengthEnum(str, Enum):
@@ -99,10 +99,53 @@ class ScoutSummaryStats(BaseModel):
     warnings: list[SparsityWarning]
 
 
+def _dict_to_str(d: dict) -> str:
+    """Flatten a dict that a lenient model emitted where a string was expected.
+
+    Prefers a `name: detail` join over common keys, else the first string
+    value, else a compact repr — so a stray object never crashes synthesis.
+    """
+    name = d.get("name") or d.get("title")
+    detail = (
+        d.get("description")
+        or d.get("detail")
+        or d.get("finding")
+        or d.get("text")
+        or d.get("value")
+    )
+    if name and detail and name != detail:
+        return f"{name}: {detail}"
+    for cand in (name, detail):
+        if isinstance(cand, str) and cand.strip():
+            return cand
+    for val in d.values():
+        if isinstance(val, str) and val.strip():
+            return val
+    return str(d)
+
+
 class ReportedMetric(BaseModel):
     name: str
     value: str
     evidence_ids: list[str] = Field(default_factory=list)
+
+
+class FailureMode(BaseModel):
+    """A failure mode with a coarse severity the synthesis agent assigns.
+
+    Severity feeds the Score-stage risk penalty, so it is graded at synthesis
+    time (the only point where an LLM reasons about the failure) rather than
+    left null for a later revise pass.
+    """
+
+    description: str
+    severity: str = "medium"
+
+    @field_validator("severity")
+    @classmethod
+    def _normalize_severity(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        return v if v in {"low", "medium", "high"} else "medium"
 
 
 class AgentSynthesisOutput(BaseModel):
@@ -112,9 +155,28 @@ class AgentSynthesisOutput(BaseModel):
     key_findings: list[str] = Field(default_factory=list)
     reported_metrics: list[ReportedMetric] = Field(default_factory=list)
     hardware_requirements: list[str] = Field(default_factory=list)
-    failure_modes: list[str] = Field(default_factory=list)
+    failure_modes: list[FailureMode] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     cited_evidence_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("failure_modes", mode="before")
+    @classmethod
+    def _coerce_failure_modes(cls, v):
+        # Tolerate a bare list of strings (older prompt shape / lenient models).
+        if isinstance(v, list):
+            return [{"description": x} if isinstance(x, str) else x for x in v]
+        return v
+
+    @field_validator(
+        "key_findings", "hardware_requirements", "open_questions", mode="before"
+    )
+    @classmethod
+    def _coerce_str_list(cls, v):
+        # Lenient models sometimes emit list-of-dict for these string fields
+        # (e.g. {"name": ..., "detail": ...}); flatten each item to a string.
+        if isinstance(v, list):
+            return [_dict_to_str(x) if isinstance(x, dict) else x for x in v]
+        return v
 
 
 class EvidenceSynthesisResponse(BaseModel):

@@ -71,7 +71,26 @@ _SYNTHESIS_TOOL = {
                 },
             },
             "hardware_requirements": {"type": "array", "items": {"type": "string"}},
-            "failure_modes": {"type": "array", "items": {"type": "string"}},
+            "failure_modes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "severity": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"],
+                            "description": (
+                                "How damaging this failure is to meeting the goal's "
+                                "success criteria: high = likely to violate a criterion "
+                                "or break the device; medium = notable degradation; "
+                                "low = minor caveat."
+                            ),
+                        },
+                    },
+                    "required": ["description", "severity"],
+                },
+            },
             "open_questions": {"type": "array", "items": {"type": "string"}},
             "cited_evidence_ids": {"type": "array", "items": {"type": "string"}},
             "synthesis_text": {
@@ -353,6 +372,17 @@ def _load_ontology_terms(db: Session, workspace_id: str | None = None):
     return all_terms, method_terms, related_map
 
 
+def _failure_mode_descriptions(raw: str | None) -> list[str]:
+    """Extract failure-mode descriptions from stored JSON, tolerating both the
+    structured `{description, severity}` shape and legacy bare strings."""
+    if not raw:
+        return []
+    out: list[str] = []
+    for fm in json.loads(raw):
+        out.append(fm if isinstance(fm, str) else fm.get("description", ""))
+    return out
+
+
 def _synthesis_to_response(row: EvidenceSynthesis) -> EvidenceSynthesisResponse:
     return EvidenceSynthesisResponse(
         id=row.id,
@@ -365,7 +395,7 @@ def _synthesis_to_response(row: EvidenceSynthesis) -> EvidenceSynthesisResponse:
             ReportedMetric(**m) for m in json.loads(row.reported_metrics)
         ] if row.reported_metrics else [],
         hardware_requirements=json.loads(row.hardware_requirements) if row.hardware_requirements else [],
-        failure_modes=json.loads(row.failure_modes) if row.failure_modes else [],
+        failure_modes=_failure_mode_descriptions(row.failure_modes),
         open_questions=json.loads(row.open_questions) if row.open_questions else [],
         cited_evidence_ids=json.loads(row.cited_evidence_ids),
         evidence_count=row.evidence_count,
@@ -398,6 +428,10 @@ def _run_synthesis_agent(
         "'finding'/'contribution' claims for key_findings, 'limitation' claims and "
         "CONTRADICTS edges for failure_modes, and 'hypothesis' claims plus "
         "unresolved contradictions for open_questions. "
+        "For each failure_mode, assign a severity (low/medium/high) reflecting how "
+        "damaging it is to meeting the goal's success criteria: high if it is likely "
+        "to violate a criterion or break the device, medium for notable degradation, "
+        "low for a minor caveat. "
         "Always populate the structured fields (key_findings, reported_metrics, "
         "hardware_requirements, failure_modes, open_questions) before writing the "
         "narrative synthesis_text. Keep synthesis_text focused: at most ~2500 "
@@ -536,7 +570,7 @@ def _synthesize_groups(
             key_findings=json.dumps(output.key_findings),
             reported_metrics=json.dumps([m.model_dump() for m in clean_metrics]),
             hardware_requirements=json.dumps(output.hardware_requirements),
-            failure_modes=json.dumps(output.failure_modes),
+            failure_modes=json.dumps([f.model_dump() for f in output.failure_modes]),
             open_questions=json.dumps(output.open_questions),
             cited_evidence_ids=json.dumps(cited),
             evidence_count=len(group_records),

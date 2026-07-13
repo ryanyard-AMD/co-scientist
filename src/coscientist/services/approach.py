@@ -402,9 +402,13 @@ def _synthesize_card_from_synthesis(
         for eid in m_ids:
             _link("reported_metrics", eid)
 
+    # Trust the grounded synthesis hardware when it produced any; only fall back
+    # to the noisier per-record keyword `hardware_assumptions` union when the
+    # synthesis agent surfaced no hardware at all.
     hw_set: set[str] = set(json.loads(synthesis.hardware_requirements) if synthesis.hardware_requirements else [])
-    for rec in evidence_list:
-        hw_set.update(json.loads(rec.hardware_assumptions) if rec.hardware_assumptions else [])
+    if not hw_set:
+        for rec in evidence_list:
+            hw_set.update(json.loads(rec.hardware_assumptions) if rec.hardware_assumptions else [])
     if hw_set:
         for eid in cited_ids:
             _link("hardware_requirements", eid)
@@ -412,10 +416,16 @@ def _synthesize_card_from_synthesis(
     failure_modes = json.loads(synthesis.failure_modes) if synthesis.failure_modes else []
     risks: list[dict] = []
     for fm in failure_modes:
+        # Structured shape is {description, severity}; tolerate legacy bare strings.
+        if isinstance(fm, str):
+            desc, severity = fm, None
+        else:
+            desc = fm.get("description", "")
+            severity = fm.get("severity")
         risks.append({
-            "description": fm,
-            "failure_mode": fm,
-            "severity": None,
+            "description": desc,
+            "failure_mode": desc,
+            "severity": severity,
             "evidence_id": fallback_id,
         })
     if risks:

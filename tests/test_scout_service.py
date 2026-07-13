@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 
@@ -169,6 +171,30 @@ from coscientist.config import settings
 from coscientist.schemas.scout import AgentSynthesisOutput, ReportedMetric
 
 
+def test_agent_output_coerces_dict_string_fields():
+    # Lenient models sometimes return list-of-dict where strings are expected.
+    out = AgentSynthesisOutput(
+        synthesis_text="x",
+        key_findings=[
+            {"name": "Core SZC", "finding": "minimizes inter-zone interference"},
+            "plain string",
+        ],
+        hardware_requirements=[{"name": "loudspeaker array"}],
+        open_questions=[{"text": "robustness?"}],
+        failure_modes=["reverberation", {"description": "phase error", "severity": "high"}],
+    )
+    assert out.key_findings == [
+        "Core SZC: minimizes inter-zone interference",
+        "plain string",
+    ]
+    assert out.hardware_requirements == ["loudspeaker array"]
+    assert out.open_questions == ["robustness?"]
+    assert [(f.description, f.severity) for f in out.failure_modes] == [
+        ("reverberation", "medium"),
+        ("phase error", "high"),
+    ]
+
+
 def _fake_synthesis(db, goal_id, method_family, records):
     # cite the first real record plus one invented id (must be stripped)
     return AgentSynthesisOutput(
@@ -182,7 +208,9 @@ def _fake_synthesis(db, goal_id, method_family, records):
             )
         ],
         hardware_requirements=["loudspeaker array"],
-        failure_modes=["reverberation"],
+        failure_modes=[
+            {"description": "reverberation degrades contrast", "severity": "high"},
+        ],
         open_questions=["robustness?"],
         cited_evidence_ids=[records[0].id, "invented-id"],
     )
@@ -214,6 +242,29 @@ def test_synthesis_strips_invented_citations(db_session, monkeypatch):
         assert "invented-id" not in s.cited_evidence_ids
         for m in s.reported_metrics:
             assert "invented-metric-id" not in m.evidence_ids
+
+
+def test_failure_mode_severity_stored_and_surfaced(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=_fake_synthesis):
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+    # Response surfaces failure modes as plain description strings.
+    for s in result.syntheses:
+        assert s.failure_modes == ["reverberation degrades contrast"]
+    # Raw storage keeps the structured {description, severity} shape.
+    from coscientist.models.synthesis import EvidenceSynthesis
+
+    rows = db_session.query(EvidenceSynthesis).all()
+    assert rows
+    for row in rows:
+        stored = json.loads(row.failure_modes)
+        assert stored == [
+            {"description": "reverberation degrades contrast", "severity": "high"}
+        ]
 
 
 def test_synthesize_false_is_noop(db_session, monkeypatch):
