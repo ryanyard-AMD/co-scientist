@@ -4,6 +4,14 @@
 <h1>Research Goals</h1>
 <p class="muted">Select a goal to open its workspace.</p>
 
+<p class="small">
+  {% if show_archived %}
+  Showing archived goals. <a href="/ui/goals">Hide archived</a>
+  {% else %}
+  <a href="/ui/goals?show_archived=true">Show archived</a>
+  {% endif %}
+</p>
+
 {% if goals %}
 <table>
   <thead>

@@ -57,9 +57,15 @@ def index():
 
 
 @router.get("/goals", response_class=HTMLResponse)
-def goals_page(request: Request, db: Session = Depends(get_db)):
+def goals_page(
+    request: Request, show_archived: bool = False, db: Session = Depends(get_db)
+):
     items, _ = goal_svc.list_goals(db, limit=100)
-    return templates.TemplateResponse(request, "goals.html", {"goals": items})
+    if not show_archived:
+        items = [g for g in items if g.status.value != "archived"]
+    return templates.TemplateResponse(
+        request, "goals.html", {"goals": items, "show_archived": show_archived}
+    )
 
 
 @router.get("/goals/{goal_id}", response_class=HTMLResponse)
