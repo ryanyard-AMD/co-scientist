@@ -28,6 +28,7 @@ from coscientist.schemas.taxonomy import (
     InducedFamily,
     TaxonomyDeriveResult,
 )
+from coscientist.schemas.goal import GoalUpdate
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
 
@@ -419,6 +420,13 @@ def derive_taxonomy(
         )
 
     terms_created, rels_created = _persist(db, goal.workspace_id, families)
+
+    # The CLI documents --pin as adding to the goal's pins. Persist the ad-hoc
+    # pins (merged with any existing, via effective_pins) so a later re-derive
+    # honors them instead of silently dropping the must-haves.
+    if pinned:
+        goal_svc.update(db, goal_id, GoalUpdate(pinned_method_families=effective_pins))
+
     return TaxonomyDeriveResult(
         goal_id=goal_id,
         workspace_id=goal.workspace_id,

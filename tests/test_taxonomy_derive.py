@@ -204,6 +204,26 @@ def test_derive_pin_override_supplements_goal_pins(db_session):
         )
     names = {t.canonical_name for t in _method_terms(db_session, goal.workspace_id)}
     assert {"parametric_array_loudspeaker", "spherical_microphone_array"} <= names
+    # Ad-hoc --pin families must persist to the goal (merged with existing pins),
+    # so a later re-derive still honors them.
+    reloaded = goal_svc.get(db_session, goal.id)
+    assert set(reloaded.pinned_method_families) == {
+        "parametric_array_loudspeaker",
+        "spherical_microphone_array",
+    }
+
+
+def test_derive_dry_run_does_not_persist_goal_pins(db_session):
+    ontology_svc.seed_default_ontology(db_session)
+    goal = _create_goal_pinned(db_session, ["spherical_microphone_array"])
+    mock = MockRetrievalClient()
+    with patch.object(taxonomy_svc, "_induce_taxonomy", _fake_induce(_PAL)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, pinned=["parametric_array_loudspeaker"],
+            dry_run=True, retrieval_client=mock,
+        )
+    reloaded = goal_svc.get(db_session, goal.id)
+    assert reloaded.pinned_method_families == ["spherical_microphone_array"]
 
 
 def _fake_anthropic_capture(captured):
