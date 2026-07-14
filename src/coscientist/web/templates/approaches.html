@@ -4,6 +4,12 @@
 <h1>Approach Cards</h1>
 <p class="muted">{{ total }} approach(es). Inspect, approve, reject, score, or merge.</p>
 
+{% if show_superseded %}
+<p class="small">Showing superseded cards. <a href="/ui/goals/{{ goal.id }}/approaches">Hide superseded</a></p>
+{% elif superseded_count %}
+<p class="small"><a href="/ui/goals/{{ goal.id }}/approaches?show_superseded=true">Show {{ superseded_count }} superseded</a></p>
+{% endif %}
+
 {% if approaches %}
 <div class="cards" id="approach-list">
   {% for a in approaches %}

@@ -108,14 +108,32 @@ def evidence_page(request: Request, goal_id: str, db: Session = Depends(get_db))
 
 
 @router.get("/goals/{goal_id}/approaches", response_class=HTMLResponse)
-def approaches_page(request: Request, goal_id: str, db: Session = Depends(get_db)):
+def approaches_page(
+    request: Request,
+    goal_id: str,
+    show_superseded: bool = False,
+    db: Session = Depends(get_db),
+):
     try:
         goal = goal_svc.get(db, goal_id)
     except HTTPException as exc:
         return _error(request, exc)
-    items, total = approach_svc.list_approaches(db, goal_id, limit=200)
+    items, _ = approach_svc.list_approaches(db, goal_id, limit=200)
+    superseded_count = sum(
+        1 for a in items if a.status.value == "superseded"
+    )
+    if not show_superseded:
+        items = [a for a in items if a.status.value != "superseded"]
     return templates.TemplateResponse(
-        request, "approaches.html", {"goal": goal, "approaches": items, "total": total}
+        request,
+        "approaches.html",
+        {
+            "goal": goal,
+            "approaches": items,
+            "total": len(items),
+            "show_superseded": show_superseded,
+            "superseded_count": superseded_count,
+        },
     )
 
 

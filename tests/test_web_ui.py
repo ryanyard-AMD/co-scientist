@@ -137,6 +137,28 @@ def test_approaches_list_shows_seeded(client, db_session):
     assert "Acoustic Contrast Control" in resp.text
 
 
+def test_approaches_list_hides_superseded_by_default(client, db_session):
+    goal = _create_goal(client)
+    _seed_approach(db_session, goal["id"], name="Live Card", status="generated")
+    _seed_approach(db_session, goal["id"], name="Old Card", status="superseded")
+    resp = client.get(f"/ui/goals/{goal['id']}/approaches")
+    assert resp.status_code == 200
+    assert "Live Card" in resp.text
+    assert "Old Card" not in resp.text
+    assert "Show 1 superseded" in resp.text
+
+
+def test_approaches_list_show_superseded_toggle(client, db_session):
+    goal = _create_goal(client)
+    _seed_approach(db_session, goal["id"], name="Live Card", status="generated")
+    _seed_approach(db_session, goal["id"], name="Old Card", status="superseded")
+    resp = client.get(f"/ui/goals/{goal['id']}/approaches?show_superseded=true")
+    assert resp.status_code == 200
+    assert "Live Card" in resp.text
+    assert "Old Card" in resp.text
+    assert "Hide superseded" in resp.text
+
+
 def test_approach_detail_shows_mechanism(client, db_session):
     goal = _create_goal(client)
     card = _seed_approach(db_session, goal["id"])
