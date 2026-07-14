@@ -1,9 +1,11 @@
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from itertools import combinations
 from statistics import median
 
+import anthropic
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -13,7 +15,9 @@ from coscientist.models.approach import ApproachCard
 from coscientist.models.hypothesis import HypothesisCard
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.schemas.approach import ApproachCardResponse, ApproachStatusEnum
+from coscientist.schemas.goal import GoalResponse
 from coscientist.schemas.hypothesis import (
+    AgentHypothesisOutput,
     CompatibilityNote,
     HypothesisCardCreate,
     HypothesisCardResponse,
@@ -26,6 +30,7 @@ from coscientist.schemas.hypothesis import (
 from coscientist.schemas.score import ApproachScoreResponse
 from coscientist.services import approach as approach_svc
 from coscientist.services import goal as goal_svc
+from coscientist.services import governance as governance_svc
 from coscientist.services import score as score_svc
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -327,15 +332,15 @@ def _check_compatibility(
     )
 
 
-def _synthesize_hypothesis(
+def _deterministic_fields(
     approaches: list[ApproachCardResponse],
-    scores_list: list[ApproachScoreResponse | None],
     compatibility: list[CompatibilityNote],
-    hypothesis_type: HypothesisTypeEnum,
-    generation_run_id: str,
-    workspace_id: str,
-    now: datetime,
-) -> HypothesisCard:
+) -> dict:
+    """Compute the templated (non-LLM) hypothesis fields + structural flags.
+
+    Serves as the no-LLM fallback and as the backfill floor when the LLM omits
+    a field (so grounded failure_modes / experiments are never lost).
+    """
     method_names = [a.method_family.replace("_", " ").title() for a in approaches]
     name = " + ".join(method_names)
 
@@ -398,20 +403,281 @@ def _synthesize_hypothesis(
     ))
     all_experiments.append(f"Validate combined {' + '.join(a.method_family for a in approaches)} approach")
 
+    return {
+        "name": name,
+        "text": text,
+        "rationale": rationale,
+        "assumptions": all_assumptions,
+        "expected_benefits": expected_benefits,
+        "failure_modes": all_failure_modes,
+        "required_experiments": all_experiments,
+        "has_conflicts": has_conflicts,
+    }
+
+
+_HYPOTHESIS_TOOL = {
+    "name": "record_hypothesis",
+    "description": (
+        "Record a synthesized research hypothesis that combines two approaches "
+        "into a single testable proposal for the target device."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": (
+                    "A distinctive, descriptive hypothesis title naming the combined "
+                    "mechanism — NOT just 'Method A + Method B'."
+                ),
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "The hypothesis statement: how the two approaches combine into one "
+                    "mechanism on the target device, and the concrete, testable "
+                    "prediction that follows (with quantities where the cards supply them)."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "description": (
+                    "Why this combination is expected to work: the physical/algorithmic "
+                    "reasoning grounded in the two approaches' mechanisms, metrics, and "
+                    "compatibility. If the pair has conflicting assumptions, explain how "
+                    "the tension is resolved or why it is worth testing anyway."
+                ),
+            },
+            "expected_benefits": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Concrete benefits the combination is predicted to yield.",
+            },
+            "assumptions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Key assumptions the combined hypothesis relies on (reframed for the "
+                    "combination, not just the union of the two cards' assumptions)."
+                ),
+            },
+            "failure_modes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "How the combination could fail, including interaction failure modes "
+                    "that neither approach has alone. Preserve the grounded quantitative "
+                    "failure modes from the source cards."
+                ),
+            },
+            "required_experiments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "The experiments needed to test the combined hypothesis on the target "
+                    "device, ordered from most decisive first."
+                ),
+            },
+        },
+        "required": [
+            "name",
+            "text",
+            "rationale",
+            "expected_benefits",
+            "assumptions",
+            "failure_modes",
+            "required_experiments",
+        ],
+    },
+}
+
+
+def _approach_block(a: ApproachCardResponse, score: ApproachScoreResponse | None) -> str:
+    metrics = [f"{m.metric_name}={m.value}" for m in a.reported_metrics]
+    risks = [r.failure_mode or r.description for r in a.risks_and_limitations]
+    score_line = f"\nFinal score: {score.final_score:.3f}" if score is not None else ""
+    return (
+        f"Method family: {a.method_family}\n"
+        f"Name: {a.name}\n"
+        f"Maturity: {a.maturity.value}{score_line}\n"
+        f"Problem fit: {a.problem_fit or '-'}\n"
+        f"Mechanism: {a.mechanism_summary or '-'}\n"
+        f"Reported metrics: {metrics or 'none'}\n"
+        f"Hardware: {a.hardware_requirements or 'none'}\n"
+        f"Key assumptions: {a.key_assumptions or 'none'}\n"
+        f"Risks/failure modes: {risks or 'none'}\n"
+        f"Suggested experiments: {a.suggested_experiments or 'none'}"
+    )
+
+
+def _run_hypothesis_agent(
+    db: Session,
+    goal: GoalResponse,
+    approaches: list[ApproachCardResponse],
+    scores_list: list[ApproachScoreResponse | None],
+    compatibility: list[CompatibilityNote],
+    hypothesis_type: HypothesisTypeEnum,
+) -> AgentHypothesisOutput:
+    """Ask Claude to synthesize a pair of approaches into one research hypothesis.
+
+    The agent reasons over the two already-grounded approach cards (not raw
+    evidence), so there is no evidence-id grounding guard here.
+    """
+    system_prompt = (
+        "You are a research scientist forming a testable hypothesis by combining TWO "
+        "vetted approaches into a single mechanism for a target device. You are given "
+        "the goal, the device constraints, both approach cards (mechanism, metrics, "
+        "maturity, hardware, assumptions, risks, experiments), and a compatibility "
+        "analysis (shared hardware, complementary dimensions, and any conflicting "
+        "assumptions). Produce a genuine hypothesis, NOT a restatement that the two "
+        "methods are combined: (1) name — a distinctive title describing the combined "
+        "mechanism; (2) text — how the two approaches integrate into ONE mechanism on "
+        "this device and the concrete testable prediction that follows, using the "
+        "cards' quantities where available; (3) rationale — the physical/algorithmic "
+        "reasoning for why the combination should work; if the pair has conflicting "
+        "assumptions, explain how the tension is resolved or why it is still worth "
+        "testing; (4) expected_benefits, assumptions, failure_modes, and "
+        "required_experiments reframed FOR THE COMBINATION — surface interaction "
+        "failure modes neither approach has alone, and preserve the grounded "
+        "quantitative failure modes and experiments from the source cards rather than "
+        "dropping them. A "
+        + (
+            "'conservative' hypothesis combines two strong, compatible approaches — "
+            "emphasize reliable, complementary gains. "
+            if hypothesis_type == HypothesisTypeEnum.conservative
+            else "'exploratory' hypothesis takes a higher-risk combination (often with "
+            "an unproven or lower-scored approach, or an assumption conflict) — be "
+            "explicit about the risk and what a decisive test would reveal. "
+        )
+        + "Record the hypothesis by calling the record_hypothesis tool."
+    )
+
+    dc = goal.device_constraints
+    device_block = "none"
+    if dc:
+        device_block = (
+            f"form_factor={dc.form_factor or '-'}, speaker_count={dc.speaker_count or '-'}, "
+            f"compute_budget={dc.compute_budget or '-'}, "
+            f"setup_time_minutes={dc.setup_time_minutes or '-'}"
+        )
+
+    goal_block = f"Target application: {goal.target_application}"
+    if goal.description:
+        goal_block += f"\nDescription: {goal.description}"
+
+    compat_lines = []
+    for cn in compatibility:
+        parts = []
+        if cn.shared_hardware:
+            parts.append(f"shared hardware: {', '.join(cn.shared_hardware)}")
+        if cn.complementary_dimensions:
+            parts.append(f"complementary on: {', '.join(cn.complementary_dimensions)}")
+        if cn.conflicting_assumptions:
+            parts.append(f"CONFLICTS: {'; '.join(cn.conflicting_assumptions)}")
+        if cn.ontology_related:
+            parts.append("ontology-related methods")
+        compat_lines.append("- " + ("; ".join(parts) if parts else "no significant signals"))
+
+    approach_blocks = [
+        f"### Approach {i + 1}\n{_approach_block(a, s)}"
+        for i, (a, s) in enumerate(zip(approaches, scores_list))
+    ]
+
+    user_message = (
+        f"## Goal\n{goal_block}\n\n"
+        f"## Device constraints\n{device_block}\n\n"
+        f"## Hypothesis type\n{hypothesis_type.value}\n\n"
+        f"## Approaches to combine\n" + "\n\n".join(approach_blocks) + "\n\n"
+        f"## Compatibility analysis\n" + "\n".join(compat_lines) + "\n\n"
+        "Synthesize these approaches into one testable research hypothesis."
+    )
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    start = time.monotonic()
+    message = client.messages.create(
+        model=settings.validation_model,
+        max_tokens=4096,
+        system=system_prompt,
+        tools=[_HYPOTHESIS_TOOL],
+        tool_choice={"type": "tool", "name": "record_hypothesis"},
+        messages=[{"role": "user", "content": user_message}],
+    )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+    governance_svc.log_agent_call(
+        db=db,
+        workspace_id=goal.id,
+        service="hypothesis",
+        action="synthesize_hypothesis",
+        model_used=settings.validation_model,
+        prompt_tokens=message.usage.input_tokens,
+        completion_tokens=message.usage.output_tokens,
+        elapsed_ms=elapsed_ms,
+        response_summary=(json.dumps(tool_use.input)[:512] if tool_use else "no tool_use block"),
+    )
+    if tool_use is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Hypothesis agent did not return a record_hypothesis tool call",
+        )
+    try:
+        return AgentHypothesisOutput(**tool_use.input)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Hypothesis agent returned invalid output: {exc}",
+        )
+
+
+def _build_hypothesis_card(
+    db: Session,
+    goal: GoalResponse,
+    approaches: list[ApproachCardResponse],
+    scores_list: list[ApproachScoreResponse | None],
+    compatibility: list[CompatibilityNote],
+    hypothesis_type: HypothesisTypeEnum,
+    generation_run_id: str,
+    now: datetime,
+) -> HypothesisCard:
+    """Build one hypothesis card: deterministic scaffolding + optional LLM synthesis.
+
+    Structural fields (approach_ids, has_conflicts, compatibility_notes) are always
+    deterministic. The narrative fields (name/text/rationale) and the reframed lists
+    come from the LLM when enabled, falling back to — and backfilled from — the
+    deterministic values so grounded content is never lost.
+    """
+    det = _deterministic_fields(approaches, compatibility)
+    fields = dict(det)
+
+    if settings.hypothesis_use_llm and settings.anthropic_api_key:
+        out = _run_hypothesis_agent(
+            db, goal, approaches, scores_list, compatibility, hypothesis_type
+        )
+        fields["name"] = out.name.strip() or det["name"]
+        fields["text"] = out.text.strip() or det["text"]
+        fields["rationale"] = out.rationale.strip() or det["rationale"]
+        # Reframed lists override the deterministic union, but backfill from it
+        # when the model returns an empty list (never silently emptied).
+        fields["expected_benefits"] = out.expected_benefits or det["expected_benefits"]
+        fields["assumptions"] = out.assumptions or det["assumptions"]
+        fields["failure_modes"] = out.failure_modes or det["failure_modes"]
+        fields["required_experiments"] = out.required_experiments or det["required_experiments"]
+
     return HypothesisCard(
         id=str(uuid.uuid4()),
-        workspace_id=workspace_id,
-        name=name,
-        text=text,
-        rationale=rationale,
+        workspace_id=goal.id,
+        name=fields["name"],
+        text=fields["text"],
+        rationale=fields["rationale"],
         hypothesis_type=hypothesis_type.value,
         approach_ids=json.dumps([a.id for a in approaches]),
-        assumptions=json.dumps(all_assumptions),
-        expected_benefits=json.dumps(expected_benefits),
-        failure_modes=json.dumps(all_failure_modes),
-        required_experiments=json.dumps(all_experiments),
+        assumptions=json.dumps(fields["assumptions"]),
+        expected_benefits=json.dumps(fields["expected_benefits"]),
+        failure_modes=json.dumps(fields["failure_modes"]),
+        required_experiments=json.dumps(fields["required_experiments"]),
         compatibility_notes=json.dumps([cn.model_dump() for cn in compatibility]),
-        has_conflicts=has_conflicts,
+        has_conflicts=det["has_conflicts"],
         status=HypothesisStatusEnum.generated.value,
         generation_run_id=generation_run_id,
         created_at=now,
@@ -518,19 +784,19 @@ def generate_hypotheses(
         )
 
         if is_conservative:
-            card = _synthesize_hypothesis(
-                [a, b], [sa, sb], [cn],
+            card = _build_hypothesis_card(
+                db, goal, [a, b], [sa, sb], [cn],
                 HypothesisTypeEnum.conservative,
-                generation_run_id, goal_id, now,
+                generation_run_id, now,
             )
             db.add(card)
             created.append(card)
             conservative_count += 1
         elif is_exploratory and request.include_exploratory:
-            card = _synthesize_hypothesis(
-                [a, b], [sa, sb], [cn],
+            card = _build_hypothesis_card(
+                db, goal, [a, b], [sa, sb], [cn],
                 HypothesisTypeEnum.exploratory,
-                generation_run_id, goal_id, now,
+                generation_run_id, now,
             )
             db.add(card)
             created.append(card)

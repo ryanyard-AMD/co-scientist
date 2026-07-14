@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     hypothesis_max_per_run: int = 20
     hypothesis_complementary_high: float = 0.6
     hypothesis_complementary_low: float = 0.4
+    # When true, a Claude agent synthesizes each selected approach pair into a
+    # genuine research hypothesis (name, statement, rationale, reframed
+    # assumptions/failure_modes/experiments) instead of templated string
+    # concatenation. Falls back to deterministic synthesis when no API key.
+    hypothesis_use_llm: bool = True
     experiment_max_per_run: int = 10
     experiment_sweep_cost_low: int = 100
     experiment_sweep_cost_medium: int = 500

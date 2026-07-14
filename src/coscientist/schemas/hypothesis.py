@@ -1,7 +1,21 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _unwrap_str(item: object) -> object:
+    """Unwrap a model-emitted string that came back as a single-key dict."""
+    if not isinstance(item, dict):
+        return item
+    for key in ("value", "item", "text", "content", "string", "description", "name"):
+        val = item.get(key)
+        if isinstance(val, str):
+            return val
+    str_vals = [v for v in item.values() if isinstance(v, str)]
+    if len(str_vals) == 1:
+        return str_vals[0]
+    return item
 
 
 class HypothesisStatusEnum(str, Enum):
@@ -31,6 +45,31 @@ class HypothesisGenerateRequest(BaseModel):
     min_approaches: int = Field(default=2, ge=2)
     include_exploratory: bool = True
     max_hypotheses: int = Field(default=20, ge=1, le=100)
+
+
+class AgentHypothesisOutput(BaseModel):
+    """Schema the hypothesis agent must return for one approach pair."""
+
+    name: str
+    text: str
+    rationale: str
+    expected_benefits: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    failure_modes: list[str] = Field(default_factory=list)
+    required_experiments: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "expected_benefits",
+        "assumptions",
+        "failure_modes",
+        "required_experiments",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_str_items(cls, v: object) -> object:
+        if isinstance(v, list):
+            return [_unwrap_str(x) for x in v]
+        return v
 
 
 class HypothesisCardCreate(BaseModel):

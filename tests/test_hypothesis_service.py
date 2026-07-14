@@ -1,17 +1,21 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from conftest import GOAL_PAYLOAD
+from coscientist.config import settings
 from coscientist.models.evidence import EvidenceRecord
+from coscientist.models.governance import AgentActionLog
 from coscientist.schemas.approach import (
     ApproachCardCreate,
     ApproachGenerateRequest,
     ApproachStatusEnum,
 )
 from coscientist.schemas.hypothesis import (
+    AgentHypothesisOutput,
     CompatibilityNote,
     HypothesisCardCreate,
     HypothesisCardUpdate,
@@ -24,6 +28,7 @@ from coscientist.services import approach as approach_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import hypothesis as svc
 from coscientist.services import score as score_svc
+from sqlalchemy import select
 
 
 def _create_goal(db):
@@ -441,3 +446,139 @@ def test_complementary_dimensions_detected(db_session):
     complementary = svc._find_complementary_dimensions(sa, sb)
     assert "evidence_strength" in complementary
     assert "robustness" in complementary
+
+
+# --- LLM synthesis tests ---
+
+def _seed_pair(db, goal_id):
+    _create_scored_approach(db, goal_id, "beamforming",
+                            hardware=["loudspeaker_array"],
+                            failure_modes=["head_movement"])
+    _create_scored_approach(db, goal_id, "pressure_matching",
+                            hardware=["loudspeaker_array"],
+                            failure_modes=["room_reverberation"])
+
+
+def test_generate_uses_llm_agent_when_enabled(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "hypothesis_use_llm", True)
+    goal = _create_goal(db_session)
+    _seed_pair(db_session, goal.id)
+
+    agent_out = AgentHypothesisOutput(
+        name="Adaptive Contrast-Steered Zone Control",
+        text="Fuse beamforming steering with pressure-matching error control.",
+        rationale="The two mechanisms address orthogonal error sources.",
+        expected_benefits=["higher contrast", "lower leakage"],
+        assumptions=["quasi-static listener"],
+        failure_modes=["coupling instability at high SPL"],
+        required_experiments=["swept-tone contrast sweep"],
+    )
+    with patch.object(svc, "_run_hypothesis_agent", return_value=agent_out) as agent:
+        result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
+
+    assert agent.called
+    assert result.hypotheses_created >= 1
+    h = result.hypotheses[0]
+    assert h.name == "Adaptive Contrast-Steered Zone Control"
+    assert h.text == "Fuse beamforming steering with pressure-matching error control."
+    assert h.rationale == "The two mechanisms address orthogonal error sources."
+    assert h.expected_benefits == ["higher contrast", "lower leakage"]
+    assert h.assumptions == ["quasi-static listener"]
+    assert h.failure_modes == ["coupling instability at high SPL"]
+    assert h.required_experiments == ["swept-tone contrast sweep"]
+
+
+def test_generate_deterministic_when_no_api_key(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
+    monkeypatch.setattr(settings, "hypothesis_use_llm", True)
+    goal = _create_goal(db_session)
+    _seed_pair(db_session, goal.id)
+
+    with patch.object(svc, "_run_hypothesis_agent") as agent:
+        result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
+
+    agent.assert_not_called()
+    assert result.hypotheses_created >= 1
+    h = result.hypotheses[0]
+    # Deterministic name is the templated "Method A + Method B".
+    assert " + " in h.name
+
+
+def test_generate_deterministic_when_llm_disabled(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "hypothesis_use_llm", False)
+    goal = _create_goal(db_session)
+    _seed_pair(db_session, goal.id)
+
+    with patch.object(svc, "_run_hypothesis_agent") as agent:
+        result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
+
+    agent.assert_not_called()
+    assert result.hypotheses_created >= 1
+
+
+def test_llm_empty_lists_backfill_from_deterministic(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "hypothesis_use_llm", True)
+    goal = _create_goal(db_session)
+    _seed_pair(db_session, goal.id)
+
+    # Agent returns narrative fields but empty lists — must backfill from cards.
+    agent_out = AgentHypothesisOutput(
+        name="Fused Zone Control",
+        text="A fused mechanism.",
+        rationale="Because reasons.",
+        expected_benefits=[],
+        assumptions=[],
+        failure_modes=[],
+        required_experiments=[],
+    )
+    with patch.object(svc, "_run_hypothesis_agent", return_value=agent_out):
+        result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
+
+    h = result.hypotheses[0]
+    # Grounded failure modes / experiments from source cards are never silently emptied.
+    assert len(h.failure_modes) >= 1
+    assert len(h.required_experiments) >= 1
+
+
+def test_hypothesis_agent_writes_governance_row(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    monkeypatch.setattr(settings, "hypothesis_use_llm", True)
+    goal = _create_goal(db_session)
+    _seed_pair(db_session, goal.id)
+
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {
+        "name": "Fused Zone Control",
+        "text": "A fused mechanism.",
+        "rationale": "Because reasons.",
+        "expected_benefits": ["b1"],
+        "assumptions": ["a1"],
+        "failure_modes": ["f1"],
+        "required_experiments": ["e1"],
+    }
+    fake_message = MagicMock()
+    fake_message.content = [tool_block]
+    fake_message.usage.input_tokens = 123
+    fake_message.usage.output_tokens = 45
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_message
+
+    with patch.object(svc.anthropic, "Anthropic", return_value=fake_client):
+        result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
+
+    assert result.hypotheses_created >= 1
+    rows = db_session.scalars(
+        select(AgentActionLog).where(
+            AgentActionLog.workspace_id == goal.id,
+            AgentActionLog.service == "hypothesis",
+            AgentActionLog.action == "synthesize_hypothesis",
+        )
+    ).all()
+    assert len(rows) >= 1
+    assert rows[0].model_used == settings.validation_model
+    assert rows[0].prompt_tokens == 123
+    assert rows[0].completion_tokens == 45

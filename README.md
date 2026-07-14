@@ -146,7 +146,8 @@ Generates HypothesisCards — proposed combinations of 2+ scored approaches — 
 - Pairwise compatibility analysis: shared hardware (matched on canonical hardware concepts, not verbatim prose), conflicting assumptions, complementary rubric dimensions, ontology relationships
 - Assumption conflict detection via negation patterns ("does not require", "no ", "without ")
 - Complementary dimension detection using configurable thresholds (high ≥ 0.6, low ≤ 0.4)
-- Deterministic generation from rubric scores, ontology relationships, and hardware overlap
+- Deterministic selection of approach pairs from rubric scores, ontology relationships, and hardware overlap (which pairs become hypotheses, and their type, is always deterministic)
+- **LLM synthesis of each selected pair** (`CS_HYPOTHESIS_USE_LLM`, default on): once a pair is chosen, a Claude agent reads both grounded approach cards plus the pair's compatibility analysis and produces a genuine research hypothesis — a distinctive name, a mechanism statement with a testable prediction, a physical/algorithmic rationale, and `assumptions`/`failure_modes`/`required_experiments` reframed *for the combination* (surfacing interaction failure modes neither approach has alone) rather than a templated string concatenation. The agent's empty lists are backfilled from the deterministic union so grounded quantitative failure modes and experiments from the source cards are never silently lost. Falls back to deterministic templated synthesis when `CS_ANTHROPIC_API_KEY` is unset or the flag is off. Governance-logged (`service=hypothesis`, `action=synthesize_hypothesis`).
 - Deduplication against existing hypotheses by sorted approach ID sets
 - Each hypothesis includes rationale, assumptions, expected benefits, failure modes, and required experiments
 
