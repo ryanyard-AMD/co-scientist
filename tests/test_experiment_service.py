@@ -386,6 +386,45 @@ def test_generate_comparative_experiment(db_session):
     assert "vs" in comp.name
 
 
+def _seed_hypothesis(db, goal_id, approach_ids, text="Combining A and B yields >=13 dB contrast."):
+    from coscientist.models.hypothesis import HypothesisCard
+    hc = HypothesisCard(
+        id=str(uuid.uuid4()),
+        workspace_id=goal_id,
+        name="Test Hypothesis",
+        text=text,
+        rationale="Because the mechanisms compose.",
+        hypothesis_type="conservative",
+        approach_ids=json.dumps(approach_ids),
+    )
+    db.add(hc)
+    db.commit()
+    return hc
+
+
+def test_generate_from_hypothesis_links_id_and_text(db_session):
+    goal = _create_goal(db_session)
+    a1 = _create_scored_approach(db_session, goal.id, "beamforming")
+    a2 = _create_scored_approach(db_session, goal.id, "pressure_matching")
+    hc = _seed_hypothesis(db_session, goal.id, [a1.id, a2.id])
+    result = svc.generate_experiments(db_session, goal.id, ExperimentGenerateRequest(
+        hypothesis_id=hc.id,
+    ))
+    assert result.experiments_created >= 1
+    for exp in result.experiments:
+        assert exp.hypothesis_id == hc.id
+        assert exp.hypothesis_text == hc.text
+
+
+def test_generate_without_hypothesis_leaves_id_none(db_session):
+    goal = _create_goal(db_session)
+    a1 = _create_scored_approach(db_session, goal.id, "beamforming")
+    result = svc.generate_experiments(db_session, goal.id, ExperimentGenerateRequest(
+        approach_ids=[a1.id],
+    ))
+    assert result.experiments[0].hypothesis_id is None
+
+
 # --- Export tests ---
 
 def test_export_yaml_format(db_session):

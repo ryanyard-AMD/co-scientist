@@ -472,18 +472,22 @@ def _synthesize_experiment(
     goal: GoalResponse,
     generation_run_id: str,
     now: datetime,
+    hypothesis: HypothesisCard | None = None,
 ) -> ExperimentCard:
     name = f"Validate {approach_resp.method_family}"
     objective = (
         f"Evaluate {approach_resp.method_family} for {goal.target_application} "
         f"under simulated conditions"
     )
-    hypothesis_text = (
-        f"{approach_resp.name} will achieve target performance criteria for "
-        f"{goal.target_application}"
-    )
-    if approach_resp.mechanism_summary:
-        hypothesis_text += f" via {approach_resp.mechanism_summary[:200]}"
+    if hypothesis is not None:
+        hypothesis_text = hypothesis.text
+    else:
+        hypothesis_text = (
+            f"{approach_resp.name} will achieve target performance criteria for "
+            f"{goal.target_application}"
+        )
+        if approach_resp.mechanism_summary:
+            hypothesis_text += f" via {approach_resp.mechanism_summary[:200]}"
 
     baselines = _select_baselines(approach_resp.method_family)
     sweep = _build_parameter_sweep(goal)
@@ -501,7 +505,7 @@ def _synthesize_experiment(
         objective=objective,
         hypothesis_text=hypothesis_text,
         approach_ids=json.dumps([approach_resp.id]),
-        hypothesis_id=None,
+        hypothesis_id=(hypothesis.id if hypothesis is not None else None),
         baseline_methods=json.dumps(baselines),
         independent_variables=json.dumps(sweep),
         fixed_assumptions=json.dumps(fixed),
@@ -533,17 +537,21 @@ def _synthesize_comparative_experiment(
     goal: GoalResponse,
     generation_run_id: str,
     now: datetime,
+    hypothesis: HypothesisCard | None = None,
 ) -> ExperimentCard:
     name = f"{approach_a.method_family} vs {approach_b.method_family}"
     objective = (
         f"Compare {approach_a.method_family} against {approach_b.method_family} "
         f"for {goal.target_application}"
     )
-    hypothesis_text = (
-        f"{approach_a.method_family} will outperform {approach_b.method_family} on "
-        f"acoustic contrast under fixed listener geometry, but {approach_b.method_family} "
-        f"may be more robust under listener displacement"
-    )
+    if hypothesis is not None:
+        hypothesis_text = hypothesis.text
+    else:
+        hypothesis_text = (
+            f"{approach_a.method_family} will outperform {approach_b.method_family} on "
+            f"acoustic contrast under fixed listener geometry, but {approach_b.method_family} "
+            f"may be more robust under listener displacement"
+        )
 
     baselines_a = set(_select_baselines(approach_a.method_family))
     baselines_b = set(_select_baselines(approach_b.method_family))
@@ -564,7 +572,7 @@ def _synthesize_comparative_experiment(
         objective=objective,
         hypothesis_text=hypothesis_text,
         approach_ids=json.dumps(sorted([approach_a.id, approach_b.id])),
-        hypothesis_id=None,
+        hypothesis_id=(hypothesis.id if hypothesis is not None else None),
         baseline_methods=json.dumps(baselines),
         independent_variables=json.dumps(sweep),
         fixed_assumptions=json.dumps(fixed),
@@ -603,12 +611,14 @@ def generate_experiments(
     now = datetime.now(timezone.utc)
     generation_run_id = str(uuid.uuid4())
 
+    hypothesis: HypothesisCard | None = None
     if request.approach_ids:
         approaches = [approach_svc.get(db, aid) for aid in request.approach_ids]
     elif request.hypothesis_id:
         hc = db.get(HypothesisCard, request.hypothesis_id)
         if hc is None:
             raise HTTPException(status_code=404, detail=f"Hypothesis {request.hypothesis_id!r} not found")
+        hypothesis = hc
         h_approach_ids = json.loads(hc.approach_ids) if hc.approach_ids else []
         approaches = [approach_svc.get(db, aid) for aid in h_approach_ids]
     else:
@@ -646,7 +656,7 @@ def generate_experiments(
         if key in existing_sets:
             skipped += 1
             continue
-        card = _synthesize_experiment(approach, goal, generation_run_id, now)
+        card = _synthesize_experiment(approach, goal, generation_run_id, now, hypothesis)
         db.add(card)
         created.append(card)
 
@@ -657,7 +667,7 @@ def generate_experiments(
         if pair_key in existing_sets:
             skipped += 1
             continue
-        card = _synthesize_comparative_experiment(a, b, goal, generation_run_id, now)
+        card = _synthesize_comparative_experiment(a, b, goal, generation_run_id, now, hypothesis)
         db.add(card)
         created.append(card)
 
