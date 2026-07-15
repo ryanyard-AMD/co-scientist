@@ -37,6 +37,32 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def list_workspaces(self) -> list[dict]:
+        """GET /api/v1/workspaces → list of Workspace dicts (id, retrieval_paper_id, ...)."""
+        resp = self._client.get("/api/v1/workspaces")
+        resp.raise_for_status()
+        return resp.json()
+
+    def design_run(
+        self,
+        workspace_id: str,
+        proposal: dict,
+        *,
+        auto_approve: bool = True,
+    ) -> dict:
+        """POST /api/v1/workspaces/{id}/design-run — ground a proposal in the
+        workspace paper's curated spec and run it in one call (handoff P3).
+
+        Returns ``{run_id, draft_id, spec_status, honored, dropped, quality?}``.
+        """
+        resp = self._client.post(
+            f"/api/v1/workspaces/{workspace_id}/design-run",
+            params={"auto_approve": auto_approve},
+            json=proposal,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_run(self, run_id: str) -> dict:
         """GET /api/v1/runs/{run_id} → RunMetadata dict."""
         resp = self._client.get(f"/api/v1/runs/{run_id}")

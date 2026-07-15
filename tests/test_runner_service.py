@@ -77,16 +77,36 @@ def _experiment(db, workspace_id, approach_ids, *, status="approved"):
     return card
 
 
+_VAST_PAPER_ID = "786380fd-256b-46b6-b71e-af1b41adeb0b"
+
+
 class _FakeReproClient:
-    """Stand-in for ReproClient; records the submitted spec, scripts the responses."""
+    """Stand-in for ReproClient; records the design-run proposal, scripts responses."""
 
     instances: list["_FakeReproClient"] = []
 
-    def __init__(self, run_status="success", metrics=None, exit_code=0):
+    def __init__(
+        self,
+        run_status="success",
+        metrics=None,
+        exit_code=0,
+        *,
+        honored=None,
+        dropped=None,
+        workspaces=None,
+    ):
         self.run_status = run_status
         self.metrics = metrics if metrics is not None else {}
         self.exit_code = exit_code
-        self.submitted_spec = None
+        self.honored = honored if honored is not None else []
+        self.dropped = dropped if dropped is not None else []
+        self.workspaces = (
+            workspaces
+            if workspaces is not None
+            else [{"id": "ws-vast", "retrieval_paper_id": _VAST_PAPER_ID}]
+        )
+        self.submitted_proposal = None
+        self.design_workspace_id = None
         _FakeReproClient.instances.append(self)
 
     def __enter__(self):
@@ -95,9 +115,19 @@ class _FakeReproClient:
     def __exit__(self, *_):
         return False
 
-    def submit_run(self, spec, *, unsafe_draft=False):
-        self.submitted_spec = spec
-        return {"run_id": "run-123", "status": "pending", "poll": "/x"}
+    def list_workspaces(self):
+        return self.workspaces
+
+    def design_run(self, workspace_id, proposal, *, auto_approve=True):
+        self.design_workspace_id = workspace_id
+        self.submitted_proposal = proposal
+        return {
+            "run_id": "run-123",
+            "draft_id": "draft-1",
+            "spec_status": "approved",
+            "honored": self.honored,
+            "dropped": self.dropped,
+        }
 
     def get_run(self, run_id):
         return {"status": self.run_status, "exit_code": self.exit_code}
@@ -162,6 +192,62 @@ def test_run_success_translates_and_validates(db_session, monkeypatch):
     # card was transitioned to running before validation handoff
     db_session.refresh(exp)
     assert exp.status == ExperimentStatusEnum.running.value
+
+
+def test_run_builds_proposal_and_records_provenance(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    honored = [{"proposal_name": "reverb_t60_s", "canonical": "reverb_t60_s", "flag": "--t60", "value": [0.3], "kind": "scalar"}]
+    dropped = [{"proposal_name": "speaker_count", "reason": "unsupported"}]
+    fake = _FakeReproClient(
+        metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0},
+        honored=honored,
+        dropped=dropped,
+    )
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+    _fake_validation(monkeypatch)
+
+    svc.run_experiment(db_session, exp.id, gid)
+
+    # design-run targeted the workspace resolved by paper id
+    assert fake.design_workspace_id == "ws-vast"
+    # proposal carried the card's scientific fields
+    prop = fake.submitted_proposal
+    assert prop["objective"] == "Measure contrast"
+    assert prop["hypothesis"] == "Higher order increases contrast."
+    assert prop["metrics"] == ["acoustic_contrast_db"]
+    # pass_conditions dict → PassCondition list with parsed operator/metric
+    assert prop["pass_conditions"] == [
+        {"metric": "acoustic_contrast_db", "operator": ">=", "value": 20.0}
+    ]
+    # honored/dropped + linkage persisted on the card
+    db_session.refresh(exp)
+    assert "run-123" in json.loads(exp.run_request_ids)
+    batch = json.loads(exp.batch_expansion)
+    assert batch["repro_workspace_id"] == "ws-vast"
+    assert batch["dropped"] == dropped
+    assert batch["honored"] == honored
+
+
+def test_run_no_workspace_for_paper_refuses(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(workspaces=[{"id": "other", "retrieval_paper_id": "unrelated"}]),
+    )
+    captured = _fake_validation(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 422
+    assert "submission" not in captured
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
 
 
 def test_run_failure_does_not_fabricate(db_session, monkeypatch):

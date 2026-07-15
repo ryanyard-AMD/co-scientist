@@ -243,7 +243,7 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 Generates ExperimentCards — structured experiment proposals from approach cards and/or hypothesis cards — with objectives, baselines, parameter sweeps, validation criteria, and exportable specs.
 
 - **ExperimentCard** with 7-state lifecycle: `generated` → `reviewed` → `approved` → `running` → `completed` / `failed` → `superseded`
-- Dual source linking: `approach_ids` for direct approach experiments + optional `hypothesis_id` for hypothesis-driven experiments
+- Dual source linking: `approach_ids` for direct approach experiments + optional `hypothesis_id` for hypothesis-driven experiments. When generated from a hypothesis (`--hypothesis`), each card stamps that `hypothesis_id` and carries the hypothesis's own text as `hypothesis_text` (instead of a templated approach summary), so the run's proposal states the real hypothesis under test.
 - Algorithmic generation: single-approach validation experiments + comparative pairwise experiments
 - PSZ-specific parameter sweeps: speaker count, listener shift, reverberation condition, frequency bands, calibration error
 - Baseline selection from `domain.RELATED_METHODS` + universal `delay_and_sum_beamforming` baseline
@@ -505,10 +505,13 @@ cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' s
 ### 8. Run on the real simulator (automated)
 
 An approved experiment can be executed against the [repro](../experiment) runner, which drives
-real PSZ acoustic simulators. This replaces hand-typing metrics: co-scientist submits a spec to
-repro, polls the run to completion, pulls `metrics.json`, translates the simulator's native
-metric keys to co-scientist canonical names, transitions the experiment to `running`, and feeds
-the measured values straight into the validation agent.
+real PSZ acoustic simulators. This replaces hand-typing metrics: co-scientist turns the card into
+a repro `ExperimentProposal` and calls the **design-run** handoff endpoint
+(`POST /workspaces/{id}/design-run`), which grounds the run command in the paper's curated
+reproduction script rather than a canned command line. Co-scientist then polls the run to
+completion, pulls `metrics.json`, translates the simulator's native metric keys to co-scientist
+canonical names, transitions the experiment to `running`, and feeds the measured values straight
+into the validation agent.
 
 ```bash
 # Prerequisite: the repro API must be serving (default http://localhost:8003)
@@ -518,16 +521,30 @@ cs experiment run <EXPERIMENT_ID> <GOAL_ID>             # run → validate in on
 cs experiment run <EXPERIMENT_ID> <GOAL_ID> --timeout 900 --json
 ```
 
-The simulator is chosen by the primary approach's method family:
+The reproduction is chosen by the primary approach's method family; the live repro workspace is
+resolved at run time by matching the reproduction's retrieval `paper_id` against the workspaces'
+`retrieval_paper_id` (no hardcoded workspace UUIDs):
 
-| method family | repro simulator | native → canonical metrics |
+| method family | repro reproduction (paper) | native → canonical metrics |
 |---|---|---|
-| acoustic_contrast_control, beamforming, pressure_matching, null_steering | `vast_simulate.py` | `oAC_best_dB`→`acoustic_contrast_db`; `nsde_achieved_dB`→`bright_zone_error` |
+| acoustic_contrast_control, beamforming, pressure_matching, null_steering | `vast_simulate.py` (Fast Generation of Sound Zones … VAST) | `oAC_best_dB`→`acoustic_contrast_db`; `nsde_achieved_dB`→`bright_zone_error` |
 
-Configure the endpoint via `CS_REPRO_URL` / `CS_REPRO_API_KEY` (see `config.py`). If no
-simulator is registered for the method family — or the run produces no translatable metrics —
-the command fails with a clear message and leaves the experiment `approved`; it never fabricates
-results. Fall back to the manual path (step 9) in that case.
+**Card → proposal mapping.** The card's `objective`, `hypothesis_text`, `independent_variables`,
+and `metrics` are sent as-is; the `validation.pass_conditions` dict is converted to repro's
+`list[PassCondition]` (key suffix `_min`→`>=`, `_max`→`>=`… i.e. `<=`; suffix stripped for the
+metric name). The design-run response's **honored/dropped** report — which proposal variables the
+curated script's arg surface actually accepts versus drops (e.g. a `speaker_count` sweep the VAST
+script has no flag for) — is persisted onto the card's `execution_handoff.batch_expansion`
+(alongside `repro_workspace_id`, `draft_id`, `spec_status`), and the run id is appended to
+`run_request_ids`. This makes the arg-surface gap auditable instead of a silent collapse.
+
+Design-run is called with `auto_approve=true`, so the grounded spec passes repro's own quality
+guardrail before it runs. Configure the endpoint via `CS_REPRO_URL` / `CS_REPRO_API_KEY` (see
+`config.py`). If no reproduction is registered for the method family, no repro workspace exists
+for its paper, or the run produces no translatable metrics, the command fails with a clear message
+and leaves the experiment `approved`; it never fabricates results. Combination experiments (>1
+approach) are refused — no single-paper reproduction can run the combination. Fall back to the
+manual path (step 9) in those cases.
 
 ### 9. Submit results manually and validate
 
