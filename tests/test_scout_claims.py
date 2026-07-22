@@ -10,13 +10,13 @@ from coscientist.schemas.goal import GoalCreate, SuccessCriterion
 from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import goal as goal_svc
 from coscientist.services import scout as scout_svc
-from conftest import MockRetrievalClient
+from conftest import MockRetrievalClient, seed_goal_method_taxonomy
 
 _CRITERIA = [SuccessCriterion(name="acoustic_contrast", operator=">=", target=20.0, unit="dB")]
 
 
 def _create_goal(db, name="PSZ Claims Test"):
-    return goal_svc.create(
+    goal = goal_svc.create(
         db,
         GoalCreate(
             name=name,
@@ -24,6 +24,8 @@ def _create_goal(db, name="PSZ Claims Test"):
             success_criteria=_CRITERIA,
         ),
     )
+    seed_goal_method_taxonomy(db, goal.workspace_id)
+    return goal
 
 
 _FINDING = ClaimResult(

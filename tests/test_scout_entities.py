@@ -8,13 +8,13 @@ from coscientist.schemas.scout import ScoutRunRequest
 from coscientist.services import goal as goal_svc
 from coscientist.services import ontology as ontology_svc
 from coscientist.services import scout as scout_svc
-from conftest import MockRetrievalClient, make_chunk
+from conftest import MockRetrievalClient, make_chunk, seed_goal_method_taxonomy
 
 _CRITERIA = [SuccessCriterion(name="acoustic_contrast", operator=">=", target=20.0, unit="dB")]
 
 
 def _create_goal(db, name="PSZ Entities Test"):
-    return goal_svc.create(
+    goal = goal_svc.create(
         db,
         GoalCreate(
             name=name,
@@ -22,6 +22,8 @@ def _create_goal(db, name="PSZ Entities Test"):
             success_criteria=_CRITERIA,
         ),
     )
+    seed_goal_method_taxonomy(db, goal.workspace_id)
+    return goal
 
 
 class _EntityClient(MockRetrievalClient):

@@ -681,6 +681,22 @@ def run_scout(
     # Load ontology terms from DB (falls back gracefully if tables empty).
     # Goal-scoped (corpus-derived) method families override the global seed.
     all_terms, method_terms, related_map = _load_ontology_terms(db, goal.workspace_id)
+
+    # Scout classifies evidence with the goal's own method-family taxonomy. Without
+    # one, classification would silently fall back to the global seed vocabulary and
+    # bucket evidence into the wrong domain. Require an explicit, reviewable derivation
+    # step rather than producing a plausible-looking but mis-classified run.
+    if not any(t.workspace_id == goal.workspace_id for t in method_terms):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No method-family taxonomy has been derived for goal {goal_id!r}. "
+                "Scout would fall back to the global seed vocabulary and mis-classify "
+                "evidence into the wrong domain. Derive it first with "
+                f"'cs ontology derive {goal_id}' (add --dry-run to preview only), then "
+                "re-run scout."
+            ),
+        )
     use_db_terms = len(all_terms) > 0
 
     queries = _decompose_goal_to_queries(

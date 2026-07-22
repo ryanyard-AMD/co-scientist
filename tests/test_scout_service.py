@@ -8,13 +8,13 @@ from coscientist.schemas.goal import GoalCreate, SuccessCriterion
 from coscientist.schemas.scout import EvidenceStrengthEnum, ScoutRunRequest
 from coscientist.services import goal as goal_svc
 from coscientist.services import scout as scout_svc
-from conftest import MockRetrievalClient, make_artifact, make_chunk
+from conftest import MockRetrievalClient, make_artifact, make_chunk, seed_goal_method_taxonomy
 
 _CRITERIA = [SuccessCriterion(name="acoustic_contrast", operator=">=", target=20.0, unit="dB")]
 
 
 def _create_goal(db, name="PSZ Test"):
-    return goal_svc.create(
+    goal = goal_svc.create(
         db,
         GoalCreate(
             name=name,
@@ -22,6 +22,8 @@ def _create_goal(db, name="PSZ Test"):
             success_criteria=_CRITERIA,
         ),
     )
+    seed_goal_method_taxonomy(db, goal.workspace_id)
+    return goal
 
 
 def test_run_scout_creates_evidence_records(db_session):
@@ -30,6 +32,24 @@ def test_run_scout_creates_evidence_records(db_session):
     result = scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
     assert result.evidence_count == 3
     assert result.summary.total_papers == 2
+
+
+def test_run_scout_refuses_without_derived_taxonomy(db_session):
+    # No seed_goal_method_taxonomy here: the goal has no derived taxonomy, so scout must
+    # refuse rather than silently classify against the global seed vocabulary.
+    goal = goal_svc.create(
+        db_session,
+        GoalCreate(
+            name="No Taxonomy",
+            target_application="personal_sound_zones",
+            success_criteria=_CRITERIA,
+        ),
+    )
+    mock = MockRetrievalClient()
+    with pytest.raises(HTTPException) as exc:
+        scout_svc.run_scout(db_session, goal.id, ScoutRunRequest(), retrieval_client=mock)
+    assert exc.value.status_code == 422
+    assert "cs ontology derive" in exc.value.detail
 
 
 def test_run_scout_deduplicates_chunks(db_session):
