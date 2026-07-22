@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -37,7 +38,7 @@ def _fake_induce(*families):
 
 
 _PAL = InducedFamily(
-    canonical_name="parametric_array_loudspeaker",
+    canonical_name="parametric_array_modeling",
     description="Ultrasonic self-demodulating directional loudspeaker.",
     keywords=["parametric array", "ultrasonic"],
     related_to=["spherical_microphone_array"],
@@ -46,7 +47,7 @@ _SPH = InducedFamily(
     canonical_name="spherical_microphone_array",
     description="Rigid spherical array for sound-field sensing.",
     keywords=["spherical microphone array", "spherical harmonics"],
-    related_to=["parametric_array_loudspeaker"],
+    related_to=["parametric_array_modeling"],
 )
 
 
@@ -76,7 +77,7 @@ def test_derive_persists_goal_scoped_methods(db_session):
     assert result.relationships_created == 2  # bidirectional related_to
     scoped = _method_terms(db_session, goal.workspace_id)
     names = {t.canonical_name for t in scoped}
-    assert names == {"parametric_array_loudspeaker", "spherical_microphone_array"}
+    assert names == {"parametric_array_modeling", "spherical_microphone_array"}
     assert all(t.workspace_id == goal.workspace_id for t in scoped)
     # Global seed untouched.
     assert _global_method_count(db_session) == 7
@@ -130,7 +131,7 @@ def test_load_ontology_terms_goal_override(db_session):
     all_terms, method_terms, _ = scout_svc._load_ontology_terms(db_session, goal.workspace_id)
     method_names = {t.canonical_name for t in method_terms}
     # Methods = derived (global 7 dropped); other categories stay global.
-    assert method_names == {"parametric_array_loudspeaker", "spherical_microphone_array"}
+    assert method_names == {"parametric_array_modeling", "spherical_microphone_array"}
     categories = {t.category for t in all_terms}
     assert {"metric", "hardware", "failure_mode"} <= categories
     assert any(t.category == "metric" and t.workspace_id is None for t in all_terms)
@@ -173,7 +174,7 @@ def _create_goal_pinned(db, pins, name="PSZ PAL Pinned"):
 def test_goal_pins_canonicalized_round_trip(db_session):
     goal = _create_goal_pinned(db_session, ["Parametric Array Loudspeaker", "spherical_microphone_array"])
     assert goal.pinned_method_families == [
-        "parametric_array_loudspeaker",
+        "parametric_array_modeling",
         "spherical_microphone_array",
     ]
     reloaded = goal_svc.get(db_session, goal.id)
@@ -182,16 +183,16 @@ def test_goal_pins_canonicalized_round_trip(db_session):
 
 def test_derive_injects_pinned_family_agent_omitted(db_session):
     ontology_svc.seed_default_ontology(db_session)
-    goal = _create_goal_pinned(db_session, ["parametric_array_loudspeaker"])
+    goal = _create_goal_pinned(db_session, ["parametric_array_modeling"])
     mock = MockRetrievalClient()
     # Agent returns a family set that does NOT include the pinned technology.
     with patch.object(taxonomy_svc, "_induce_taxonomy", _fake_induce(_SPH)):
         result = taxonomy_svc.derive_taxonomy(db_session, goal.id, retrieval_client=mock)
     names = {t.canonical_name for t in _method_terms(db_session, goal.workspace_id)}
-    assert "parametric_array_loudspeaker" in names
+    assert "parametric_array_modeling" in names
     assert "spherical_microphone_array" in names
     # Pinned family is listed first in the result.
-    assert result.families[0].canonical_name == "parametric_array_loudspeaker"
+    assert result.families[0].canonical_name == "parametric_array_modeling"
 
 
 def test_derive_pin_override_supplements_goal_pins(db_session):
@@ -200,15 +201,15 @@ def test_derive_pin_override_supplements_goal_pins(db_session):
     mock = MockRetrievalClient()
     with patch.object(taxonomy_svc, "_induce_taxonomy", _fake_induce(_PAL)):
         taxonomy_svc.derive_taxonomy(
-            db_session, goal.id, pinned=["parametric_array_loudspeaker"], retrieval_client=mock
+            db_session, goal.id, pinned=["parametric_array_modeling"], retrieval_client=mock
         )
     names = {t.canonical_name for t in _method_terms(db_session, goal.workspace_id)}
-    assert {"parametric_array_loudspeaker", "spherical_microphone_array"} <= names
+    assert {"parametric_array_modeling", "spherical_microphone_array"} <= names
     # Ad-hoc --pin families must persist to the goal (merged with existing pins),
     # so a later re-derive still honors them.
     reloaded = goal_svc.get(db_session, goal.id)
     assert set(reloaded.pinned_method_families) == {
-        "parametric_array_loudspeaker",
+        "parametric_array_modeling",
         "spherical_microphone_array",
     }
 
@@ -219,7 +220,7 @@ def test_derive_dry_run_does_not_persist_goal_pins(db_session):
     mock = MockRetrievalClient()
     with patch.object(taxonomy_svc, "_induce_taxonomy", _fake_induce(_PAL)):
         taxonomy_svc.derive_taxonomy(
-            db_session, goal.id, pinned=["parametric_array_loudspeaker"],
+            db_session, goal.id, pinned=["parametric_array_modeling"],
             dry_run=True, retrieval_client=mock,
         )
     reloaded = goal_svc.get(db_session, goal.id)
@@ -345,10 +346,164 @@ def test_cluster_failure_degrades_gracefully(db_session, monkeypatch):
 def test_normalize_pins_survive_truncation(db_session):
     raw = [InducedFamily(canonical_name=f"corpus_family_{i}", keywords=[f"kw{i}"]) for i in range(5)]
     families = taxonomy_svc._normalize_families(
-        raw, max_families=3, pinned=["parametric_array_loudspeaker"]
+        raw, max_families=3, pinned=["parametric_array_modeling"]
     )
     names = [f.canonical_name for f in families]
     assert len(families) == 3
-    assert names[0] == "parametric_array_loudspeaker"
+    assert names[0] == "parametric_array_modeling"
     # Only 2 corpus families fit alongside the pin.
     assert sum(1 for n in names if n.startswith("corpus_family_")) == 2
+
+
+def test_normalize_collapses_alias_to_anchor():
+    raw = [InducedFamily(canonical_name="Personal Sound Zone Control", keywords=["psz"])]
+    families = taxonomy_svc._normalize_families(raw, max_families=12)
+    assert [f.canonical_name for f in families] == ["sound_zone_control"]
+
+
+def test_normalize_merges_near_duplicates_unions_keywords():
+    # Two induced families that collapse onto the same anchor must merge, not drop.
+    raw = [
+        InducedFamily(
+            canonical_name="personal_sound_zone_control",
+            keywords=["psz"],
+            related_to=["pressure_matching"],
+        ),
+        InducedFamily(
+            canonical_name="personal_sound_zones_system_design",
+            keywords=["system design"],
+            related_to=["acoustic_contrast_control"],
+        ),
+    ]
+    families = taxonomy_svc._normalize_families(raw, max_families=12)
+    assert len(families) == 1
+    fam = families[0]
+    assert fam.canonical_name == "sound_zone_control"
+    assert set(fam.keywords) == {"psz", "system design"}
+    # related_to survives the merge, minus references not in the final set.
+    assert fam.related_to == []
+
+
+def test_induction_prompt_includes_anchor_vocabulary(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    goal = _create_goal(db_session)
+    captured: dict = {}
+    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+        taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=MockRetrievalClient()
+        )
+    system = captured["system"]
+    assert "sound_zone_control" in system
+    assert "variable_span_tradeoff" in system
+    assert "experiment runner recognises" in system
+
+
+def _make_method_term(db, ws, name):
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    from coscientist.models.ontology import OntologyTerm
+
+    now = datetime.now(timezone.utc)
+    term = OntologyTerm(
+        id=str(_uuid.uuid4()),
+        canonical_name=name,
+        category="method",
+        description=None,
+        keywords=json.dumps([name.replace("_", " ")]),
+        status="active",
+        workspace_id=ws,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(term)
+    return term
+
+
+def _make_card(db, ws, method_family):
+    import uuid as _uuid
+
+    from coscientist.models.approach import ApproachCard
+
+    card = ApproachCard(
+        id=str(_uuid.uuid4()),
+        workspace_id=ws,
+        name=method_family.replace("_", " ").title(),
+        method_family=method_family,
+    )
+    db.add(card)
+    return card
+
+
+def test_canonicalize_goal_families_renames_terms_and_cards(db_session):
+    goal = _create_goal(db_session)
+    ws = goal.workspace_id
+    _make_method_term(db_session, ws, "personal_sound_zone_control")
+    _make_method_term(db_session, ws, "acoustic_contrast_control")  # already canonical
+    card = _make_card(db_session, ws, "personal_sound_zone_control")
+    db_session.commit()
+
+    result = taxonomy_svc.canonicalize_goal_families(db_session, goal.id)
+
+    assert ("personal_sound_zone_control", "sound_zone_control") in result["term_renames"]
+    names = {t.canonical_name for t in _method_terms(db_session, ws)}
+    assert names == {"sound_zone_control", "acoustic_contrast_control"}
+    db_session.refresh(card)
+    assert card.method_family == "sound_zone_control"
+
+
+def test_canonicalize_goal_families_dry_run_writes_nothing(db_session):
+    goal = _create_goal(db_session)
+    ws = goal.workspace_id
+    _make_method_term(db_session, ws, "personal_sound_zone_control")
+    card = _make_card(db_session, ws, "personal_sound_zone_control")
+    db_session.commit()
+
+    result = taxonomy_svc.canonicalize_goal_families(db_session, goal.id, dry_run=True)
+    db_session.rollback()
+
+    assert result["dry_run"] is True
+    assert len(result["term_renames"]) == 1
+    names = {t.canonical_name for t in _method_terms(db_session, ws)}
+    assert names == {"personal_sound_zone_control"}
+    db_session.refresh(card)
+    assert card.method_family == "personal_sound_zone_control"
+
+
+def test_canonicalize_goal_families_merges_colliding_terms(db_session):
+    from coscientist.models.ontology import OntologyRelationship
+
+    goal = _create_goal(db_session)
+    ws = goal.workspace_id
+    # Both collapse to sound_zone_control → one survives, keywords unioned.
+    src = _make_method_term(db_session, ws, "personal_sound_zone_control")
+    dst = _make_method_term(db_session, ws, "sound_zone_control")
+    db_session.commit()
+
+    result = taxonomy_svc.canonicalize_goal_families(db_session, goal.id)
+
+    assert ("personal_sound_zone_control", "sound_zone_control") in result["term_merges"]
+    surviving = _method_terms(db_session, ws)
+    assert {t.canonical_name for t in surviving} == {"sound_zone_control"}
+    kept = surviving[0]
+    assert set(json.loads(kept.keywords)) == {
+        "personal sound zone control",
+        "sound zone control",
+    }
+    # No dangling relationships or duplicate term rows.
+    assert db_session.query(OntologyRelationship).count() == 0
+
+
+def test_canonicalize_goal_families_idempotent(db_session):
+    goal = _create_goal(db_session)
+    ws = goal.workspace_id
+    _make_method_term(db_session, ws, "variable_span_tradeoff_filter")
+    _make_card(db_session, ws, "variable_span_tradeoff_filter")
+    db_session.commit()
+
+    taxonomy_svc.canonicalize_goal_families(db_session, goal.id)
+    second = taxonomy_svc.canonicalize_goal_families(db_session, goal.id)
+
+    assert second["term_renames"] == []
+    assert second["term_merges"] == []
+    assert second["card_updates"] == []

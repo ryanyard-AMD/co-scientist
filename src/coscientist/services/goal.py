@@ -1,5 +1,4 @@
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 
@@ -7,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from coscientist.domain import canonicalize_family
 from coscientist.models.goal import ResearchGoal
 from coscientist.schemas.goal import (
     DeviceConstraints,
@@ -23,13 +23,12 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     GoalStatusEnum.archived: set(),
 }
 
-_CANON_RE = re.compile(r"[^a-z0-9]+")
-
-
 def _canonicalize_pins(names: list[str]) -> list[str]:
+    """Canonicalize pinned method families onto the controlled vocabulary so a
+    user-supplied pin aligns with the same anchors the taxonomy and runner use."""
     out: list[str] = []
     for name in names:
-        canon = _CANON_RE.sub("_", name.strip().lower()).strip("_")
+        canon = canonicalize_family(name)
         if canon and canon not in out:
             out.append(canon)
     return out

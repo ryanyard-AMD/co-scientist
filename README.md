@@ -66,9 +66,10 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 - 63 seed terms across all categories, seeded via Alembic migration or the idempotent `cs ontology seed` command (also seeds `related_to` method relationships from `domain.RELATED_METHODS`)
 - CRUD API + merge operation (merges keywords, moves relationships, updates evidence records, deprecates source)
 - Scout automatically loads ontology terms from DB for classification
-- **Corpus-derived, goal-scoped method taxonomy** (`cs ontology derive <goal_id>`): instead of forcing every goal into the fixed 7 seed method families, Claude induces the method families actually present in that goal's corpus from a broad retrieval sample, and persists them as goal-scoped `OntologyTerm`s (`workspace_id == goal_id`). Terms with `workspace_id = NULL` are the shared global seed. Scout's term loader is goal-aware: per category, goal-scoped terms override the global seed when present (methods use the derived set; metric/hardware/failure_mode stay global). A goal with no derived taxonomy falls back to the global seed. Use `--dry-run` to review induced families without persisting, and `cs ontology list -w <goal_id>` to inspect derived terms.
-- **Pinned method families** (`cs goal pin <goal_id> <family>...` or `cs goal create --pin`): induction is a sample-plus-LLM step, so a given `derive` may or may not name a goal's defining technologies as standalone families. A goal can declare *must-have* families (stored as `pinned_method_families`, canonicalized to snake_case) that induction is instructed to include and that are guaranteed to be persisted — reserved against the `--max-families` budget and never truncated — even if the agent omits them. `cs ontology derive --pin <family>` adds ad-hoc pins on top of the goal's declared set; on a real (non-dry-run) derive these are merged into the goal's `pinned_method_families` and persisted, so a later re-derive still honors them. A `--dry-run` derive uses the ad-hoc pins for the preview but does not mutate the goal.
+- **Corpus-derived, goal-scoped method taxonomy** (`cs ontology derive <goal_id>`): instead of forcing every goal into the fixed 7 seed method families, Claude induces the method families actually present in that goal's corpus from a broad retrieval sample, and persists them as goal-scoped `OntologyTerm`s (`workspace_id == goal_id`). Terms with `workspace_id = NULL` are the shared global seed. Scout's term loader is goal-aware: per category, goal-scoped terms override the global seed when present (methods use the derived set; metric/hardware/failure_mode stay global). **`cs scout run` requires a derived method taxonomy for the goal and refuses (`422`) if none is persisted** — this replaces the old silent fall-back to the global seed, which could bucket a goal's evidence into the wrong domain (e.g. classifying sound-field-reproduction papers into the PSZ seed families). Use `--dry-run` to review induced families without persisting (note: a dry-run does **not** satisfy scout's precondition), and `cs ontology list -w <goal_id>` to inspect derived terms.
+- **Pinned method families** (`cs goal pin <goal_id> <family>...` or `cs goal create --pin`): induction is a sample-plus-LLM step, so a given `derive` may or may not name a goal's defining technologies as standalone families. A goal can declare *must-have* families (stored as `pinned_method_families`, canonicalized onto the controlled vocabulary — see the next bullet) that induction is instructed to include and that are guaranteed to be persisted — reserved against the `--max-families` budget and never truncated — even if the agent omits them. `cs ontology derive --pin <family>` adds ad-hoc pins on top of the goal's declared set; on a real (non-dry-run) derive these are merged into the goal's `pinned_method_families` and persisted, so a later re-derive still honors them. A `--dry-run` derive uses the ad-hoc pins for the preview but does not mutate the goal.
 - **Corpus-grounded induction** (`CS_TAXONOMY_GROUND_IN_CORPUS`, default on): to reduce the non-determinism of pure LLM induction, the derive step feeds the corpus's real Method entity nodes into the induction prompt. It fetches `GET /entities/papers/{id}` for the sampled papers (bounded to 15 papers / 40 method names) and lists those Title Case Method-node names as grounding hints, asking the agent to align a family's `canonical_name` to a node when they correspond — so the induced taxonomy reconciles with the GraphRAG graph rather than drifting on wording. Hints are advisory: only families actually supported by the chunks are kept, and pinned-family guarantees are unchanged. Whole-corpus embedding topic clusters (`GET /advanced/topics/clusters`) can be added as weak hints via `CS_TAXONOMY_USE_TOPIC_CLUSTERS` (default off — the endpoint recomputes k-means on demand and is slow; the call is bounded by `CS_TAXONOMY_CLUSTER_TIMEOUT` and failures degrade to no hint).
+- **Controlled `method_family` vocabulary (repro-aligned)**: a card's `method_family` must exact-match a repro reproduction's declared family for the runner to route it to a real experiment (step 8), so induced/pinned families are canonicalized onto a controlled vocabulary anchored on repro's declared families (`domain.REPRO_ANCHOR_FAMILIES`). `domain.canonicalize_family()` snake-cases a name then collapses known synonyms/near-duplicates to their anchor via `domain.FAMILY_ALIASES` (e.g. `personal_sound_zone_control` → `sound_zone_control`, `variable_span_tradeoff_filter` → `variable_span_tradeoff`). Induction applies this in two ways: the anchor list is fed into the LLM prompt as a preferred vocabulary, and `_normalize_families` deterministically collapses aliases and **merges** colliding families (unioning keywords/relationships) rather than dropping them. Families with no repro reproduction pass through unchanged (extra, unrunnable — the runner refuses them cleanly). Because re-deriving a taxonomy is lossy (it does not re-classify existing evidence/approach rows), `cs ontology canonicalize <goal_id> [--dry-run]` backfills an existing goal's stored method terms and approach-card `method_family` values onto the current vocabulary in place.
 
 ### CS-EPIC-APPROACH: Approach Card Generation and Curation
 
@@ -377,7 +378,19 @@ cs goal activate <GOAL_ID>
 
 ### 2. Scout literature (requires retrieval API on port 8000)
 
+**Derive the taxonomy first.** Scout classifies evidence using the goal's own
+corpus-derived method-family taxonomy. A goal has none until you run `cs ontology derive`
+(see below) — so `cs scout run` **refuses with a `422`** until a taxonomy is persisted,
+rather than silently falling back to the global seed vocabulary and mis-classifying
+evidence into the wrong domain. `--dry-run` previews the taxonomy but does **not** persist
+it, so it does not satisfy the precondition.
+
 ```bash
+cs ontology derive <GOAL_ID>                    # induce + PERSIST the goal taxonomy (required before scout)
+cs ontology derive <GOAL_ID> --dry-run          # preview only — does NOT persist, does NOT satisfy scout
+cs ontology canonicalize <GOAL_ID>              # backfill existing goal method terms + cards onto the controlled vocab
+cs ontology canonicalize <GOAL_ID> --dry-run    # preview renames/merges only — does NOT persist
+
 cs scout run <GOAL_ID>
 cs scout run <GOAL_ID> --synthesize             # also run Claude synthesis per method family
 cs scout synthesize <GOAL_ID>                   # (re)synthesize already-ingested evidence, no re-retrieval
@@ -505,46 +518,61 @@ cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' s
 ### 8. Run on the real simulator (automated)
 
 An approved experiment can be executed against the [repro](../experiment) runner, which drives
-real PSZ acoustic simulators. This replaces hand-typing metrics: co-scientist turns the card into
-a repro `ExperimentProposal` and calls the **design-run** handoff endpoint
-(`POST /workspaces/{id}/design-run`), which grounds the run command in the paper's curated
-reproduction script rather than a canned command line. Co-scientist then polls the run to
-completion, pulls `metrics.json`, translates the simulator's native metric keys to co-scientist
-canonical names, transitions the experiment to `running`, and feeds the measured values straight
-into the validation agent.
+real PSZ acoustic simulators. This replaces hand-typing metrics. Rather than dispatching from a
+local `method_family → simulator` table, co-scientist **asks repro to recommend the reproduction**
+(handoff P4): it turns the card into a repro `ExperimentProposal` and calls
+**recommend-method** (`POST /workspaces/{id}/recommend-method`) with the card's hypothesis. Repro
+runs corpus-wide retrieval and returns a ranked list of candidate reproductions, each flagged
+`runnable` or not. Co-scientist runs the **top runnable candidate**, calls **design-run**
+(`POST /workspaces/{id}/design-run`) to ground the command in that paper's curated reproduction,
+polls to completion, pulls `metrics.json`, translates the native metric keys to co-scientist
+canonical names, transitions the experiment to `running`, and feeds the measured values into the
+validation agent.
 
 ```bash
 # Prerequisite: the repro API must be serving (default http://localhost:8003)
 #   in the repro project:  repro serve
 
-cs experiment run <EXPERIMENT_ID> <GOAL_ID>             # run → validate in one step
+cs experiment run <EXPERIMENT_ID> <GOAL_ID>             # recommend → run → validate in one step
 cs experiment run <EXPERIMENT_ID> <GOAL_ID> --timeout 900 --json
 ```
 
-The reproduction is chosen by the primary approach's method family; the live repro workspace is
-resolved at run time by matching the reproduction's retrieval `paper_id` against the workspaces'
-`retrieval_paper_id` (no hardcoded workspace UUIDs):
+The reproduction is chosen by **repro's recommendation**, not a local registry — the card's
+`method_family` is only a bias hint into ranking. The live repro workspace is resolved at run time
+by matching the recommended candidate's `paper_id` against the workspaces' `retrieval_paper_id`
+(no hardcoded workspace UUIDs). Native→canonical metric translation is keyed by the reproduction's
+stable `experiment_id`:
 
-| method family | repro reproduction (paper) | native → canonical metrics |
-|---|---|---|
-| acoustic_contrast_control, beamforming, pressure_matching, null_steering | `vast_simulate.py` (Fast Generation of Sound Zones … VAST) | `oAC_best_dB`→`acoustic_contrast_db`; `nsde_achieved_dB`→`bright_zone_error` |
+| repro `experiment_id` | native → canonical metrics |
+|---|---|
+| `fast-generation-of-sound-zones-using-var-v1` (VAST) | `oAC_best_dB`→`acoustic_contrast_db`; `nsde_achieved_dB`→`bright_zone_error` |
+
+Entries are added as each reproduction's emitted native keys are confirmed (`EXPERIMENT_METRIC_MAP`
+in `services/runner.py`). A reproduction with no map entry (or one that emits no top-level scalar
+`metrics.json`) yields no translatable metrics → the runner refuses rather than fabricate a verdict.
+
+**Recommendation provenance.** If repro's recommended reproduction **diverges** from the card's
+committed `method_family` (the family isn't among the candidate's `method_families`), the runner
+still runs it but records `diverged_from_card_family` — the divergence is auditable, never silent.
+It also records `unmeasurable_pass_conditions`: card pass conditions naming a metric the chosen
+reproduction can't produce (which would otherwise refute the run for a metric it could never
+measure). Both live in the `recommendation` block of `execution_handoff.batch_expansion`, alongside
+the design-run **honored/dropped** report, `repro_workspace_id`, `draft_id`, and `spec_status`; the
+run id is appended to `run_request_ids`.
 
 **Card → proposal mapping.** The card's `objective`, `hypothesis_text`, `independent_variables`,
 and `metrics` are sent as-is; the `validation.pass_conditions` dict is converted to repro's
-`list[PassCondition]` (key suffix `_min`→`>=`, `_max`→`>=`… i.e. `<=`; suffix stripped for the
-metric name). The design-run response's **honored/dropped** report — which proposal variables the
-curated script's arg surface actually accepts versus drops (e.g. a `speaker_count` sweep the VAST
-script has no flag for) — is persisted onto the card's `execution_handoff.batch_expansion`
-(alongside `repro_workspace_id`, `draft_id`, `spec_status`), and the run id is appended to
-`run_request_ids`. This makes the arg-surface gap auditable instead of a silent collapse.
+`list[PassCondition]` (key suffix `_min`→`>=`, `_max`→`<=`; suffix stripped for the metric name).
+The chosen `experiment_id` is added to the proposal before design-run.
 
 Design-run is called with `auto_approve=true`, so the grounded spec passes repro's own quality
-guardrail before it runs. Configure the endpoint via `CS_REPRO_URL` / `CS_REPRO_API_KEY` (see
-`config.py`). If no reproduction is registered for the method family, no repro workspace exists
-for its paper, or the run produces no translatable metrics, the command fails with a clear message
-and leaves the experiment `approved`; it never fabricates results. Combination experiments (>1
-approach) are refused — no single-paper reproduction can run the combination. Fall back to the
-manual path (step 9) in those cases.
+guardrail before it runs. Configure the endpoint via `CS_REPRO_URL` / `CS_REPRO_API_KEY`, the
+retrieval breadth via `CS_RUNNER_RECOMMEND_TOP_K`, and provenance of unmeasurable pass conditions
+via `CS_RUNNER_ALIGN_PASS_CONDITIONS` (see `config.py`). If recommend-method returns no runnable
+reproduction, no repro workspace is bound to the recommended paper, or the run produces no
+translatable metrics, the command fails with a clear message and leaves the experiment `approved`;
+it never fabricates results. Combination experiments (>1 approach) are refused — no single-paper
+reproduction can run the combination. Fall back to the manual path (step 9) in those cases.
 
 ### 9. Submit results manually and validate
 
@@ -649,6 +677,7 @@ cs ontology show <TERM_ID>
 cs ontology add --name <NAME> --category <CAT> --keywords '["kw1","kw2"]'
 cs ontology merge --source <SOURCE_ID> --target <TARGET_ID>
 cs ontology derive <GOAL_ID> [--top-k 30] [--max-families 12] [--dry-run] [--pin FAMILY ...]  # induce goal-scoped method taxonomy from corpus
+cs ontology canonicalize <GOAL_ID> [--dry-run]  # backfill goal method terms + approach cards onto the controlled vocabulary
 ```
 
 ### Approaches
@@ -981,6 +1010,8 @@ Environment variables (prefix `CS_`):
 | `CS_ANTHROPIC_API_KEY` | | Anthropic API key for the validation agent |
 | `CS_REPRO_URL` | `http://localhost:8003` | Base URL of the repro experiment runner |
 | `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
+| `CS_RUNNER_RECOMMEND_TOP_K` | `10` | Retrieval breadth for repro's recommend-method when the runner resolves a reproduction |
+| `CS_RUNNER_ALIGN_PASS_CONDITIONS` | `true` | Record card pass conditions the chosen reproduction can't measure (auditable, not dropped) |
 | `CS_EVAL_MINUTES_PER_AGENT_ACTION` | `45` | Minutes-saved heuristic per successful agent action (CS-EVAL-005) |
 | `CS_EVAL_STATUS_FRESHNESS_THRESHOLD_SECONDS` | `3600` | Age after which an in-flight run request's status is stale (CS-EVAL-010) |
 | `CS_ENFORCE_EXECUTION_BOUNDARY` | `false` | When true, block the direct repro-runner path — experiments run only via RunRequest handoff (CS-GOV-008) |

@@ -6,6 +6,7 @@ Falls back to hardcoded dicts when no DB terms are provided.
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -173,6 +174,55 @@ RELATED_METHODS: dict[str, list[str]] = {
     "crosstalk_cancellation": ["active_noise_cancellation", "beamforming"],
     "adaptive_filtering": ["active_noise_cancellation", "beamforming"],
 }
+
+# The method_family vocabulary declared by the repro experiment runner. repro's
+# recommend-method boosts a runnable reproduction only when the proposal's
+# method_family EXACTLY matches one of a reproduction's declared families, so
+# co-scientist's induced taxonomy must speak this vocabulary at the runner
+# boundary. Small and stable; refreshable by walking repro's metrics-surface.
+REPRO_ANCHOR_FAMILIES: tuple[str, ...] = (
+    "acoustic_contrast_control",
+    "pressure_matching",
+    "sound_zone_control",
+    "robust_pressure_matching",
+    "variable_span_tradeoff",
+    "parametric_array_modeling",
+    "sound_field_estimation",
+    "sound_field_reconstruction",
+    "physics_informed_neural_network",
+    "kernel_interpolation",
+    "adaptive_kernel_interpolation",
+    "boundary_integral",
+)
+
+# co-scientist induced-family canonical names (snake_case) → repro anchor family.
+# Collapses cross-system drift and internal near-duplicates deterministically.
+FAMILY_ALIASES: dict[str, str] = {
+    "personal_sound_zone_control": "sound_zone_control",
+    "personal_sound_zones_system_design": "sound_zone_control",
+    "sound_zone": "sound_zone_control",
+    "variable_span_trade_off_filter": "variable_span_tradeoff",
+    "variable_span_tradeoff_filter": "variable_span_tradeoff",
+    "parametric_array_loudspeaker": "parametric_array_modeling",
+    "parametric_loudspeaker_sound_zones": "parametric_array_modeling",
+}
+
+_CANON_RE = re.compile(r"[^a-z0-9]+")
+
+
+def canonicalize_name(name: str) -> str:
+    """snake_case a free-form family name (lowercase, non-alphanumerics → '_')."""
+    return _CANON_RE.sub("_", name.strip().lower()).strip("_")
+
+
+def canonicalize_family(name: str) -> str:
+    """Canonicalize a method-family name and collapse it onto a repro anchor.
+
+    snake_case first, then apply FAMILY_ALIASES so co-scientist synonyms and
+    near-duplicates resolve to the vocabulary repro's runner exact-matches.
+    """
+    canon = canonicalize_name(name)
+    return FAMILY_ALIASES.get(canon, canon)
 
 
 def classify_text(

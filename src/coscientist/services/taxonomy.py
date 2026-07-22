@@ -9,7 +9,6 @@ goal_id). Scout then loads those in place of the global seed for that goal.
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.retrieval import RetrievalClient
 from coscientist.config import settings
+from coscientist.domain import REPRO_ANCHOR_FAMILIES, canonicalize_family
+from coscientist.models.approach import ApproachCard
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.schemas.taxonomy import (
     RECORD_TAXONOMY_TOOL,
@@ -34,14 +35,9 @@ from coscientist.services import governance as governance_svc
 
 _MAX_SAMPLE_CHUNKS = 120
 _SNIPPET_CHARS = 800
-_NAME_RE = re.compile(r"[^a-z0-9]+")
 # Bound the entity fan-out so grounding never dominates derivation latency.
 _MAX_HINT_PAPERS = 15
 _MAX_METHOD_HINTS = 40
-
-
-def _canonicalize(name: str) -> str:
-    return _NAME_RE.sub("_", name.strip().lower()).strip("_")
 
 
 def _build_sampling_queries(goal) -> list[str]:
@@ -187,6 +183,15 @@ def _induce_taxonomy(
             f"off-domain papers) suggest these groupings: {cluster_list}. Use only as "
             "weak hints."
         )
+    anchor_list = ", ".join(REPRO_ANCHOR_FAMILIES)
+    system_prompt += (
+        " The downstream experiment runner recognises these canonical method "
+        f"families (runnable reproductions declare them): {anchor_list}. When an "
+        "induced family corresponds to one of these, use that EXACT snake_case "
+        "canonical_name so the taxonomy reconciles with the runner. These are "
+        "preferred names, not a required set — only include families the chunks "
+        "actually support, and keep genuinely distinct families under their own names."
+    )
     chunk_blocks = []
     for chunk in chunks:
         block = f"Title: {chunk.title}"
@@ -246,23 +251,33 @@ def _induce_taxonomy(
 def _normalize_families(
     raw: list[InducedFamily], max_families: int, pinned: list[str] | None = None
 ) -> list[InducedFamily]:
-    pinned_canon = [_canonicalize(p) for p in (pinned or []) if p.strip()]
+    pinned_canon = [canonicalize_family(p) for p in (pinned or []) if p.strip()]
     pinned_set = set(pinned_canon)
 
     by_name: dict[str, InducedFamily] = {}
     order: list[InducedFamily] = []
     for fam in raw:
-        canon = _canonicalize(fam.canonical_name)
-        if not canon or canon in by_name:
+        canon = canonicalize_family(fam.canonical_name)
+        if not canon:
             continue
         keywords = list(dict.fromkeys(k.strip().lower() for k in fam.keywords if k.strip()))
+        related = [canonicalize_family(r) for r in fam.related_to if r.strip()]
+        existing = by_name.get(canon)
+        if existing is not None:
+            # Near-duplicate / alias of an already-seen family: merge rather than
+            # drop, so keywords and relationships from both survive the collapse.
+            existing.keywords = list(dict.fromkeys([*existing.keywords, *keywords]))
+            existing.related_to = list(dict.fromkeys([*existing.related_to, *related]))
+            if not existing.description and fam.description:
+                existing.description = fam.description
+            continue
         if not keywords:
             keywords = [canon.replace("_", " ")]
         norm = InducedFamily(
             canonical_name=canon,
             description=fam.description,
             keywords=keywords,
-            related_to=[_canonicalize(r) for r in fam.related_to if r.strip()],
+            related_to=related,
         )
         by_name[canon] = norm
         order.append(norm)
@@ -374,7 +389,7 @@ def derive_taxonomy(
     # Effective pins = the goal's declared must-haves plus any ad-hoc override.
     effective_pins: list[str] = []
     for name in list(goal.pinned_method_families or []) + list(pinned or []):
-        canon = _canonicalize(name)
+        canon = canonicalize_family(name)
         if canon and canon not in effective_pins:
             effective_pins.append(canon)
 
@@ -437,3 +452,110 @@ def derive_taxonomy(
         terms_created=terms_created,
         relationships_created=rels_created,
     )
+
+
+def _merge_term(db: Session, src: OntologyTerm, dst: OntologyTerm, now: datetime) -> None:
+    """Fold ``src`` method term into ``dst`` (same goal): union keywords, repoint
+    relationships, delete ``src``. Assumes both are goal-scoped method terms."""
+    src_kw = json.loads(src.keywords) if src.keywords else []
+    dst_kw = json.loads(dst.keywords) if dst.keywords else []
+    dst.keywords = json.dumps(list(dict.fromkeys([*dst_kw, *src_kw])))
+    if not dst.description and src.description:
+        dst.description = src.description
+    dst.updated_at = now
+
+    rels = db.scalars(
+        select(OntologyRelationship).where(
+            or_(
+                OntologyRelationship.source_term_id == src.id,
+                OntologyRelationship.target_term_id == src.id,
+            )
+        )
+    ).all()
+    existing_pairs = {
+        (r.source_term_id, r.target_term_id)
+        for r in db.scalars(
+            select(OntologyRelationship).where(
+                or_(
+                    OntologyRelationship.source_term_id == dst.id,
+                    OntologyRelationship.target_term_id == dst.id,
+                )
+            )
+        ).all()
+    }
+    for rel in rels:
+        rel.source_term_id = dst.id if rel.source_term_id == src.id else rel.source_term_id
+        rel.target_term_id = dst.id if rel.target_term_id == src.id else rel.target_term_id
+        pair = (rel.source_term_id, rel.target_term_id)
+        if rel.source_term_id == rel.target_term_id or pair in existing_pairs:
+            db.delete(rel)  # self-loop or duplicate after repoint
+        else:
+            existing_pairs.add(pair)
+    db.delete(src)
+
+
+def canonicalize_goal_families(
+    db: Session, goal_id: str, *, dry_run: bool = False
+) -> dict:
+    """Backfill: collapse a goal's stored method-family names onto the controlled
+    vocabulary (repro anchors via ``canonicalize_family``).
+
+    Rewrites goal-scoped method ``OntologyTerm``s and every ``ApproachCard`` in the
+    goal. Terms whose canonicalized name collides with a sibling term are merged
+    (keywords + relationships), otherwise renamed in place. Idempotent. ``dry_run``
+    reports the changes without writing. Needed because re-deriving the taxonomy is
+    lossy — it does not re-classify existing evidence/approach rows.
+    """
+    goal = goal_svc.get(db, goal_id)
+    ws = goal.workspace_id
+    now = datetime.now(timezone.utc)
+
+    terms = list(db.scalars(
+        select(OntologyTerm).where(
+            OntologyTerm.category == "method",
+            OntologyTerm.workspace_id == ws,
+        )
+    ).all())
+    by_name: dict[str, OntologyTerm] = {t.canonical_name: t for t in terms}
+
+    term_renames: list[tuple[str, str]] = []
+    term_merges: list[tuple[str, str]] = []
+    for term in terms:
+        new = canonicalize_family(term.canonical_name)
+        if new == term.canonical_name:
+            continue
+        target = by_name.get(new)
+        if target is not None and target.id != term.id:
+            term_merges.append((term.canonical_name, new))
+            if not dry_run:
+                _merge_term(db, term, target, now)
+        else:
+            term_renames.append((term.canonical_name, new))
+            if not dry_run:
+                term.canonical_name = new
+                term.updated_at = now
+                by_name[new] = term
+
+    cards = list(db.scalars(
+        select(ApproachCard).where(ApproachCard.workspace_id == ws)
+    ).all())
+    card_updates: list[tuple[str, str, str]] = []
+    for card in cards:
+        new = canonicalize_family(card.method_family)
+        if new != card.method_family:
+            card_updates.append((card.id, card.method_family, new))
+            if not dry_run:
+                card.method_family = new
+                card.updated_at = now
+
+    if not dry_run:
+        db.commit()
+
+    return {
+        "goal_id": goal_id,
+        "workspace_id": ws,
+        "dry_run": dry_run,
+        "term_renames": term_renames,
+        "term_merges": term_merges,
+        "card_updates": card_updates,
+    }

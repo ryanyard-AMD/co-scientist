@@ -550,6 +550,52 @@ def ontology_derive(
         db.close()
 
 
+@ontology_app.command("canonicalize")
+def ontology_canonicalize(
+    goal_id: str = typer.Argument(..., help="Goal id whose families to canonicalize"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report changes without persisting"
+    ),
+):
+    """Collapse a goal's method-family names onto the controlled vocabulary.
+
+    Rewrites goal-scoped method ontology terms and approach cards so their
+    method_family aligns with the repro runner's declared families (fixes
+    cross-system drift and internal near-duplicates without a lossy re-derive).
+    """
+    from fastapi import HTTPException
+
+    db = _get_session()
+    try:
+        result = taxonomy_svc.canonicalize_goal_families(db, goal_id, dry_run=dry_run)
+        label = "Would change (dry-run)" if result["dry_run"] else "Changed"
+        changes = (
+            len(result["term_renames"])
+            + len(result["term_merges"])
+            + len(result["card_updates"])
+        )
+        table = Table(title=f"{label}: {changes} edits on goal {goal_id[:8]}…")
+        table.add_column("Kind", style="cyan")
+        table.add_column("From")
+        table.add_column("To")
+        for old, new in result["term_renames"]:
+            table.add_row("term rename", old, new)
+        for old, new in result["term_merges"]:
+            table.add_row("term merge", old, new)
+        for card_id, old, new in result["card_updates"]:
+            table.add_row(f"card {card_id[:8]}…", old, new)
+        console.print(table)
+        if not result["dry_run"] and changes:
+            console.print("[green]Committed.[/green]")
+        elif not changes:
+            console.print("[green]Already canonical; nothing to do.[/green]")
+    except HTTPException as exc:
+        console.print(f"[red]Error {exc.status_code}: {exc.detail}[/red]")
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
 @ontology_app.command("show")
 def ontology_show(term_id: str = typer.Argument(...)):
     """Show full details of an ontology term."""
@@ -1197,14 +1243,30 @@ def experiment_run(
     timeout: Optional[float] = typer.Option(None, "--timeout", "-t", help="Seconds to wait for the repro run"),
     json_out: bool = typer.Option(False, "--json", help="Print raw JSON result"),
 ):
-    """Run an approved experiment on the repro simulator and validate real metrics."""
+    """Run an approved experiment: repro recommends the reproduction, then runs + validates real metrics."""
     db = _get_session()
     try:
         result = runner_svc.run_experiment(db, experiment_id, goal_id, timeout=timeout)
         if json_out:
             console.print_json(result.model_dump_json(indent=2))
             return
-        console.print(f"[green]Ran {result.simulator} → run {result.run_id[:8]}… ({result.repro_status})[/green]")
+        rec = result.recommendation or {}
+        score = rec.get("score")
+        score_str = f" (score {score:.3g})" if isinstance(score, (int, float)) else ""
+        console.print(
+            f"[green]Ran recommended reproduction {result.simulator}{score_str} → "
+            f"run {result.run_id[:8]}… ({result.repro_status})[/green]"
+        )
+        if rec.get("diverged_from_card_family"):
+            console.print(
+                f"[yellow]⚠ recommended method diverges from card family "
+                f"{rec.get('card_method_family')!r}; ran {rec.get('method_families')}[/yellow]"
+            )
+        if rec.get("unmeasurable_pass_conditions"):
+            console.print(
+                f"[yellow]⚠ pass conditions on metrics this reproduction cannot measure: "
+                f"{rec['unmeasurable_pass_conditions']}[/yellow]"
+            )
         if result.measured_metrics:
             table = Table(title="Measured Metrics (canonical)")
             table.add_column("Metric")
