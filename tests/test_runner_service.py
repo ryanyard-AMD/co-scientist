@@ -48,8 +48,10 @@ def _approach(db, workspace_id, *, method_family="acoustic_contrast_control"):
     return card
 
 
-def _experiment(db, workspace_id, approach_ids, *, status="approved"):
+def _experiment(db, workspace_id, approach_ids, *, status="approved", pass_conditions=None):
     now = datetime.now(timezone.utc)
+    if pass_conditions is None:
+        pass_conditions = {"acoustic_contrast_db_min": 20.0}
     card = ExperimentCard(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
@@ -61,7 +63,7 @@ def _experiment(db, workspace_id, approach_ids, *, status="approved"):
         independent_variables=json.dumps({}),
         fixed_assumptions=json.dumps({}),
         metrics=json.dumps(["acoustic_contrast_db"]),
-        validation=json.dumps({"pass_conditions": {"acoustic_contrast_db_min": 20.0}}),
+        validation=json.dumps({"pass_conditions": pass_conditions}),
         runtime=json.dumps({}),
         artifacts=json.dumps([]),
         estimated_cost="low",
@@ -78,10 +80,32 @@ def _experiment(db, workspace_id, approach_ids, *, status="approved"):
 
 
 _VAST_PAPER_ID = "786380fd-256b-46b6-b71e-af1b41adeb0b"
+_VAST_EXPERIMENT_ID = "fast-generation-of-sound-zones-using-var-v1"
+_VAST_FAMILIES = [
+    "acoustic_contrast_control",
+    "pressure_matching",
+    "sound_zone_control",
+    "variable_span_tradeoff",
+]
+
+
+def _vast_candidate(**overrides):
+    cand = {
+        "paper_id": _VAST_PAPER_ID,
+        "title": "Fast Generation of Sound Zones",
+        "score": 0.94,
+        "rationale": "Method",
+        "runnable": True,
+        "experiment_ids": [_VAST_EXPERIMENT_ID],
+        "method_families": list(_VAST_FAMILIES),
+        "family_match": True,
+    }
+    cand.update(overrides)
+    return cand
 
 
 class _FakeReproClient:
-    """Stand-in for ReproClient; records the design-run proposal, scripts responses."""
+    """Stand-in for ReproClient; records the recommend/design proposals, scripts responses."""
 
     instances: list["_FakeReproClient"] = []
 
@@ -94,6 +118,8 @@ class _FakeReproClient:
         honored=None,
         dropped=None,
         workspaces=None,
+        candidates=None,
+        surface=None,
     ):
         self.run_status = run_status
         self.metrics = metrics if metrics is not None else {}
@@ -105,7 +131,11 @@ class _FakeReproClient:
             if workspaces is not None
             else [{"id": "ws-vast", "retrieval_paper_id": _VAST_PAPER_ID}]
         )
+        self.candidates = candidates if candidates is not None else [_vast_candidate()]
+        self.surface = surface
         self.submitted_proposal = None
+        self.recommend_proposal = None
+        self.recommend_workspace_id = None
         self.design_workspace_id = None
         _FakeReproClient.instances.append(self)
 
@@ -117,6 +147,24 @@ class _FakeReproClient:
 
     def list_workspaces(self):
         return self.workspaces
+
+    def recommend_method(self, workspace_id, proposal, *, top_k=None, draft=False):
+        self.recommend_workspace_id = workspace_id
+        self.recommend_proposal = proposal
+        return {
+            "hypothesis": proposal.get("hypothesis"),
+            "candidates": self.candidates,
+            "draft_id": None,
+            "drafted_experiment_id": None,
+            "honored": [],
+            "dropped": [],
+            "method_family_supported": None,
+        }
+
+    def get_metrics_surface(self, workspace_id):
+        if self.surface is not None:
+            return self.surface
+        return {"paper_id": _VAST_PAPER_ID, "reproductions": []}
 
     def design_run(self, workspace_id, proposal, *, auto_approve=True):
         self.design_workspace_id = workspace_id
@@ -183,12 +231,16 @@ def test_run_success_translates_and_validates(db_session, monkeypatch):
     result = svc.run_experiment(db_session, exp.id, gid)
 
     assert result.run_id == "run-123"
-    assert result.simulator == "vast_simulate.py"
+    # simulator now names the repro reproduction repro recommended, not a local script
+    assert result.simulator == _VAST_EXPERIMENT_ID
     assert result.measured_metrics == {"acoustic_contrast_db": 18.5, "bright_zone_error": -25.0}
     # non-numeric native keys are dropped from raw too
     assert "label" not in result.raw_metrics
     # validation received the translated metrics
     assert captured["submission"].measured_metrics == {"acoustic_contrast_db": 18.5, "bright_zone_error": -25.0}
+    # recommendation provenance surfaced; no divergence (card family is in candidate families)
+    assert result.recommendation["experiment_id"] == _VAST_EXPERIMENT_ID
+    assert result.recommendation["diverged_from_card_family"] is False
     # card was transitioned to running before validation handoff
     db_session.refresh(exp)
     assert exp.status == ExperimentStatusEnum.running.value
@@ -211,34 +263,133 @@ def test_run_builds_proposal_and_records_provenance(db_session, monkeypatch):
 
     svc.run_experiment(db_session, exp.id, gid)
 
-    # design-run targeted the workspace resolved by paper id
+    # design-run targeted the workspace resolved from the recommended candidate's paper
     assert fake.design_workspace_id == "ws-vast"
-    # proposal carried the card's scientific fields
+    # recommend-method received the card's hypothesis + method_family (P5: repro
+    # ranks by declared capability, keyed on method_family — without it the runnable
+    # reproduction for the card's method is never surfaced)
+    assert fake.recommend_proposal["hypothesis"] == "Higher order increases contrast."
+    assert fake.recommend_proposal["method_family"] == "acoustic_contrast_control"
+    # proposal carried the card's scientific fields + the chosen reproduction id
     prop = fake.submitted_proposal
     assert prop["objective"] == "Measure contrast"
     assert prop["hypothesis"] == "Higher order increases contrast."
     assert prop["metrics"] == ["acoustic_contrast_db"]
+    assert prop["experiment_id"] == _VAST_EXPERIMENT_ID
     # pass_conditions dict → PassCondition list with parsed operator/metric
     assert prop["pass_conditions"] == [
         {"metric": "acoustic_contrast_db", "operator": ">=", "value": 20.0}
     ]
-    # honored/dropped + linkage persisted on the card
+    # honored/dropped + recommendation provenance persisted on the card
     db_session.refresh(exp)
     assert "run-123" in json.loads(exp.run_request_ids)
     batch = json.loads(exp.batch_expansion)
     assert batch["repro_workspace_id"] == "ws-vast"
     assert batch["dropped"] == dropped
     assert batch["honored"] == honored
+    assert batch["recommendation"]["experiment_id"] == _VAST_EXPERIMENT_ID
+    assert batch["recommendation"]["card_method_family"] == "acoustic_contrast_control"
 
 
-def test_run_no_workspace_for_paper_refuses(db_session, monkeypatch):
+def test_run_records_divergence_when_family_differs(db_session, monkeypatch):
+    # The card committed to a family the recommended reproduction does not implement;
+    # the runner runs repro's recommendation but records the divergence.
     gid = _make_goal(db_session)
-    ac = _approach(db_session, gid)
+    ac = _approach(db_session, gid, method_family="crosstalk_cancellation")
     exp = _experiment(db_session, gid, [ac.id])
 
     monkeypatch.setattr(
         svc, "ReproClient",
-        lambda: _FakeReproClient(workspaces=[{"id": "other", "retrieval_paper_id": "unrelated"}]),
+        lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
+    )
+    _fake_validation(monkeypatch)
+
+    result = svc.run_experiment(db_session, exp.id, gid)
+
+    assert result.recommendation["diverged_from_card_family"] is True
+    assert result.recommendation["card_method_family"] == "crosstalk_cancellation"
+    db_session.refresh(exp)
+    batch = json.loads(exp.batch_expansion)
+    assert batch["recommendation"]["diverged_from_card_family"] is True
+
+
+def test_run_translation_keyed_by_experiment_id(db_session, monkeypatch):
+    # A reproduction with no native→canonical map entry yields no translatable
+    # metrics even though the run emitted numeric keys → refuse, don't fabricate.
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    unknown = _vast_candidate(experiment_ids=["some-unmapped-repro-v1"])
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(
+            metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0},
+            candidates=[unknown],
+        ),
+    )
+    captured = _fake_validation(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 502
+    assert "submission" not in captured
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
+
+
+def test_run_records_unmeasurable_pass_conditions(db_session, monkeypatch):
+    # A pass condition on a metric the reproduction can't produce is recorded (not
+    # dropped) so an inevitable refutation is auditable.
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(
+        db_session, gid, [ac.id],
+        pass_conditions={"acoustic_contrast_db_min": 20.0, "latency_ms_max": 10.0},
+    )
+
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
+    )
+    _fake_validation(monkeypatch)
+
+    result = svc.run_experiment(db_session, exp.id, gid)
+    assert "latency_ms" in result.recommendation["unmeasurable_pass_conditions"]
+    assert "acoustic_contrast_db" not in result.recommendation["unmeasurable_pass_conditions"]
+
+
+def test_run_no_runnable_candidate_refuses(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    not_runnable = _vast_candidate(runnable=False, experiment_ids=[])
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(candidates=[not_runnable]),
+    )
+    captured = _fake_validation(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 422
+    assert "no runnable reproduction" in exc.value.detail
+    assert "submission" not in captured
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
+
+
+def test_run_no_workspace_for_candidate_refuses(db_session, monkeypatch):
+    # recommend-method chose a paper no repro workspace is bound to.
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    orphan = _vast_candidate(paper_id="orphan-paper")
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(candidates=[orphan]),
     )
     captured = _fake_validation(monkeypatch)
 
@@ -246,6 +397,24 @@ def test_run_no_workspace_for_paper_refuses(db_session, monkeypatch):
         svc.run_experiment(db_session, exp.id, gid)
     assert exc.value.status_code == 422
     assert "submission" not in captured
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
+
+
+def test_run_no_workspace_at_all_refuses(db_session, monkeypatch):
+    # repro has no workspace with a bound paper to query recommend-method against.
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+
+    monkeypatch.setattr(
+        svc, "ReproClient",
+        lambda: _FakeReproClient(workspaces=[{"id": "smoke", "retrieval_paper_id": None}]),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid)
+    assert exc.value.status_code == 422
     db_session.refresh(exp)
     assert exp.status == ExperimentStatusEnum.approved.value
 
@@ -280,19 +449,6 @@ def test_run_empty_metrics_refuses(db_session, monkeypatch):
     assert "submission" not in captured
     db_session.refresh(exp)
     assert exp.status == ExperimentStatusEnum.approved.value
-
-
-def test_run_no_simulator_for_family(db_session, monkeypatch):
-    gid = _make_goal(db_session)
-    ac = _approach(db_session, gid, method_family="crosstalk_cancellation")
-    exp = _experiment(db_session, gid, [ac.id])
-
-    monkeypatch.setattr(svc, "ReproClient", lambda: _FakeReproClient())
-
-    with pytest.raises(HTTPException) as exc:
-        svc.run_experiment(db_session, exp.id, gid)
-    assert exc.value.status_code == 422
-    assert "crosstalk_cancellation" in exc.value.detail
 
 
 def test_run_requires_approved_status(db_session, monkeypatch):

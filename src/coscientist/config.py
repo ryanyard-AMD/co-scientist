@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     repro_api_key: str | None = None
     repro_poll_interval: float = 2.0
     repro_run_timeout: float = 600.0
+    # P4: the runner resolves which reproduction to run by asking repro's
+    # recommend-method endpoint (top runnable candidate for the card's hypothesis)
+    # instead of a local method_family→simulator registry.
+    runner_recommend_top_k: int = 10
+    # When true, drop card pass_conditions that name metrics the chosen
+    # reproduction never emits (per metrics-surface), so a run is not refuted for
+    # a metric it could never produce. Advisory: dropped conditions are logged.
+    runner_align_pass_conditions: bool = True
     eval_minutes_per_agent_action: int = 45
     # CS-EVAL-010: an in-flight RunRequest whose status has not updated within
     # this many seconds is flagged as stale (execution-status freshness).

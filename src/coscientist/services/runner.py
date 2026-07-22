@@ -1,19 +1,24 @@
 """Real experiment runner: drives the repro API (:8003) and feeds the measured
 metrics through the existing validation pipeline.
 
-Flow for ``run_experiment``:
-  1. resolve the experiment card + its primary approach's method family
-  2. pick a repro simulator for that family (no fabrication if none registered)
-  3. POST a spec to repro, poll the run to completion
+Flow for ``run_experiment`` (P4 recommend-method):
+  1. resolve the experiment card + its primary approach (family + evidence papers)
+  2. ask repro's recommend-method to rank runnable reproductions for the card's
+     hypothesis; run the top runnable candidate (no local method→simulator dict)
+  3. design-run that reproduction, poll to completion
   4. pull metrics.json, translate native keys → co-scientist canonical names
+     (keyed by the reproduction's stable experiment_id)
   5. transition the card approved → running and call validation.submit_results
+
+The reproduction is chosen by repro, not a local registry: ``method_family`` is a
+bias hint into ranking, and divergence between the card's committed family and the
+reproduction repro actually recommends is recorded as provenance, never silent.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
@@ -22,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.repro import ReproClient
 from coscientist.config import settings
+from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.runner import RunnerResult
@@ -33,49 +39,26 @@ from coscientist.services import governance as governance_svc
 from coscientist.services import validation as validation_svc
 
 
-@dataclass(frozen=True)
-class Simulator:
-    """A repro reproduction and how to translate its metrics to canonical names.
-
-    ``repro_paper_id`` is the retrieval paper id of the curated reproduction whose
-    descriptor grounds the design-run command. The live repro workspace is resolved
-    by matching this against ``workspace.retrieval_paper_id`` at run time, so we
-    never hardcode environment-specific workspace UUIDs.
-    """
-
-    script: str
-    metric_map: dict[str, str]
-    repro_paper_id: str
-    experiment_id: str | None = None
-    extra_args: list[str] = field(default_factory=list)
-
-
-# repro reproductions write runs/${RUN_ID}/metrics.json (token resolved by repro).
-# Only top-level scalar keys can be translated; nested/non-numeric keys are dropped.
-_VAST = Simulator(
-    script="vast_simulate.py",
-    repro_paper_id="786380fd-256b-46b6-b71e-af1b41adeb0b",
-    metric_map={
+# repro experiment_id → {native metrics.json key: canonical co-scientist name}.
+# Native→canonical translation is co-scientist domain knowledge (metrics-surface
+# reports native names only), keyed by the reproduction's stable experiment_id
+# (which is only known after recommend-method picks a candidate). Reproductions
+# absent here (or that emit no top-level scalar metrics.json) yield no translatable
+# metrics → the runner refuses rather than fabricate a verdict. Add entries as a
+# reproduction's emitted native keys are confirmed from a sample run.
+EXPERIMENT_METRIC_MAP: dict[str, dict[str, str]] = {
+    "fast-generation-of-sound-zones-using-var-v1": {
         "oAC_best_dB": "acoustic_contrast_db",
         "nsde_achieved_dB": "bright_zone_error",
     },
-)
-
-# method_family → simulator. Families absent here have no auto-runner and fall back
-# to manual `cs validation submit` (never fabricated metrics).
-SIMULATOR_REGISTRY: dict[str, Simulator] = {
-    "acoustic_contrast_control": _VAST,
-    "beamforming": _VAST,
-    "pressure_matching": _VAST,
-    "null_steering": _VAST,
 }
 
 _TERMINAL_OK = "success"
 _TERMINAL_BAD = {"failed", "cancelled"}
 
 
-def _resolve_simulator(db: Session, approach_ids: list[str]) -> Simulator:
-    """Pick the simulator for a single-approach experiment.
+def _primary_approach(db: Session, approach_ids: list[str]) -> tuple[str, list[str]]:
+    """Resolve the single approach's ``method_family`` and its evidence paper ids.
 
     Combination experiments (>1 approach) describe a method no single-paper
     reproduction runs; auto-running one ingredient and labelling it as the
@@ -86,34 +69,40 @@ def _resolve_simulator(db: Session, approach_ids: list[str]) -> Simulator:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Experiment combines multiple approaches; no single-paper repro simulator "
+                "Experiment combines multiple approaches; no single-paper repro reproduction "
                 "can run the combination. Run it externally and use 'cs validation submit'."
             ),
         )
 
     family: str | None = None
+    evidence_ids: list[str] = []
     for aid in approach_ids:
         try:
-            family = approach_svc.get(db, aid).method_family
-            break
+            approach = approach_svc.get(db, aid)
         except HTTPException:
             continue
+        family = approach.method_family
+        evidence_ids = [link.evidence_id for link in approach.evidence_links]
+        break
     if family is None:
         raise HTTPException(
             status_code=422,
             detail="Experiment has no resolvable approach to determine a method family.",
         )
 
-    sim = SIMULATOR_REGISTRY.get(family)
-    if sim is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"No repro simulator registered for method family {family!r}. "
-                "Run the experiment externally and use 'cs validation submit' instead."
-            ),
+    paper_ids: list[str] = []
+    if evidence_ids:
+        rows = (
+            db.query(EvidenceRecord.paper_id)
+            .filter(EvidenceRecord.id.in_(evidence_ids))
+            .all()
         )
-    return sim
+        seen: set[str] = set()
+        for (pid,) in rows:
+            if pid and pid not in seen:
+                seen.add(pid)
+                paper_ids.append(pid)
+    return family, paper_ids
 
 
 def _translate(raw: dict, metric_map: dict[str, str]) -> dict[str, float]:
@@ -125,24 +114,63 @@ def _translate(raw: dict, metric_map: dict[str, str]) -> dict[str, float]:
     return out
 
 
-def _resolve_workspace(client: ReproClient, sim: Simulator) -> str:
-    """Find the live repro workspace whose paper matches the reproduction's paper.
-
-    design-run is workspace-scoped; we match on ``retrieval_paper_id`` so the
-    workspace UUID need not be hardcoded. Zero matches → 422 (route to manual lane).
-    """
+def _list_workspaces(client: ReproClient) -> list[dict]:
     try:
-        workspaces = client.list_workspaces()
+        return client.list_workspaces()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"repro API error listing workspaces: {exc}")
-    matches = [w["id"] for w in workspaces if w.get("retrieval_paper_id") == sim.repro_paper_id]
+
+
+def _home_workspace(workspaces: list[dict], paper_ids: list[str]) -> str:
+    """Pick a workspace to call recommend-method against.
+
+    recommend-method is corpus-wide, so the URL workspace is just a valid handle;
+    prefer one bound to the card's approach paper, else the first workspace with a
+    retrieval paper. 422 if repro has no usable workspace.
+    """
+    by_paper = {w.get("retrieval_paper_id"): w["id"] for w in workspaces if w.get("retrieval_paper_id")}
+    for pid in paper_ids:
+        if pid in by_paper:
+            return by_paper[pid]
+    if by_paper:
+        return next(iter(by_paper.values()))
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "No repro workspace with a bound paper is available to query recommend-method. "
+            "Run the experiment externally and use 'cs validation submit'."
+        ),
+    )
+
+
+def _select_candidate(rec: dict) -> dict:
+    """Take the top-ranked runnable candidate with a concrete experiment id.
+
+    Candidates are returned in rank order; the first with ``runnable`` and a
+    non-empty ``experiment_ids`` is the reproduction repro recommends running.
+    422 if none is runnable (route to the manual submission lane).
+    """
+    for cand in rec.get("candidates", []):
+        if cand.get("runnable") and cand.get("experiment_ids"):
+            return cand
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "recommend-method returned no runnable reproduction for this hypothesis. "
+            "Run the experiment externally and use 'cs validation submit'."
+        ),
+    )
+
+
+def _workspace_for_paper(workspaces: list[dict], paper_id: str) -> str:
+    matches = [w["id"] for w in workspaces if w.get("retrieval_paper_id") == paper_id]
     if not matches:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"No repro workspace found for reproduction paper {sim.repro_paper_id!r}. "
-                "Create it (POST /workspaces/from-paper) or run externally and use "
-                "'cs validation submit'."
+                f"recommend-method chose reproduction paper {paper_id!r} but no repro workspace "
+                "is bound to it. Create it (POST /workspaces/from-paper) or run externally and "
+                "use 'cs validation submit'."
             ),
         )
     return matches[0]
@@ -170,20 +198,39 @@ def _pass_conditions(pass_conditions: dict[str, float]) -> list[dict]:
     return out
 
 
-def _build_proposal(card, sim: Simulator) -> dict:
+def _unmeasurable_conditions(pass_conditions: list[dict], experiment_id: str) -> list[str]:
+    """Card pass-condition metrics the chosen reproduction cannot produce.
+
+    A canonical metric absent from the reproduction's translatable outputs can
+    never be satisfied → the verdict is refuted for a metric it could never
+    measure. We do NOT drop the criterion (that could fabricate a pass); we record
+    it so the mismatch is auditable — the P4-origin always-refuted symptom.
+    """
+    measurable = set(EXPERIMENT_METRIC_MAP.get(experiment_id, {}).values())
+    if not measurable:
+        return []
+    return [c["metric"] for c in pass_conditions if c["metric"] not in measurable]
+
+
+def _build_proposal(card, method_family: str | None) -> dict:
     """Build a repro ExperimentProposal from the approved experiment card.
 
     ``card`` is an ``ExperimentCardResponse`` whose JSON columns are already parsed.
+    ``method_family`` is the card's resolved approach family; repro uses it as the
+    key for capability-aware ranking (P5) — a runnable reproduction that declares
+    support for this family surfaces as a candidate even when its source paper is
+    not textually about the method. Without it, recommend-method ranks by paper
+    text alone and never surfaces the runnable reproduction for the card's method.
     """
-    proposal = {
+    proposal: dict = {
         "objective": card.objective,
         "hypothesis": card.hypothesis_text,
         "independent_variables": card.independent_variables,
         "metrics": card.metrics,
         "pass_conditions": _pass_conditions(card.validation.pass_conditions),
     }
-    if sim.experiment_id is not None:
-        proposal["experiment_id"] = sim.experiment_id
+    if method_family:
+        proposal["method_family"] = method_family
     return proposal
 
 
@@ -202,14 +249,15 @@ def _poll(client: ReproClient, run_id: str, timeout: float) -> dict:
         time.sleep(settings.repro_poll_interval)
 
 
-def _record_design_provenance(
+def _record_run_provenance(
     db: Session,
     experiment_id: str,
     workspace_id: str,
     design: dict,
     run_id: str,
+    recommendation: dict,
 ) -> None:
-    """Persist the design-run's honored/dropped report + linkage onto the card."""
+    """Persist the run's design-run report + recommendation provenance on the card."""
     row = db.get(ExperimentCard, experiment_id)
     if row is None:
         return
@@ -224,6 +272,7 @@ def _record_design_provenance(
             "spec_status": design.get("spec_status"),
             "honored": design.get("honored", []),
             "dropped": design.get("dropped", []),
+            "recommendation": recommendation,
         }
     )
     row.updated_at = datetime.now(timezone.utc)
@@ -251,15 +300,23 @@ def run_experiment(
             detail=f"Experiment must be 'approved' to run, got {card.status.value!r}",
         )
 
-    sim = _resolve_simulator(db, card.approach_ids)
-
+    card_family, paper_ids = _primary_approach(db, card.approach_ids)
     timeout = timeout if timeout is not None else settings.repro_run_timeout
-    proposal = _build_proposal(card, sim)
+    proposal = _build_proposal(card, card_family)
 
     try:
         with ReproClient() as client:
-            workspace_id = _resolve_workspace(client, sim)
-            design = client.design_run(workspace_id, proposal, auto_approve=True)
+            workspaces = _list_workspaces(client)
+            home_ws = _home_workspace(workspaces, paper_ids)
+            rec = client.recommend_method(
+                home_ws, proposal, top_k=settings.runner_recommend_top_k, draft=False
+            )
+            candidate = _select_candidate(rec)
+            experiment_id_repro = candidate["experiment_ids"][0]
+            candidate_ws = _workspace_for_paper(workspaces, candidate["paper_id"])
+
+            proposal["experiment_id"] = experiment_id_repro
+            design = client.design_run(candidate_ws, proposal, auto_approve=True)
             run_id = design["run_id"]
             meta = _poll(client, run_id, timeout)
             if meta.get("status") != _TERMINAL_OK:
@@ -274,21 +331,35 @@ def run_experiment(
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"repro API error: {exc}")
 
-    # Record the design-run provenance on the card: which workspace/draft grounded
-    # the run, and which proposal variables the descriptor honored vs. dropped. This
-    # makes the arg-surface gap (e.g. speaker_count sweep dropped) auditable rather
-    # than a silent collapse.
+    cand_families = candidate.get("method_families", [])
+    diverged = bool(card_family) and card_family not in cand_families
+    unmeasurable = (
+        _unmeasurable_conditions(_pass_conditions(card.validation.pass_conditions), experiment_id_repro)
+        if settings.runner_align_pass_conditions
+        else []
+    )
+    recommendation = {
+        "candidate_paper_id": candidate.get("paper_id"),
+        "title": candidate.get("title"),
+        "score": candidate.get("score"),
+        "experiment_id": experiment_id_repro,
+        "method_families": cand_families,
+        "family_match": candidate.get("family_match"),
+        "card_method_family": card_family,
+        "diverged_from_card_family": diverged,
+        "unmeasurable_pass_conditions": unmeasurable,
+    }
     honored = design.get("honored", [])
     dropped = design.get("dropped", [])
-    _record_design_provenance(db, experiment_id, workspace_id, design, run_id)
+    _record_run_provenance(db, experiment_id, candidate_ws, design, run_id, recommendation)
 
-    measured = _translate(raw_metrics, sim.metric_map)
+    measured = _translate(raw_metrics, EXPERIMENT_METRIC_MAP.get(experiment_id_repro, {}))
     if not measured:
         raise HTTPException(
             status_code=502,
             detail=(
-                f"repro run {run_id!r} produced no translatable metrics for {sim.script!r}; "
-                "refusing to fabricate. Experiment left 'approved'."
+                f"repro run {run_id!r} produced no translatable metrics for reproduction "
+                f"{experiment_id_repro!r}; refusing to fabricate. Experiment left 'approved'."
             ),
         )
 
@@ -297,12 +368,18 @@ def run_experiment(
     # card back to 'approved' so it stays re-runnable — the state machine has no
     # running→approved edge, so this compensating write is the runner's responsibility.
     experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.running)
+    diverge_note = (
+        f" recommended method diverges from card family {card_family!r} "
+        f"(ran {cand_families})."
+        if diverged
+        else ""
+    )
     submission = ExperimentResultSubmission(
         measured_metrics=measured,
         artifact_paths={"metrics_json": f"runs/{run_id}/metrics.json"},
         notes=(
-            f"Auto-run via repro design-run ({sim.script}, run {run_id}); "
-            f"honored={len(honored)} dropped={len(dropped)}."
+            f"Auto-run via repro recommend-method ({experiment_id_repro}, run {run_id}); "
+            f"honored={len(honored)} dropped={len(dropped)}.{diverge_note}"
         ),
     )
     try:
@@ -319,9 +396,10 @@ def run_experiment(
         experiment_id=experiment_id,
         goal_id=goal_id,
         run_id=run_id,
-        simulator=sim.script,
+        simulator=experiment_id_repro,
         repro_status=_TERMINAL_OK,
         raw_metrics={k: float(v) for k, v in raw_metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
         measured_metrics=measured,
         validation=result,
+        recommendation=recommendation,
     )

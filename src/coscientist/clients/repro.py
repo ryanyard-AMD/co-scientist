@@ -63,6 +63,48 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def recommend_method(
+        self,
+        workspace_id: str,
+        proposal: dict,
+        *,
+        top_k: int | None = None,
+        draft: bool = False,
+    ) -> dict:
+        """POST /api/v1/workspaces/{id}/recommend-method — rank candidate
+        reproductions for a proposal's hypothesis (handoff P4).
+
+        Corpus-wide retrieval, not scoped to the workspace paper. Returns a
+        ``RecommendationResult``: ``{hypothesis, candidates[], draft_id,
+        drafted_experiment_id, honored, dropped, method_family_supported}`` where
+        each candidate carries ``{paper_id, title, score, rationale, runnable,
+        experiment_ids, method_families, family_match}``. Never executes a run
+        (no ``run_id``). ``draft`` defaults False — the runner drives its own
+        design-run and doesn't need repro's convenience draft.
+        """
+        params: dict = {"draft": draft}
+        if top_k is not None:
+            params["top_k"] = top_k
+        resp = self._client.post(
+            f"/api/v1/workspaces/{workspace_id}/recommend-method",
+            params=params,
+            json=proposal,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_metrics_surface(self, workspace_id: str) -> dict:
+        """GET /api/v1/workspaces/{id}/metrics-surface — the metrics each
+        registered reproduction of the workspace paper validates (handoff P4c).
+
+        Returns ``{paper_id, reproductions:[{experiment_id, method_families,
+        metrics[]}]}``. ``reproductions`` is empty (still 200) when the paper has
+        no registered reproduction.
+        """
+        resp = self._client.get(f"/api/v1/workspaces/{workspace_id}/metrics-surface")
+        resp.raise_for_status()
+        return resp.json()
+
     def get_run(self, run_id: str) -> dict:
         """GET /api/v1/runs/{run_id} → RunMetadata dict."""
         resp = self._client.get(f"/api/v1/runs/{run_id}")

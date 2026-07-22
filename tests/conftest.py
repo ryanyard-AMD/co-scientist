@@ -55,6 +55,29 @@ def client(db_engine, db_session):
     db_module.engine = original_engine
 
 
+def seed_goal_method_taxonomy(db, workspace_id):
+    """Persist a goal-scoped method taxonomy mirroring the default keyword vocabulary.
+
+    run_scout requires a derived taxonomy for the goal; tests that exercise it seed
+    one here so classification behaves as the in-code default while satisfying the
+    precondition.
+    """
+    from coscientist.domain import METHOD_FAMILIES, RELATED_METHODS
+    from coscientist.schemas.taxonomy import InducedFamily
+    from coscientist.services.taxonomy import _persist
+
+    families = [
+        InducedFamily(
+            canonical_name=canon,
+            description=None,
+            keywords=list(keywords),
+            related_to=list(RELATED_METHODS.get(canon, [])),
+        )
+        for canon, keywords in METHOD_FAMILIES.items()
+    ]
+    _persist(db, workspace_id, families)
+
+
 GOAL_PAYLOAD = {
     "name": "PSZ Headphone",
     "description": "Personal sound zone for headphone form factor",
