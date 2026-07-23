@@ -571,3 +571,157 @@ def test_run_validation_agent_sends_correct_context(db_session):
         assert "acoustic_contrast" in user_content
         assert "18.5" in user_content
         assert output.decision == ValidationDecisionEnum.validated
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: unmeasured != failed — reconcile + derive verdict
+# ---------------------------------------------------------------------------
+
+from coscientist.services.validation import _derive_decision, _reconcile_unmeasurable
+
+
+def test_reconcile_unmeasurable_nulls_matching_criteria():
+    # A suffixed, non-canonical criterion name still matches a bare canonical
+    # unmeasurable entry (strip _min/_max + canonicalize_metric).
+    crs = [
+        CriterionResult(name="acoustic_contrast_db_min", measured=23.0, target=15.0,
+                        operator=">=", passed=True, unit="dB"),
+        CriterionResult(name="dark_zone_attenuation_min", measured=0.0, target=20.0,
+                        operator=">=", passed=False, unit="dB"),
+    ]
+    out = _reconcile_unmeasurable(crs, ["dark_zone_attenuation"])
+    assert out[0].measured == 23.0 and out[0].passed is True
+    assert out[1].measured is None and out[1].passed is False
+
+
+def test_reconcile_unmeasurable_noop_when_empty():
+    crs = [_cr(False)]
+    assert _reconcile_unmeasurable(crs, []) == crs
+
+
+def test_derive_decision_refuted_on_measurable_failure():
+    assert _derive_decision([_cr(True), _cr(False)]) == ValidationDecisionEnum.refuted
+
+
+def test_derive_decision_validated_when_measurable_pass_despite_unmeasurable():
+    crs = [
+        _cr(True),
+        CriterionResult(name="x", measured=None, target=5.0, operator=">=", passed=False, unit=""),
+    ]
+    assert _derive_decision(crs) == ValidationDecisionEnum.validated
+
+
+def test_derive_decision_inconclusive_when_nothing_measurable():
+    crs = [CriterionResult(name="x", measured=None, target=5.0, operator=">=", passed=False, unit="")]
+    assert _derive_decision(crs) == ValidationDecisionEnum.inconclusive
+    assert _derive_decision([]) == ValidationDecisionEnum.inconclusive
+
+
+def test_derive_reproduction_partial_when_untested_criterion_present():
+    # All measurable passed, but an untested criterion means only partial coverage.
+    crs = [
+        _cr(True),
+        CriterionResult(name="x", measured=None, target=5.0, operator=">=", passed=False, unit=""),
+    ]
+    assert _derive_reproduction_status(crs) == ReproductionStatusEnum.partially_reproduced
+
+
+# VAST-shape agent output: one measurable pass + one condition the repro can't measure
+# (the LLM naively scored it failed; reconciliation should null it out).
+MOCK_VAST_SHAPE = AgentValidationOutput(
+    decision=ValidationDecisionEnum.refuted,
+    confidence=0.8,
+    reasoning="Contrast passed; dark-zone attenuation not achieved.",
+    criterion_results=[
+        CriterionResult(name="acoustic_contrast_db_min", measured=23.05, target=15.0,
+                        operator=">=", passed=True, unit="dB"),
+        CriterionResult(name="dark_zone_attenuation_min", measured=0.0, target=20.0,
+                        operator=">=", passed=False, unit="dB"),
+    ],
+    refinement_suggestions=["fix"],
+)
+
+MOCK_ALL_UNMEASURABLE = AgentValidationOutput(
+    decision=ValidationDecisionEnum.refuted,
+    confidence=0.8,
+    reasoning="Nothing measurable.",
+    criterion_results=[
+        CriterionResult(name="dark_zone_attenuation_min", measured=0.0, target=20.0,
+                        operator=">=", passed=False, unit="dB"),
+    ],
+    refinement_suggestions=["fix"],
+)
+
+
+@patch("coscientist.services.validation._run_validation_agent")
+def test_submit_vast_shape_validates_and_partially_reproduces(mock_agent, db_session):
+    mock_agent.return_value = MOCK_VAST_SHAPE
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp = _create_running_experiment(db_session, goal.id, approach.id)
+    result = svc.submit_results(db_session, exp.id, goal.id, ExperimentResultSubmission(
+        measured_metrics={"acoustic_contrast_db": 23.05},
+        unmeasurable_conditions=["dark_zone_attenuation"],
+    ))
+    assert result.decision == ValidationDecisionEnum.validated
+    assert result.reproduction_status == ReproductionStatusEnum.partially_reproduced
+    card = db_session.get(ExperimentCard, exp.id)
+    assert card.status == ExperimentStatusEnum.completed.value
+    approach_card = db_session.get(ApproachCard, approach.id)
+    assert approach_card.status == ApproachStatusEnum.validated.value
+
+
+@patch("coscientist.services.validation._run_validation_agent")
+def test_submit_all_unmeasurable_is_inconclusive(mock_agent, db_session):
+    mock_agent.return_value = MOCK_ALL_UNMEASURABLE
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp = _create_running_experiment(db_session, goal.id, approach.id)
+    result = svc.submit_results(db_session, exp.id, goal.id, ExperimentResultSubmission(
+        measured_metrics={},
+        unmeasurable_conditions=["dark_zone_attenuation"],
+    ))
+    assert result.decision == ValidationDecisionEnum.inconclusive
+    assert result.reproduction_status == ReproductionStatusEnum.blocked
+    card = db_session.get(ExperimentCard, exp.id)
+    assert card.status == ExperimentStatusEnum.inconclusive.value
+    # Inconclusive must not declare the approach refuted — it stays tested.
+    approach_card = db_session.get(ApproachCard, approach.id)
+    assert approach_card.status == ApproachStatusEnum.tested.value
+
+
+def test_run_validation_agent_includes_unmeasurable_block(db_session):
+    from unittest.mock import MagicMock, patch as mock_patch
+    from coscientist.services.validation import _run_validation_agent
+
+    goal = _create_goal(db_session)
+    approach = _create_scored_approach(db_session, goal.id)
+    _advance_to_experiment_proposed(db_session, approach.id)
+    exp_resp = _create_running_experiment(db_session, goal.id, approach.id)
+    exp_card = db_session.get(ExperimentCard, exp_resp.id)
+    approach_card = db_session.get(ApproachCard, approach.id)
+
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {
+        "decision": "validated", "confidence": 0.9, "reasoning": "ok",
+        "criterion_results": [], "refinement_suggestions": [],
+    }
+    mock_message = MagicMock()
+    mock_message.content = [tool_block]
+    mock_message.usage.input_tokens = 100
+    mock_message.usage.output_tokens = 50
+
+    with mock_patch("coscientist.services.validation.anthropic.Anthropic") as MockAnthropic:
+        MockAnthropic.return_value.messages.create.return_value = mock_message
+        goal_resp = goal_svc.get(db_session, goal.id)
+        submission = ExperimentResultSubmission(
+            measured_metrics={"acoustic_contrast_db": 23.05},
+            unmeasurable_conditions=["dark_zone_attenuation"],
+        )
+        _run_validation_agent(db_session, goal.id, exp_card, goal_resp, approach_card, submission)
+        user_content = MockAnthropic.return_value.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "Unmeasurable Conditions" in user_content
+        assert "dark_zone_attenuation" in user_content

@@ -388,6 +388,7 @@ def run_experiment(
             f"Auto-run via repro recommend-method ({experiment_id_repro}, run {run_id}); "
             f"honored={len(honored)} dropped={len(dropped)}.{diverge_note}"
         ),
+        unmeasurable_conditions=unmeasurable,
     )
     try:
         result = validation_svc.submit_results(db, experiment_id, goal_id, submission)

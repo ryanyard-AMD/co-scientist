@@ -352,11 +352,14 @@ def test_run_records_unmeasurable_pass_conditions(db_session, monkeypatch):
         svc, "ReproClient",
         lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
     )
-    _fake_validation(monkeypatch)
+    captured = _fake_validation(monkeypatch)
 
     result = svc.run_experiment(db_session, exp.id, gid)
     assert "latency_ms" in result.recommendation["unmeasurable_pass_conditions"]
     assert "acoustic_contrast_db" not in result.recommendation["unmeasurable_pass_conditions"]
+    # The unmeasurable list must reach validation so it isn't treated as a failure.
+    assert "latency_ms" in captured["submission"].unmeasurable_conditions
+    assert "acoustic_contrast_db" not in captured["submission"].unmeasurable_conditions
 
 
 def test_pass_conditions_canonicalizes_metric_name():

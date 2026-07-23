@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class ValidationDecisionEnum(str, Enum):
     validated = "validated"
     refuted = "refuted"
+    inconclusive = "inconclusive"
 
 
 class ReproductionStatusEnum(str, Enum):
@@ -21,6 +22,9 @@ class ExperimentResultSubmission(BaseModel):
     measured_metrics: dict[str, float]
     artifact_paths: dict[str, str] | None = None
     notes: str | None = None
+    # Canonical pass-condition metrics the reproduction physically cannot produce.
+    # Reconciled to measured=None so they can't drive a refutation (unmeasured != failed).
+    unmeasurable_conditions: list[str] = Field(default_factory=list)
 
 
 class CriterionResult(BaseModel):

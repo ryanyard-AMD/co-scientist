@@ -101,6 +101,10 @@ app.add_typer(feedback_app, name="feedback")
 console = Console()
 
 
+def _decision_color(decision: str) -> str:
+    return {"validated": "green", "inconclusive": "yellow"}.get(decision, "red")
+
+
 def _get_session():
     engine = create_engine(
         settings.database_url,
@@ -1275,7 +1279,7 @@ def experiment_run(
                 table.add_row(name, f"{value:.4g}")
             console.print(table)
         v = result.validation
-        decision_color = "green" if v.decision.value == "validated" else "red"
+        decision_color = _decision_color(v.decision.value)
         console.print(f"[{decision_color}]Validation: {v.decision.value.upper()}[/{decision_color}] (confidence {v.confidence:.2f})")
         console.print(f"Reasoning: {v.reasoning}")
     finally:
@@ -1659,7 +1663,7 @@ def validation_submit(
             notes=notes,
         )
         result = validation_svc.submit_results(db, experiment_id, goal_id, submission)
-        decision_color = "green" if result.decision.value == "validated" else "red"
+        decision_color = _decision_color(result.decision.value)
         console.print(f"[{decision_color}]Decision: {result.decision.value.upper()}[/{decision_color}]")
         console.print(f"Confidence: {result.confidence:.2f}")
         console.print(f"Reasoning: {result.reasoning}")
@@ -1723,7 +1727,7 @@ def validation_list(
         table.add_column("Confidence", justify="right")
         table.add_column("Created")
         for r in result.items:
-            decision_color = "green" if r.decision.value == "validated" else "red"
+            decision_color = _decision_color(r.decision.value)
             table.add_row(
                 r.id,
                 r.experiment_id,

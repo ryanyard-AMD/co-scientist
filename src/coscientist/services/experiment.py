@@ -49,9 +49,10 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     ExperimentStatusEnum.approved:   {ExperimentStatusEnum.running, ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.rejected:   {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.duplicated: {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
-    ExperimentStatusEnum.running:    {ExperimentStatusEnum.completed, ExperimentStatusEnum.failed, ExperimentStatusEnum.superseded},
+    ExperimentStatusEnum.running:    {ExperimentStatusEnum.completed, ExperimentStatusEnum.failed, ExperimentStatusEnum.inconclusive, ExperimentStatusEnum.superseded},
     ExperimentStatusEnum.completed:  {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.failed:     {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
+    ExperimentStatusEnum.inconclusive: {ExperimentStatusEnum.superseded, ExperimentStatusEnum.archived},
     ExperimentStatusEnum.superseded: set(),
     ExperimentStatusEnum.archived:   set(),
 }

@@ -178,12 +178,13 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 
 Closes the experiment feedback loop by ingesting measured results, evaluating them against pass conditions via a Claude Sonnet 4.6 agent, and driving automated status transitions on experiments and approach cards.
 
-- **ValidationResult** — immutable audit record (no `updated_at`): decision (validated/refuted), confidence, reasoning, per-criterion results, refinement suggestions, measured metrics, artifact paths, model used
-- `POST /{eid}/results` accepts measured metrics (and optional artifact paths) from any source: Experiment Runner, MLflow script, or manual submission
+- **ValidationResult** — immutable audit record (no `updated_at`): decision (validated/refuted/inconclusive), confidence, reasoning, per-criterion results, refinement suggestions, measured metrics, artifact paths, model used
+- `POST /{eid}/results` accepts measured metrics (and optional artifact paths) from any source: Experiment Runner, MLflow script, or manual submission. It also accepts `unmeasurable_conditions` — pass-condition metrics the chosen reproduction physically cannot produce (the runner already knows these; see the reproduction-mismatch note below)
 - Claude Sonnet 4.6 agent receives full context — experiment spec, pass conditions, measured values, approach card, goal success criteria — and returns structured JSON with per-criterion pass/fail evaluation
-- Automated side effects on validation: experiment `running → completed` (validated) or `running → failed` (refuted)
-- Automated side effects on approach: `experiment_proposed → tested → validated` or `tested → refuted`; maturity advanced to `simulated` (simulation) or `measured` (measurement/hybrid); maturity never downgraded
-- **Reproduction status taxonomy** (CS-VALIDATION-005): each result carries a `reproduction_status` derived from per-criterion outcomes — `reproduced` (all passed), `partially_reproduced` (some passed), `failed` (none passed), `blocked` (nothing measurable), `superseded` (a later re-run replaced this result)
+- **Unmeasured is not failed**: any criterion whose metric is in `unmeasurable_conditions` is reconciled to `measured=None` after the agent responds (deterministically, not trusting the LLM), and the verdict is then derived *by the service* from what could actually be measured — a metric the reproduction cannot produce can never drive a refutation. `refuted` = a *measurable* criterion failed; `validated` = at least one measurable criterion and all measurable ones passed; `inconclusive` = nothing was measurable at all
+- Automated side effects on validation: experiment `running → completed` (validated), `running → failed` (refuted), or `running → inconclusive` (nothing measurable — a non-terminal reproduction mismatch; the fix is a better-matched reproduction, i.e. a new card, not a re-run)
+- Automated side effects on approach: `experiment_proposed → tested → validated` or `tested → refuted`; an `inconclusive` verdict leaves the approach at `tested` (it was never conclusively tested); maturity advanced to `simulated` (simulation) or `measured` (measurement/hybrid); maturity never downgraded
+- **Reproduction status taxonomy** (CS-VALIDATION-005): each result carries a `reproduction_status` derived from per-criterion outcomes — `reproduced` (all criteria passed *and* all were measurable), `partially_reproduced` (some passed, or all measurable passed but some criteria were unmeasurable/untested), `failed` (none passed), `blocked` (nothing measurable), `superseded` (a later re-run replaced this result)
 - **Roadmap feedback loop** (CS-VALIDATION-006): ingesting a result auto-retires open roadmap items linked to the experiment via `source_experiment_id`, so the next-best recommendations reflect what was just learned
 - Single `db.commit()` at end of orchestration — no nested commits across status transitions
 - Refinement suggestions populated when refuted to guide next iteration
@@ -556,10 +557,12 @@ in `services/runner.py`). A reproduction with no map entry (or one that emits no
 committed `method_family` (the family isn't among the candidate's `method_families`), the runner
 still runs it but records `diverged_from_card_family` — the divergence is auditable, never silent.
 It also records `unmeasurable_pass_conditions`: card pass conditions naming a metric the chosen
-reproduction can't produce (which would otherwise refute the run for a metric it could never
-measure). Both live in the `recommendation` block of `execution_handoff.batch_expansion`, alongside
-the design-run **honored/dropped** report, `repro_workspace_id`, `draft_id`, and `spec_status`; the
-run id is appended to `run_request_ids`.
+reproduction can't produce. Both live in the `recommendation` block of
+`execution_handoff.batch_expansion`, alongside the design-run **honored/dropped** report,
+`repro_workspace_id`, `draft_id`, and `spec_status`; the run id is appended to `run_request_ids`.
+The runner also **passes `unmeasurable_conditions` into validation** (as part of the result
+submission), so validation reconciles those metrics to `measured=None` and never refutes the run
+for a metric it could never measure — unmeasured is not failed (see CS-EPIC-VALIDATION).
 
 **Card → proposal mapping.** The card's `objective`, `hypothesis_text`, `independent_variables`,
 and `metrics` are sent as-is; the `validation.pass_conditions` dict is converted to repro's

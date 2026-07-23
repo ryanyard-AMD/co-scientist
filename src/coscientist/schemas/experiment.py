@@ -22,6 +22,7 @@ class ExperimentStatusEnum(str, Enum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    inconclusive = "inconclusive"
     superseded = "superseded"
     archived = "archived"
 

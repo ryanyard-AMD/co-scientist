@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.domain import canonicalize_metric
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.validation import ValidationResult
@@ -107,22 +108,78 @@ def _get_experiment_or_404(db: Session, experiment_id: str, goal_id: str) -> Exp
     return card
 
 
+_PASS_SUFFIXES = (("_min", ">="), ("_max", "<="))
+
+
+def _canonical_metric_of(name: str) -> str:
+    """Normalize a criterion/pass-condition name to a bare canonical metric.
+
+    Strips a ``_min``/``_max`` pass-condition suffix then canonicalizes, so an
+    LLM criterion name like ``dark_zone_attenuation_min`` matches the runner's
+    bare unmeasurable entry ``dark_zone_attenuation``. Mirrors runner._pass_conditions.
+    """
+    for suffix, _ in _PASS_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return canonicalize_metric(name)
+
+
+def _reconcile_unmeasurable(
+    criterion_results: list[CriterionResult],
+    unmeasurable: list[str],
+) -> list[CriterionResult]:
+    """Force genuinely-unmeasurable criteria to measured=None (CS-VALIDATION Finding 2).
+
+    A metric the reproduction physically cannot produce must not count as a failure —
+    unmeasured is not the same as failed. We overwrite any LLM verdict on those
+    criteria so they drop out of the pass/fail tally deterministically, rather than
+    trusting the agent to have honored the prompt.
+    """
+    unmeasurable_set = {canonicalize_metric(u) for u in unmeasurable}
+    if not unmeasurable_set:
+        return criterion_results
+    for c in criterion_results:
+        if _canonical_metric_of(c.name) in unmeasurable_set:
+            c.measured = None
+            c.passed = False
+    return criterion_results
+
+
+def _derive_decision(criterion_results: list[CriterionResult]) -> ValidationDecisionEnum:
+    """Derive the verdict from reconciled criteria — the service decides, not the LLM.
+
+    refuted      = a metric we could measure failed (a real refutation).
+    validated    = at least one measurable criterion and all measurable ones passed.
+    inconclusive = nothing was measurable, so we can neither validate nor refute.
+    """
+    measurable = [c for c in criterion_results if c.measured is not None]
+    if not measurable:
+        return ValidationDecisionEnum.inconclusive
+    if any(not c.passed for c in measurable):
+        return ValidationDecisionEnum.refuted
+    return ValidationDecisionEnum.validated
+
+
 def _derive_reproduction_status(
     criterion_results: list[CriterionResult],
 ) -> ReproductionStatusEnum:
     """Map evaluated criteria to a reproduction outcome (CS-VALIDATION-005).
 
     blocked  = nothing measurable could be evaluated
-    reproduced = every criterion passed
+    reproduced = every criterion passed and every criterion was measurable
     failed   = no criterion passed
-    partially_reproduced = some but not all passed
+    partially_reproduced = some passed, or all measurable passed but some were untested
     """
     measurable = [c for c in criterion_results if c.measured is not None]
     if not measurable:
         return ReproductionStatusEnum.blocked
+    untested = any(c.measured is None for c in criterion_results)
     passed = sum(1 for c in measurable if c.passed)
     if passed == len(measurable):
-        return ReproductionStatusEnum.reproduced
+        # All we could measure passed, but an untested criterion means the goal
+        # was only partially exercised — don't overclaim full reproduction.
+        return ReproductionStatusEnum.partially_reproduced if untested else ReproductionStatusEnum.reproduced
     if passed == 0:
         return ReproductionStatusEnum.failed
     return ReproductionStatusEnum.partially_reproduced
@@ -182,6 +239,14 @@ def _run_validation_agent(
         "For each criterion determine whether the measured value satisfies the operator and target. "
         "Use the goal success_criteria for units where available; use an empty string if unknown."
     )
+    if submission.unmeasurable_conditions:
+        user_message += (
+            f"\n\n## Unmeasurable Conditions\n"
+            f"{json.dumps(submission.unmeasurable_conditions, indent=2)}\n"
+            "These metrics cannot be produced by the chosen reproduction. Set their "
+            "measured value to null and do NOT count them as failures — unmeasured is "
+            "not the same as failed."
+        )
     if submission.notes:
         user_message += f"\n\n## Experimenter Notes\n{submission.notes}"
 
@@ -248,6 +313,14 @@ def submit_results(
 
     agent_output = _run_validation_agent(db, goal_id, card, goal, primary_approach, submission)
 
+    # Unmeasured is not failed: reconcile genuinely-unmeasurable criteria to
+    # measured=None, then derive the verdict deterministically from what we could
+    # actually measure (the service decides, not the LLM). Finding 2.
+    criterion_results = _reconcile_unmeasurable(
+        agent_output.criterion_results, submission.unmeasurable_conditions
+    )
+    decision = _derive_decision(criterion_results)
+
     now = datetime.now(timezone.utc)
 
     # A re-run supersedes any prior result for the same experiment.
@@ -259,17 +332,17 @@ def submit_results(
     for prior in prior_results:
         prior.reproduction_status = ReproductionStatusEnum.superseded.value
 
-    reproduction_status = _derive_reproduction_status(agent_output.criterion_results)
+    reproduction_status = _derive_reproduction_status(criterion_results)
     result = ValidationResult(
         id=str(uuid.uuid4()),
         experiment_id=experiment_id,
         goal_id=goal_id,
         approach_id=primary_approach_id or "",
-        decision=agent_output.decision.value,
+        decision=decision.value,
         reproduction_status=reproduction_status.value,
         confidence=agent_output.confidence,
         reasoning=agent_output.reasoning,
-        criterion_results=json.dumps([cr.model_dump() for cr in agent_output.criterion_results]),
+        criterion_results=json.dumps([cr.model_dump() for cr in criterion_results]),
         refinement_suggestions=json.dumps(agent_output.refinement_suggestions),
         measured_metrics=json.dumps(submission.measured_metrics),
         artifact_paths=json.dumps(submission.artifact_paths) if submission.artifact_paths else None,
@@ -279,8 +352,10 @@ def submit_results(
     db.add(result)
     db.flush()
 
-    if agent_output.decision == ValidationDecisionEnum.validated:
+    if decision == ValidationDecisionEnum.validated:
         card.status = ExperimentStatusEnum.completed.value
+    elif decision == ValidationDecisionEnum.inconclusive:
+        card.status = ExperimentStatusEnum.inconclusive.value
     else:
         card.status = ExperimentStatusEnum.failed.value
     card.updated_at = now
@@ -296,12 +371,15 @@ def submit_results(
             approach_card.updated_at = now
             db.flush()
 
+        # An inconclusive verdict tested nothing conclusively — leave the approach
+        # at 'tested' rather than declaring it validated or refuted.
         if approach_card.status == ApproachStatusEnum.tested.value:
-            if agent_output.decision == ValidationDecisionEnum.validated:
+            if decision == ValidationDecisionEnum.validated:
                 approach_card.status = ApproachStatusEnum.validated.value
-            else:
+                approach_card.updated_at = now
+            elif decision == ValidationDecisionEnum.refuted:
                 approach_card.status = ApproachStatusEnum.refuted.value
-            approach_card.updated_at = now
+                approach_card.updated_at = now
 
         approach_card.maturity = _advance_maturity(approach_card, card.experiment_type)
         db.flush()
