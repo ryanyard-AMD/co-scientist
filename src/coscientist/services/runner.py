@@ -31,12 +31,18 @@ from coscientist.domain import canonicalize_metric
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
-from coscientist.schemas.runner import RunnerResult
+from coscientist.schemas.runner import (
+    ApproachRunSummary,
+    ComparisonResult,
+    MetricComparison,
+    RunnerResult,
+)
 from coscientist.schemas.validation import ExperimentResultSubmission
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import validation as validation_svc
 
 
@@ -70,8 +76,9 @@ def _primary_approach(db: Session, approach_ids: list[str]) -> tuple[str, list[s
         raise HTTPException(
             status_code=422,
             detail=(
-                "Experiment combines multiple approaches; no single-paper repro reproduction "
-                "can run the combination. Run it externally and use 'cs validation submit'."
+                "Experiment has multiple approaches; run it as a comparison "
+                "('cs experiment run' dispatches comparison cards to the per-approach runner) "
+                "or submit externally with 'cs validation submit'."
             ),
         )
 
@@ -411,3 +418,203 @@ def run_experiment(
         validation=result,
         recommendation=recommendation,
     )
+
+
+# ---------------------------------------------------------------------------
+# Comparison run (task #49): decompose a >1-approach card into per-approach
+# single-method child runs, then compare on shared metrics. repro is strictly
+# single-method, so the fan-out is orchestrated here; each child goes through
+# ``run_experiment`` unchanged.
+# ---------------------------------------------------------------------------
+
+def _metric_directions(pass_conditions: dict[str, float]) -> dict[str, str]:
+    """Map each canonical pass-condition metric to a comparison direction.
+
+    ``_min`` (>=) means higher is better; ``_max`` (<=) means lower is better.
+    Equality/target conditions have no better/worse direction → omitted, so they
+    never drive a winner.
+    """
+    directions: dict[str, str] = {}
+    for key in (pass_conditions or {}):
+        for suffix, _ in _PASS_SUFFIXES:
+            if key.endswith(suffix):
+                metric = canonicalize_metric(key[: -len(suffix)])
+                directions[metric] = "higher_better" if suffix == "_min" else "lower_better"
+                break
+    return directions
+
+
+def _compare_metrics(
+    runs: list[ApproachRunSummary],
+    directions: dict[str, str],
+) -> tuple[list[MetricComparison], str | None, str]:
+    """Rank comparable approaches per metric and pick an overall recommendation."""
+    comparable = [r for r in runs if r.measured_metrics]
+    comparisons: list[MetricComparison] = []
+    wins: dict[str, int] = {}
+    for metric, direction in sorted(directions.items()):
+        values = {
+            r.approach_id: r.measured_metrics[metric]
+            for r in comparable
+            if metric in r.measured_metrics
+        }
+        if len(values) < 2:
+            continue
+        if direction == "higher_better":
+            best = max(values, key=values.get)
+        else:
+            best = min(values, key=values.get)
+        wins[best] = wins.get(best, 0) + 1
+        comparisons.append(
+            MetricComparison(
+                metric=metric, direction=direction, values=values, best_approach_id=best
+            )
+        )
+
+    if not wins:
+        return comparisons, None, "No shared, directional metric was measured by ≥2 approaches."
+
+    top = max(wins.values())
+    leaders = [aid for aid, n in wins.items() if n == top]
+    if len(leaders) == 1:
+        aid = leaders[0]
+        return comparisons, aid, f"Approach {aid[:8]}… wins {top} of {len(comparisons)} metric(s)."
+
+    # Tie on metric wins → prefer a leader whose own child validated.
+    validated = {r.approach_id for r in comparable if r.decision == "validated"}
+    tiebreak = [aid for aid in leaders if aid in validated]
+    if len(tiebreak) == 1:
+        aid = tiebreak[0]
+        return comparisons, aid, f"Tie on metric wins; {aid[:8]}… broke it with a validated verdict."
+    return comparisons, None, f"No clear winner: {len(leaders)} approaches tied on metric wins."
+
+
+def run_comparison(
+    db: Session,
+    experiment_id: str,
+    goal_id: str,
+    *,
+    timeout: float | None = None,
+) -> ComparisonResult:
+    governance_svc.assert_execution_boundary("run experiments")
+    goal_svc.raise_if_restricted(db, goal_id)
+    parent = experiment_svc.get(db, experiment_id)
+    if parent.workspace_id != goal_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Experiment {experiment_id!r} not found in goal {goal_id!r}",
+        )
+    if parent.status != ExperimentStatusEnum.approved:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Experiment must be 'approved' to run, got {parent.status.value!r}",
+        )
+    if len(parent.approach_ids) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Not a comparison card (needs ≥2 approaches); use 'cs experiment run' single-method path.",
+        )
+
+    experiment_svc.supersede_comparison_children(db, parent)
+    goal = goal_svc.get(db, goal_id)
+
+    runs: list[ApproachRunSummary] = []
+    for approach_id in parent.approach_ids:
+        try:
+            approach_resp = approach_svc.get(db, approach_id)
+        except HTTPException as exc:
+            runs.append(
+                ApproachRunSummary(
+                    approach_id=approach_id,
+                    child_experiment_id="",
+                    status="error",
+                    error=str(exc.detail),
+                )
+            )
+            continue
+
+        child = experiment_svc.create_comparison_child(db, parent, approach_resp, goal)
+        try:
+            child_result = run_experiment(db, child.id, goal_id, timeout=timeout)
+        except HTTPException as exc:
+            runs.append(
+                ApproachRunSummary(
+                    approach_id=approach_id,
+                    child_experiment_id=child.id,
+                    method_family=approach_resp.method_family,
+                    status="error",
+                    error=str(exc.detail),
+                )
+            )
+            continue
+        child_card = experiment_svc.get(db, child.id)
+        runs.append(
+            ApproachRunSummary(
+                approach_id=approach_id,
+                child_experiment_id=child.id,
+                method_family=approach_resp.method_family,
+                status=child_card.status.value,
+                decision=child_result.validation.decision.value,
+                measured_metrics=child_result.measured_metrics,
+            )
+        )
+
+    comparable = [r for r in runs if r.measured_metrics]
+    if not comparable:
+        errors = "; ".join(f"{r.approach_id[:8]}…: {r.error}" for r in runs if r.error)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"No approach produced measurable metrics; comparison left 'approved'. {errors}"
+            ),
+        )
+
+    directions = _metric_directions(parent.validation.pass_conditions)
+    comparisons, recommended, rationale = _compare_metrics(runs, directions)
+
+    if len(comparable) == 1:
+        recommended = None
+        rationale = "Only one approach produced metrics; a head-to-head comparison needs ≥2."
+        final_status = ExperimentStatusEnum.inconclusive
+    else:
+        final_status = ExperimentStatusEnum.completed
+
+    experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.running)
+    experiment_svc.transition(db, experiment_id, final_status)
+
+    _record_comparison(db, experiment_id, runs, comparisons, recommended, rationale)
+    roadmap_svc.retire_for_experiment(db, experiment_id, goal_id)
+
+    return ComparisonResult(
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        approach_runs=runs,
+        metric_comparisons=comparisons,
+        recommended_approach_id=recommended,
+        rationale=rationale,
+        status=final_status.value,
+    )
+
+
+def _record_comparison(
+    db: Session,
+    experiment_id: str,
+    runs: list[ApproachRunSummary],
+    comparisons: list[MetricComparison],
+    recommended: str | None,
+    rationale: str,
+) -> None:
+    row = db.get(ExperimentCard, experiment_id)
+    if row is None:
+        return
+    existing = json.loads(row.batch_expansion) if row.batch_expansion else {}
+    existing["comparison"] = {
+        "child_experiment_ids": {r.approach_id: r.child_experiment_id for r in runs},
+        "per_approach": [r.model_dump() for r in runs],
+        "metric_comparisons": [c.model_dump() for c in comparisons],
+        "recommended_approach_id": recommended,
+        "rationale": rationale,
+    }
+    row.batch_expansion = json.dumps(existing)
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()

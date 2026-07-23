@@ -391,6 +391,35 @@ def test_generate_comparative_experiment(db_session):
     assert "vs" in comp.name
 
 
+def test_create_comparison_child_is_approved_and_linked(db_session):
+    goal = _create_goal(db_session)
+    a1 = _create_scored_approach(db_session, goal.id, "acoustic_contrast_control")
+    a2 = _create_scored_approach(db_session, goal.id, "pressure_matching")
+    parent = svc.create(db_session, goal.id, _make_experiment_data([a1.id, a2.id]))
+
+    child = svc.create_comparison_child(db_session, parent, a1, goal)
+
+    assert child.status == ExperimentStatusEnum.approved
+    assert child.requires_human_approval is False
+    assert child.approach_ids == [a1.id]
+    assert child.execution_handoff.batch_expansion["comparison_parent_id"] == parent.id
+
+
+def test_supersede_comparison_children(db_session):
+    goal = _create_goal(db_session)
+    a1 = _create_scored_approach(db_session, goal.id, "acoustic_contrast_control")
+    a2 = _create_scored_approach(db_session, goal.id, "pressure_matching")
+    parent = svc.create(db_session, goal.id, _make_experiment_data([a1.id, a2.id]))
+    child = svc.create_comparison_child(db_session, parent, a1, goal)
+
+    n = svc.supersede_comparison_children(db_session, parent)
+
+    assert n == 1
+    assert svc.get(db_session, child.id).status == ExperimentStatusEnum.superseded
+    # idempotent: a second pass finds nothing left to supersede
+    assert svc.supersede_comparison_children(db_session, parent) == 0
+
+
 def _seed_hypothesis(db, goal_id, approach_ids, text="Combining A and B yields >=13 dB contrast."):
     from coscientist.models.hypothesis import HypothesisCard
     hc = HypothesisCard(

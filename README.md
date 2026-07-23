@@ -579,8 +579,23 @@ retrieval breadth via `CS_RUNNER_RECOMMEND_TOP_K`, and provenance of unmeasurabl
 via `CS_RUNNER_ALIGN_PASS_CONDITIONS` (see `config.py`). If recommend-method returns no runnable
 reproduction, no repro workspace is bound to the recommended paper, or the run produces no
 translatable metrics, the command fails with a clear message and leaves the experiment `approved`;
-it never fabricates results. Combination experiments (>1 approach) are refused — no single-paper
-reproduction can run the combination. Fall back to the manual path (step 9) in those cases.
+it never fabricates results.
+
+**Comparison cards (>1 approach) run by decomposition.** A comparison card (e.g. "ACC vs PSZ")
+asks a head-to-head question that repro — strictly single-method — cannot answer in one run. So
+`cs experiment run` auto-dispatches any card with ≥2 `approach_ids` to `runner.run_comparison`,
+which fans the card out into per-approach single-method **child cards**
+(`experiment_svc.create_comparison_child`: system-materialized, auto-approved, linked to the parent
+via `batch_expansion.comparison_parent_id`), runs each child through the **same** step-8 runner
+above, then aggregates. Verdict on the parent: ≥2 children that produced metrics → `completed` with
+a per-metric winner (direction from the parent's pass conditions: `_min`→higher-better,
+`_max`→lower-better) and a `recommended_approach_id`; exactly 1 → `inconclusive`; 0 → parent left
+`approved` (re-runnable) with a 502. A re-run supersedes the prior children and creates fresh ones.
+The comparison summary (child ids, per-approach measured metrics, per-metric winners, recommended
+approach) rides the parent's `batch_expansion.comparison` JSON — no new table. A direct
+single-method run of a multi-approach card is still refused as a child-only guard; a hand-built
+*combination* card (a fused method authored via the manual `create` API) would be wrongly
+decomposed, so route those to the manual path (step 9) with `cs validation submit`.
 
 ### 9. Submit results manually and validate
 

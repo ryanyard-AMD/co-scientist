@@ -693,6 +693,69 @@ def generate_experiments(
 
 
 # ---------------------------------------------------------------------------
+# Comparison decomposition (task #49)
+# ---------------------------------------------------------------------------
+
+def create_comparison_child(
+    db: Session,
+    parent: ExperimentCardResponse,
+    approach_resp,
+    goal: GoalResponse,
+) -> ExperimentCardResponse:
+    """Materialize an approved single-approach child of a comparison card.
+
+    A comparison card (>1 approach) is run by decomposing it into per-approach
+    single-method children; each child runs through the existing single-method
+    runner unchanged. The child inherits the parent's human approval (the parent
+    was already approved), so it is created approved and auto-submittable. The
+    ``comparison_parent_id`` marker links it back for aggregation + supersession.
+    """
+    now = datetime.now(timezone.utc)
+    card = _synthesize_experiment(
+        approach_resp, goal, parent.generation_run_id or str(uuid.uuid4()), now, hypothesis=None
+    )
+    card.name = f"{approach_resp.method_family} (comparison child of {parent.name})"
+    card.status = ExperimentStatusEnum.approved.value
+    card.requires_human_approval = False
+    card.batch_expansion = json.dumps({"comparison_parent_id": parent.id})
+    db.add(card)
+    db.commit()
+    db.refresh(card)
+    return _to_response(card)
+
+
+def _comparison_children(db: Session, workspace_id: str, parent_id: str) -> list[ExperimentCard]:
+    rows = db.scalars(
+        select(ExperimentCard).where(ExperimentCard.workspace_id == workspace_id)
+    ).all()
+    out: list[ExperimentCard] = []
+    for row in rows:
+        if not row.batch_expansion:
+            continue
+        try:
+            marker = json.loads(row.batch_expansion).get("comparison_parent_id")
+        except (ValueError, AttributeError):
+            continue
+        if marker == parent_id:
+            out.append(row)
+    return out
+
+
+def supersede_comparison_children(db: Session, parent: ExperimentCardResponse) -> int:
+    """Supersede prior children of a comparison card so a re-run starts clean."""
+    count = 0
+    for child in _comparison_children(db, parent.workspace_id, parent.id):
+        current = ExperimentStatusEnum(child.status)
+        if current == ExperimentStatusEnum.superseded:
+            continue
+        if ExperimentStatusEnum.superseded not in ALLOWED_TRANSITIONS[current]:
+            continue
+        transition(db, child.id, ExperimentStatusEnum.superseded)
+        count += 1
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 

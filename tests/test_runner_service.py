@@ -10,11 +10,13 @@ from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.goal import GoalCreate
+from coscientist.schemas.runner import RunnerResult
 from coscientist.schemas.validation import (
     ReproductionStatusEnum,
     ValidationDecisionEnum,
     ValidationResultResponse,
 )
+from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import runner as svc
 
@@ -510,6 +512,154 @@ def test_run_combination_refuses(db_session, monkeypatch):
     assert _FakeReproClient.instances == []
     db_session.refresh(exp)
     assert exp.status == ExperimentStatusEnum.approved.value
+
+
+# ---------------------------------------------------------------------------
+# Comparison run (task #49): a >1-approach card is decomposed into per-approach
+# single-method children, each run through run_experiment (faked here), then compared.
+# ---------------------------------------------------------------------------
+
+def _fake_run_experiment(monkeypatch, metrics_by_approach, decision_by_approach=None):
+    """Replace run_experiment with a stub that mimics the child's real transitions."""
+    decisions = decision_by_approach or {}
+    _final = {
+        "validated": ExperimentStatusEnum.completed,
+        "refuted": ExperimentStatusEnum.failed,
+        "inconclusive": ExperimentStatusEnum.inconclusive,
+    }
+
+    def _run(db, experiment_id, goal_id, *, timeout=None):
+        child = experiment_svc.get(db, experiment_id)
+        aid = child.approach_ids[0]
+        if aid not in metrics_by_approach:
+            raise HTTPException(status_code=502, detail=f"no runnable reproduction for {aid[:8]}…")
+        metrics = metrics_by_approach[aid]
+        decision = decisions.get(aid, "validated")
+        experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.running)
+        experiment_svc.transition(db, experiment_id, _final[decision])
+        return RunnerResult(
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            run_id="run-x",
+            simulator="sim",
+            repro_status="success",
+            raw_metrics=metrics,
+            measured_metrics=metrics,
+            validation=ValidationResultResponse(
+                id=str(uuid.uuid4()),
+                experiment_id=experiment_id,
+                goal_id=goal_id,
+                approach_id=aid,
+                decision=ValidationDecisionEnum(decision),
+                reproduction_status=ReproductionStatusEnum.reproduced,
+                confidence=0.9,
+                reasoning="ok",
+                criterion_results=[],
+                refinement_suggestions=[],
+                measured_metrics=metrics,
+                artifact_paths=None,
+                model_used="test",
+                created_at=datetime.now(timezone.utc),
+            ),
+            recommendation={},
+        )
+
+    monkeypatch.setattr(svc, "run_experiment", _run)
+
+
+def test_run_comparison_two_children_completes_and_picks_winner(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(
+        db_session, gid, [a1.id, a2.id],
+        pass_conditions={"acoustic_contrast_db_min": 20.0, "bright_zone_error_max": -20.0},
+    )
+    _fake_run_experiment(monkeypatch, {
+        a1.id: {"acoustic_contrast_db": 25.0, "bright_zone_error": -40.0},
+        a2.id: {"acoustic_contrast_db": 22.0, "bright_zone_error": -30.0},
+    })
+
+    result = svc.run_comparison(db_session, exp.id, gid)
+
+    assert result.status == "completed"
+    assert result.recommended_approach_id == a1.id
+    mc = {c.metric: c for c in result.metric_comparisons}
+    assert mc["acoustic_contrast_db"].direction == "higher_better"
+    assert mc["acoustic_contrast_db"].best_approach_id == a1.id  # 25 > 22
+    assert mc["bright_zone_error"].direction == "lower_better"
+    assert mc["bright_zone_error"].best_approach_id == a1.id     # -40 < -30
+    # parent transitioned approved → running → completed
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.completed.value
+    # comparison summary persisted on the parent
+    comp = json.loads(exp.batch_expansion)["comparison"]
+    assert comp["recommended_approach_id"] == a1.id
+    assert set(comp["child_experiment_ids"].keys()) == {a1.id, a2.id}
+
+
+def test_run_comparison_one_child_errors_is_inconclusive(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(db_session, gid, [a1.id, a2.id])
+    # only a1 produces metrics; a2's child run raises → recorded as an error
+    _fake_run_experiment(monkeypatch, {a1.id: {"acoustic_contrast_db": 25.0}})
+
+    result = svc.run_comparison(db_session, exp.id, gid)
+
+    assert result.status == "inconclusive"
+    assert result.recommended_approach_id is None
+    errored = [r for r in result.approach_runs if r.error]
+    assert len(errored) == 1 and errored[0].approach_id == a2.id
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.inconclusive.value
+
+
+def test_run_comparison_all_error_leaves_approved(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(db_session, gid, [a1.id, a2.id])
+    _fake_run_experiment(monkeypatch, {})  # no approach produces metrics
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_comparison(db_session, exp.id, gid)
+    assert exc.value.status_code == 502
+    db_session.refresh(exp)
+    assert exp.status == ExperimentStatusEnum.approved.value
+
+
+def test_run_comparison_single_approach_refuses(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    exp = _experiment(db_session, gid, [a1.id])
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_comparison(db_session, exp.id, gid)
+    assert exc.value.status_code == 422
+    assert "comparison card" in exc.value.detail
+
+
+def test_run_comparison_tie_has_no_winner(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(
+        db_session, gid, [a1.id, a2.id],
+        pass_conditions={"acoustic_contrast_db_min": 20.0, "bright_zone_error_max": -20.0},
+    )
+    # a1 wins contrast, a2 wins error → 1-1 tie; both validated so no tiebreak
+    _fake_run_experiment(monkeypatch, {
+        a1.id: {"acoustic_contrast_db": 25.0, "bright_zone_error": -30.0},
+        a2.id: {"acoustic_contrast_db": 22.0, "bright_zone_error": -40.0},
+    })
+
+    result = svc.run_comparison(db_session, exp.id, gid)
+
+    assert result.status == "completed"
+    assert result.recommended_approach_id is None
+    assert "clear winner" in result.rationale.lower() or "tie" in result.rationale.lower()
 
 
 def test_validation_error_rolls_back_to_approved(db_session, monkeypatch):

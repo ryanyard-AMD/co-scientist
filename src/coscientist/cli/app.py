@@ -1240,6 +1240,51 @@ def experiment_approve(experiment_id: str = typer.Argument(...)):
         db.close()
 
 
+def _run_comparison_cli(db, experiment_id: str, goal_id: str, *, timeout, json_out: bool) -> None:
+    result = runner_svc.run_comparison(db, experiment_id, goal_id, timeout=timeout)
+    if json_out:
+        console.print_json(result.model_dump_json(indent=2))
+        return
+
+    status_color = {"completed": "green", "inconclusive": "yellow"}.get(result.status, "red")
+    console.print(
+        f"[{status_color}]Comparison {result.status.upper()}[/{status_color}] "
+        f"({len(result.approach_runs)} approaches)"
+    )
+
+    ran = [r for r in result.approach_runs if r.measured_metrics]
+    if ran:
+        metric_names = sorted({m for r in ran for m in r.measured_metrics})
+        table = Table(title="Measured Metrics by Approach")
+        table.add_column("Metric")
+        for r in ran:
+            fam = r.method_family or r.approach_id[:8]
+            table.add_column(f"{fam}\n{r.approach_id[:8]}…", justify="right")
+        for name in metric_names:
+            row = [name]
+            for r in ran:
+                val = r.measured_metrics.get(name)
+                row.append(f"{val:.4g}" if isinstance(val, (int, float)) else "—")
+            table.add_row(*row)
+        console.print(table)
+
+    for c in result.metric_comparisons:
+        best = c.best_approach_id[:8] + "…" if c.best_approach_id else "tie"
+        console.print(f"  {c.metric} ({c.direction}): winner {best}")
+
+    for r in result.approach_runs:
+        if r.error:
+            console.print(f"[yellow]⚠ {r.approach_id[:8]}… did not run: {r.error}[/yellow]")
+
+    if result.recommended_approach_id:
+        console.print(
+            f"[bold green]Recommended approach: {result.recommended_approach_id[:8]}…[/bold green] "
+            f"— {result.rationale}"
+        )
+    else:
+        console.print(f"[bold]No clear winner[/bold] — {result.rationale}")
+
+
 @experiment_app.command("run")
 def experiment_run(
     experiment_id: str = typer.Argument(...),
@@ -1247,9 +1292,17 @@ def experiment_run(
     timeout: Optional[float] = typer.Option(None, "--timeout", "-t", help="Seconds to wait for the repro run"),
     json_out: bool = typer.Option(False, "--json", help="Print raw JSON result"),
 ):
-    """Run an approved experiment: repro recommends the reproduction, then runs + validates real metrics."""
+    """Run an approved experiment: repro recommends the reproduction, then runs + validates real metrics.
+
+    Comparison cards (>1 approach) are decomposed into per-approach single-method runs
+    and compared automatically.
+    """
     db = _get_session()
     try:
+        card = experiment_svc.get(db, experiment_id)
+        if len(card.approach_ids) > 1:
+            _run_comparison_cli(db, experiment_id, goal_id, timeout=timeout, json_out=json_out)
+            return
         result = runner_svc.run_experiment(db, experiment_id, goal_id, timeout=timeout)
         if json_out:
             console.print_json(result.model_dump_json(indent=2))
