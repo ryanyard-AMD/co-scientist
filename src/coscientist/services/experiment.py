@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
-from coscientist.domain import METRIC_NAMES, RELATED_METHODS
+from coscientist.domain import METRIC_NAMES, RELATED_METHODS, canonicalize_metric
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.hypothesis import HypothesisCard
@@ -411,7 +411,7 @@ def _build_fixed_assumptions(goal: GoalResponse) -> dict[str, str]:
 def _derive_metrics(goal: GoalResponse) -> list[str]:
     metric_set: set[str] = set()
     for sc in goal.success_criteria:
-        metric_set.add(sc.name)
+        metric_set.add(canonicalize_metric(sc.name))
     for canonical in METRIC_NAMES:
         metric_set.add(canonical)
     return sorted(metric_set)
@@ -420,12 +420,13 @@ def _derive_metrics(goal: GoalResponse) -> list[str]:
 def _derive_validation(goal: GoalResponse) -> dict[str, Any]:
     pass_conditions: dict[str, float] = {}
     for sc in goal.success_criteria:
+        name = canonicalize_metric(sc.name)
         if sc.operator in (">=", ">"):
-            pass_conditions[f"{sc.name}_min"] = sc.target
+            pass_conditions[f"{name}_min"] = sc.target
         elif sc.operator in ("<=", "<"):
-            pass_conditions[f"{sc.name}_max"] = sc.target
+            pass_conditions[f"{name}_max"] = sc.target
         elif sc.operator == "==":
-            pass_conditions[f"{sc.name}_target"] = sc.target
+            pass_conditions[f"{name}_target"] = sc.target
     return {
         "pass_conditions": pass_conditions,
         "comparison": {"baseline_improvement_required": True},

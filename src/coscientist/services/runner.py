@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.repro import ReproClient
 from coscientist.config import settings
+from coscientist.domain import canonicalize_metric
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
@@ -183,7 +184,11 @@ _PASS_SUFFIXES = (("_min", ">="), ("_max", "<="))
 def _pass_conditions(pass_conditions: dict[str, float]) -> list[dict]:
     """Convert the card's pass_conditions dict into repro PassCondition list.
 
-    ``{"acoustic_contrast_min": 15.0}`` → ``{metric, operator: ">=", value: 15.0}``.
+    ``{"acoustic_contrast_min": 15.0}`` → ``{metric: "acoustic_contrast_db",
+    operator: ">=", value: 15.0}``. The bare metric name is canonicalized onto the
+    METRIC_NAMES vocabulary so it reconciles with the canonical names the runner
+    emits (``_translate``) — otherwise a measured metric is falsely flagged
+    unmeasurable.
     """
     out: list[dict] = []
     for key, value in (pass_conditions or {}).items():
@@ -194,7 +199,9 @@ def _pass_conditions(pass_conditions: dict[str, float]) -> list[dict]:
             if key.endswith(suffix):
                 metric, operator = key[: -len(suffix)], op
                 break
-        out.append({"metric": metric, "operator": operator, "value": float(value)})
+        out.append(
+            {"metric": canonicalize_metric(metric), "operator": operator, "value": float(value)}
+        )
     return out
 
 

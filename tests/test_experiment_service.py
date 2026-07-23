@@ -350,6 +350,9 @@ def test_generate_derives_metrics_from_goal(db_session):
     exp = result.experiments[0]
     assert "acoustic_contrast_db" in exp.metrics
     assert "latency_ms" in exp.metrics
+    # The goal's non-canonical criterion names are canonicalized, so the card does
+    # not carry both the bare and the _db form of the same metric.
+    assert "acoustic_contrast" not in exp.metrics
 
 
 def test_generate_derives_validation_from_goal(db_session):
@@ -359,8 +362,10 @@ def test_generate_derives_validation_from_goal(db_session):
         approach_ids=[a1.id],
     ))
     exp = result.experiments[0]
-    assert "acoustic_contrast_min" in exp.validation.pass_conditions
-    assert "latency_max" in exp.validation.pass_conditions
+    # Goal criteria 'acoustic_contrast' / 'latency' canonicalize onto METRIC_NAMES.
+    assert "acoustic_contrast_db_min" in exp.validation.pass_conditions
+    assert "latency_ms_max" in exp.validation.pass_conditions
+    assert "acoustic_contrast_min" not in exp.validation.pass_conditions
 
 
 def test_generate_estimates_cost(db_session):

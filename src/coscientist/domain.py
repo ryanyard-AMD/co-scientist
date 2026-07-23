@@ -225,6 +225,30 @@ def canonicalize_family(name: str) -> str:
     return FAMILY_ALIASES.get(canon, canon)
 
 
+# Reverse index of METRIC_NAMES: snake_cased synonym → canonical metric name.
+# Canonical keys are added last so a canonical name always maps to itself even if
+# a synonym of another metric happened to collide.
+_METRIC_SYNONYM_INDEX: dict[str, str] = {}
+for _canonical, _synonyms in METRIC_NAMES.items():
+    for _syn in _synonyms:
+        _METRIC_SYNONYM_INDEX[canonicalize_name(_syn)] = _canonical
+for _canonical in METRIC_NAMES:
+    _METRIC_SYNONYM_INDEX[_canonical] = _canonical
+del _canonical, _synonyms, _syn
+
+
+def canonicalize_metric(name: str) -> str:
+    """Canonicalize a metric name onto the controlled METRIC_NAMES vocabulary.
+
+    snake_case first, then map known synonyms/near-names onto their canonical key
+    (e.g. ``acoustic_contrast`` → ``acoustic_contrast_db``) so a card's metric and
+    pass-condition names reconcile with the canonical names the runner emits.
+    Metrics absent from the vocabulary pass through snake_cased (unrunnable/extra).
+    """
+    canon = canonicalize_name(name)
+    return _METRIC_SYNONYM_INDEX.get(canon, canon)
+
+
 def classify_text(
     text: str,
     terms: list[OntologyTerm] | None = None,

@@ -359,6 +359,25 @@ def test_run_records_unmeasurable_pass_conditions(db_session, monkeypatch):
     assert "acoustic_contrast_db" not in result.recommendation["unmeasurable_pass_conditions"]
 
 
+def test_pass_conditions_canonicalizes_metric_name():
+    # A card written with the non-canonical metric name reconciles onto the
+    # canonical METRIC_NAMES vocabulary the runner emits.
+    out = svc._pass_conditions({"acoustic_contrast_min": 15.0})
+    assert out == [{"metric": "acoustic_contrast_db", "operator": ">=", "value": 15.0}]
+
+
+def test_unmeasurable_conditions_reconciles_non_canonical_name():
+    # 'acoustic_contrast' (non-canonical) must NOT be flagged unmeasurable for VAST,
+    # since it canonicalizes to acoustic_contrast_db which VAST emits; a genuinely
+    # absent metric still is.
+    conds = svc._pass_conditions(
+        {"acoustic_contrast_min": 15.0, "steering_loop_latency_max": 50.0}
+    )
+    unmeasurable = svc._unmeasurable_conditions(conds, _VAST_EXPERIMENT_ID)
+    assert "acoustic_contrast_db" not in unmeasurable
+    assert "steering_loop_latency" in unmeasurable
+
+
 def test_run_no_runnable_candidate_refuses(db_session, monkeypatch):
     gid = _make_goal(db_session)
     ac = _approach(db_session, gid)
