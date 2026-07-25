@@ -108,6 +108,7 @@ class DeviceConceptCardResponse(BaseModel):
     rationale: str | None
     model_used: str | None
     generation_run_id: str | None
+    simulation: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -123,6 +124,26 @@ class DeviceConceptGenerateResponse(BaseModel):
     generated: int
     generation_run_id: str
     items: list[DeviceConceptCardResponse]
+
+
+# --- Device geometry simulation (spec→model bridge) ---
+
+class SimulationPerBand(BaseModel):
+    freq_hz: float
+    contrast_db: float
+
+
+class DeviceSimulationResult(BaseModel):
+    device_id: str
+    simulated_at: datetime
+    acoustic_contrast_db: float
+    per_band: list[SimulationPerBand] = Field(default_factory=list)
+    target_contrast_db: float | None = None
+    meets_target: bool | None = None
+    resolved_geometry: dict = Field(default_factory=dict)
+    model_flags: dict = Field(default_factory=dict)
+    approximations: list[str] = Field(default_factory=list)
+    repro_endpoint: str
 
 
 class DeviceConceptExportResponse(BaseModel):

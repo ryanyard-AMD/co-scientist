@@ -1,13 +1,16 @@
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 
 import anthropic
+import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from coscientist.clients.repro import ReproClient
 from coscientist.config import settings
 from coscientist.models.approach import ApproachCard
 from coscientist.models.device import DeviceConceptCard
@@ -25,9 +28,11 @@ from coscientist.schemas.device import (
     DeviceConceptGenerateRequest,
     DeviceConceptGenerateResponse,
     DeviceConceptStatusEnum,
+    DeviceSimulationResult,
     ExpectedPerformance,
     FormFactor,
     HardwareSpec,
+    SimulationPerBand,
     UseCase,
 )
 from coscientist.services import device_evidence as device_evidence_svc
@@ -72,6 +77,7 @@ def _to_response(card: DeviceConceptCard) -> DeviceConceptCardResponse:
         rationale=card.rationale,
         model_used=card.model_used,
         generation_run_id=card.generation_run_id,
+        simulation=json.loads(card.simulation) if card.simulation else {},
         created_at=card.created_at,
         updated_at=card.updated_at,
     )
@@ -317,6 +323,145 @@ def generate(
 def get(db: Session, device_id: str, goal_id: str) -> DeviceConceptCardResponse:
     card = _get_or_404(db, device_id, goal_id)
     return _to_response(card)
+
+
+# ---------------------------------------------------------------------------
+# CS-EPIC-DEVICE: geometry simulation (spec→model bridge)
+# ---------------------------------------------------------------------------
+
+# Acoustic-contrast bar a PSZ device is designed to clear (dB). The generator
+# doesn't stamp a per-card pass condition, so this is the shared design target.
+DEFAULT_TARGET_CONTRAST_DB = 15.0
+
+
+def _first_number(text: str, default: float) -> float:
+    """First numeric value in a free-text field (e.g. '50-200' → 50.0)."""
+    if not text:
+        return default
+    m = re.search(r"-?\d+(?:\.\d+)?", str(text))
+    return float(m.group()) if m else default
+
+
+def _infer_layout(geometry_text: str) -> str:
+    """Map the card's free-text speaker geometry to a simulator layout keyword."""
+    g = (geometry_text or "").lower()
+    if any(w in g for w in ("cap", "curv", "spher", "dome", "hemis")):
+        return "cap"
+    if any(w in g for w in ("line", "linear", "ula", "row", "1d")):
+        return "ula"
+    if any(w in g for w in ("planar", "grid", "flat", "panel", "matrix", "2d")):
+        return "planar"
+    return "cap"  # a curved PAL cap is the card's own leading option
+
+
+def _resolve_geometry(card: DeviceConceptCard) -> dict:
+    """Resolve a DeviceConceptCard's TBD/range geometry knobs into a concrete
+    DeviceGeometryRequest for the simulator. Deterministic: same card → same
+    geometry, so re-running is reproducible. The resolved knobs are echoed back
+    in the result for transparency."""
+    hw = json.loads(card.hardware) if card.hardware else {}
+    ff = json.loads(card.form_factor) if card.form_factor else {}
+
+    speakers = hw.get("speakers", {}) if isinstance(hw, dict) else {}
+    count = speakers.get("estimated_count")
+    try:
+        n_elements = int(count) if count is not None else 12
+    except (TypeError, ValueError):
+        n_elements = int(_first_number(str(count), 12))
+    n_elements = max(4, min(32, n_elements))
+
+    layout = _infer_layout(str(speakers.get("geometry", "")))
+
+    # Listener distance (cm range → boresight distance in metres), clamped sane.
+    dist_cm = _first_number(ff.get("listener_distance_cm", ""), 100.0)
+    listener_y = max(0.3, min(3.0, dist_cm / 100.0))
+
+    return {
+        "layout": layout,
+        "n_elements": n_elements,
+        "cap_radius": 0.12,
+        "cap_deg": 35.0,
+        "pitch": 0.03,
+        "listener": [0.0, listener_y, 0.0],
+        "dark": [0.40, listener_y, 0.0],   # adjacent listener, 40 cm off boresight
+        "zone_half_extent": 0.09,
+        "freqs": [2000.0, 4000.0, 6000.0, 8000.0],  # PAL effective audio band
+        "room_dims": [4.0, 4.0, 2.6],               # small desktop room
+        "t60": 0.4,
+        "pal_model": True,                          # PAL nonlinear demodulation
+        "carrier": 40000.0,
+        "aperture": 0.01,
+    }
+
+
+def simulate(
+    db: Session,
+    device_id: str,
+    goal_id: str,
+    *,
+    timeout: float | None = None,
+) -> DeviceSimulationResult:
+    """Predict a device concept's acoustic contrast by resolving its geometry and
+    handing it to repro's device-sim endpoint (co-scientist holds no numpy). Writes
+    the prediction onto the card so the refine loop — edit geometry, re-simulate —
+    is a first-class feature. Idempotent-ish: re-running overwrites the prediction."""
+    governance_svc.assert_execution_boundary("simulate device geometries")
+    goal_svc.raise_if_restricted(db, goal_id)
+
+    card = _get_or_404(db, device_id, goal_id)
+    geometry = _resolve_geometry(card)
+
+    client = ReproClient(timeout=timeout or settings.repro_run_timeout)
+    try:
+        result = client.simulate_device(geometry)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim rejected the geometry ({exc.response.status_code}): "
+            f"{exc.response.text[:300]}",
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim unreachable at {settings.repro_url}: {exc}",
+        )
+    finally:
+        client.close()
+
+    contrast = float(result.get("acoustic_contrast_db", 0.0))
+    per_band = result.get("per_band", [])
+    target = DEFAULT_TARGET_CONTRAST_DB
+    simulated_at = datetime.now(timezone.utc)
+
+    card.simulation = json.dumps(
+        {
+            "simulated_at": simulated_at.isoformat(),
+            "acoustic_contrast_db": contrast,
+            "per_band": per_band,
+            "target_contrast_db": target,
+            "meets_target": contrast >= target,
+            "resolved_geometry": result.get("resolved_geometry", geometry),
+            "model_flags": result.get("model_flags", {}),
+            "approximations": result.get("approximations", []),
+            "repro_endpoint": f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
+        }
+    )
+    card.updated_at = simulated_at
+    db.commit()
+    db.refresh(card)
+
+    return DeviceSimulationResult(
+        device_id=device_id,
+        simulated_at=simulated_at,
+        acoustic_contrast_db=contrast,
+        per_band=[SimulationPerBand(**b) for b in per_band],
+        target_contrast_db=target,
+        meets_target=contrast >= target,
+        resolved_geometry=result.get("resolved_geometry", geometry),
+        model_flags=result.get("model_flags", {}),
+        approximations=result.get("approximations", []),
+        repro_endpoint=f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
+    )
 
 
 def list_devices(

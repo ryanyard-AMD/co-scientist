@@ -1877,6 +1877,57 @@ def device_show(
         db.close()
 
 
+@device_app.command("simulate")
+def device_simulate(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
+    json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
+):
+    """Predict a device concept's acoustic contrast from its resolved geometry
+    (delegates the physics to repro's device-sim endpoint)."""
+    db = _get_session()
+    try:
+        result = device_svc.simulate(db, device_id, goal_id, timeout=timeout)
+        if json_out:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+
+        g = result.resolved_geometry
+        geo = Table(title="Resolved geometry", show_header=False)
+        geo.add_column("field", style="bold")
+        geo.add_column("value")
+        geo.add_row("layout", str(g.get("layout", "")))
+        geo.add_row("elements", str(g.get("n_elements", "")))
+        geo.add_row("listener (m)", str(g.get("listener_m", g.get("listener", ""))))
+        geo.add_row("dark zone (m)", str(g.get("dark_m", g.get("dark", ""))))
+        geo.add_row("band (Hz)", str(g.get("freqs_hz", g.get("freqs", ""))))
+        f = result.model_flags
+        geo.add_row("room / T60", f"{f.get('room_dims_m', '')} / {f.get('t60_s', '')} s")
+        geo.add_row("PAL model", str(f.get("pal_model", "")))
+        console.print(geo)
+
+        verdict = "[green]meets[/green]" if result.meets_target else "[red]below[/red]"
+        console.print(
+            f"\n[bold]Predicted acoustic contrast:[/bold] "
+            f"{result.acoustic_contrast_db:.2f} dB  "
+            f"({verdict} target {result.target_contrast_db:.0f} dB)"
+        )
+        band = Table(title="Per-band contrast")
+        band.add_column("Freq", justify="right")
+        band.add_column("Contrast (dB)", justify="right")
+        for b in result.per_band:
+            band.add_row(f"{b.freq_hz/1000:.1f} kHz", f"{b.contrast_db:.2f}")
+        console.print(band)
+
+        if result.approximations:
+            console.print("\n[dim]Model approximations:[/dim]")
+            for a in result.approximations:
+                console.print(f"  [dim]- {a}[/dim]")
+    finally:
+        db.close()
+
+
 @device_app.command("review")
 def device_review(
     device_id: str = typer.Argument(...),

@@ -348,3 +348,97 @@ def test_export_json_is_valid(mock_agent, db_session):
     data = json.loads(result.content)
     assert data["name"] == "Near-field Desktop PSZ Bar"
     assert "unresolved_risks" in data
+
+
+# --- device geometry simulation (spec→model bridge) ---
+
+_SIM_RESPONSE = {
+    "acoustic_contrast_db": 43.46,
+    "per_band": [
+        {"freq_hz": 2000.0, "contrast_db": 47.4},
+        {"freq_hz": 8000.0, "contrast_db": 37.96},
+    ],
+    "model_flags": {"t60_s": 0.4, "pal_model": "berktay", "n_elements": 8, "layout": "ula"},
+    "resolved_geometry": {"layout": "ula", "n_elements": 8},
+    "approximations": ["linear superposition of demodulated PAL audio fields"],
+}
+
+
+class _FakeReproClient:
+    """Captures the geometry handed to the repro device-sim endpoint."""
+
+    last_geometry: dict | None = None
+    response: dict = _SIM_RESPONSE
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def simulate_device(self, geometry):
+        type(self).last_geometry = geometry
+        return self.response
+
+    def close(self):
+        pass
+
+
+def _make_device(db):
+    goal = _create_goal(db)
+    _create_validated_approach(db, goal.id)
+    gen = svc.generate(db, goal.id, DeviceConceptGenerateRequest())
+    return goal, gen.items[0].id
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_populates_card(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    result = svc.simulate(db_session, device_id, goal.id)
+
+    assert result.device_id == device_id
+    assert result.acoustic_contrast_db == 43.46
+    assert result.target_contrast_db == svc.DEFAULT_TARGET_CONTRAST_DB
+    assert result.meets_target is True
+    assert len(result.per_band) == 2
+
+    # persisted onto the card and surfaced through get()
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.simulation["acoustic_contrast_db"] == 43.46
+    assert card.simulation["meets_target"] is True
+    assert "simulated_at" in card.simulation
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_resolves_geometry_from_card(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    svc.simulate(db_session, device_id, goal.id)
+
+    geo = _FakeReproClient.last_geometry
+    # MOCK_CONCEPTS: speakers estimated_count=8, geometry "linear" → ula;
+    # listener_distance_cm "50-80" → 0.5 m boresight.
+    assert geo["layout"] == "ula"
+    assert geo["n_elements"] == 8
+    assert geo["listener"] == [0.0, 0.5, 0.0]
+    assert geo["pal_model"] is True
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_below_target(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    _FakeReproClient.response = {**_SIM_RESPONSE, "acoustic_contrast_db": 9.1}
+    try:
+        result = svc.simulate(db_session, device_id, goal.id)
+        assert result.meets_target is False
+    finally:
+        _FakeReproClient.response = _SIM_RESPONSE
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_honors_execution_boundary(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with patch("coscientist.services.governance.settings.enforce_execution_boundary", True):
+        with pytest.raises(Exception) as exc_info:
+            svc.simulate(db_session, device_id, goal.id)
+    assert exc_info.value.status_code == 403

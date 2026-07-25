@@ -221,6 +221,15 @@ Device Concept Cards close the loop back from execution: as ResultBundles are in
 - **Confidence from evidence** (CS-DEVICE-009): confidence is recomputed deterministically from linked experiment aggregations (base 0.5, passing raises, failing/inconclusive lowers); each change records a **DeviceEvidenceUpdate** with supporting ResultBundles, affected approach scores, added risks, and rationale — idempotent on the triggering ingestion key. Queryable via `GET /goals/{id}/devices/evidence-updates`
 - **Comparison by tested performance** (CS-DEVICE-010): the side-by-side view includes confidence and validation passed/failed counts
 
+#### Predicted performance from geometry simulation (spec→model bridge)
+
+A DeviceConceptCard fixes the *architecture* but leaves the physical geometry as ranges/TBD (array layout, element count, listener distance). `cs device simulate <device_id> <goal_id>` resolves those knobs to concrete numbers and predicts the device's acoustic contrast — turning the concept into a simulation you can refine (change geometry → re-run → see the number move).
+
+- **Physics delegated to the Experimentation System.** The co-scientist holds no numpy; it resolves the geometry and calls repro's `POST /api/v1/device-sim`, which runs the same validated ACC physics repro's paper reproductions use — image-source room ATFs plus a per-element **Berktay far-field directivity** model of the PAL's nonlinear ultrasonic demodulation — and returns broadband + per-band contrast. Gated by the execution boundary (`assert_execution_boundary`) like every other repro-compute path.
+- **Deterministic geometry resolution** (`_resolve_geometry`): element count and layout are read from `hardware.speakers`, boresight distance from `form_factor.listener_distance_cm`; the same card always resolves to the same geometry, so re-runs are reproducible. The resolved knobs are echoed back for transparency.
+- **Persisted to the card** in a `simulation` JSON column (Alembic `0032`): `acoustic_contrast_db`, `per_band`, `target_contrast_db` / `meets_target` (against the 15 dB PSZ bar), `resolved_geometry`, `model_flags`, and the model's stated `approximations`. Surfaced on `GET`/`cs device show`; re-running overwrites it.
+- **Honest about fidelity.** The model is real, not a lookup — contrast responds correctly to element count, layout, zone separation, and aperture — but the numbers are linear-superposition ACC over the demodulated fields with a far-field Berktay directivity, **not** a full KZK/Westervelt nonlinear solve, and currently sit optimistic versus a reverberant device's realistic ceiling.
+
 ### CS-EPIC-ROADMAP: Research Roadmap and Next-Best Experiment Planning
 
 Synthesises the full state of a research goal — approaches, experiments, validation outcomes, device concepts, and rubric scores — into a ranked, lane-sorted roadmap of recommended next actions via a Claude Sonnet 4.6 Research Program Manager Agent.

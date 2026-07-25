@@ -105,6 +105,18 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def simulate_device(self, geometry: dict) -> dict:
+        """POST /api/v1/device-sim — predict a device geometry's acoustic contrast.
+
+        A synchronous, sub-second analytic prediction (no run record). ``geometry``
+        is a resolved DeviceGeometryRequest: layout spec (or explicit positions),
+        zones, band, room, and PAL model. Returns ``{acoustic_contrast_db, per_band,
+        model_flags, resolved_geometry, approximations}``.
+        """
+        resp = self._client.post("/api/v1/device-sim", json=geometry)
+        resp.raise_for_status()
+        return resp.json()
+
     def get_run(self, run_id: str) -> dict:
         """GET /api/v1/runs/{run_id} → RunMetadata dict."""
         resp = self._client.get(f"/api/v1/runs/{run_id}")

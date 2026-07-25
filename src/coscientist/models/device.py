@@ -31,6 +31,10 @@ class DeviceConceptCard(Base):
     hardware: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     expected_performance: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
+    # Predicted performance from the device-geometry simulator (CS-EPIC-DEVICE
+    # spec→model bridge). JSON dict; "{}" until `device simulate` is run.
+    simulation: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
     # JSON list fields
     approach_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     experiment_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
