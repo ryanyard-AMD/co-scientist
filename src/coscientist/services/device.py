@@ -391,6 +391,7 @@ def _resolve_geometry(card: DeviceConceptCard) -> dict:
         "pal_model": True,                          # PAL nonlinear demodulation
         "carrier": 40000.0,
         "aperture": 0.01,
+        "sidelobe_floor": 0.056,                    # -25 dB off-axis (realistic PAL)
     }
 
 
