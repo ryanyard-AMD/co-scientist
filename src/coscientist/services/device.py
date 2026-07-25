@@ -392,6 +392,7 @@ def _resolve_geometry(card: DeviceConceptCard) -> dict:
         "carrier": 40000.0,
         "aperture": 0.01,
         "sidelobe_floor": 0.056,                    # -25 dB off-axis (realistic PAL)
+        "nearfield_length": 0.4,                    # beam-formation length z_form (m)
     }
 
 
