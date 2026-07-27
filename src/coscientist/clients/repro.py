@@ -117,6 +117,27 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def optimize_device(
+        self, base: dict, search_space: dict, *, max_candidates: int = 24
+    ) -> dict:
+        """POST /api/v1/device-sim/optimize — sweep candidate geometries, pick best.
+
+        ``base`` is the fixed resolved geometry; ``search_space`` maps a knob name to a
+        list of candidate values. Returns ``{best, best_overrides, best_contrast_db,
+        swept_keys, n_candidates, rooms_built, candidates}`` where ``best`` is a full
+        device-sim result. Raises for an empty or oversized sweep (repro returns 400).
+        """
+        resp = self._client.post(
+            "/api/v1/device-sim/optimize",
+            json={
+                "base": base,
+                "search_space": search_space,
+                "max_candidates": max_candidates,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_run(self, run_id: str) -> dict:
         """GET /api/v1/runs/{run_id} → RunMetadata dict."""
         resp = self._client.get(f"/api/v1/runs/{run_id}")

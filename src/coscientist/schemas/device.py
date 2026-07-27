@@ -148,6 +148,30 @@ class DeviceSimulationResult(BaseModel):
     previous_contrast_db: float | None = None
 
 
+class DeviceOptimizeCandidate(BaseModel):
+    overrides: dict = Field(default_factory=dict)
+    acoustic_contrast_db: float
+    n_elements: int
+    per_band: list[SimulationPerBand] = Field(default_factory=list)
+
+
+class DeviceOptimizeResult(BaseModel):
+    device_id: str
+    simulated_at: datetime
+    best_contrast_db: float
+    best_overrides: dict = Field(default_factory=dict)
+    target_contrast_db: float | None = None
+    meets_target: bool | None = None
+    swept_keys: list[str] = Field(default_factory=list)
+    n_candidates: int = 0
+    rooms_built: int = 0
+    candidates: list[DeviceOptimizeCandidate] = Field(default_factory=list)
+    resolved_geometry: dict = Field(default_factory=dict)
+    model_flags: dict = Field(default_factory=dict)
+    repro_endpoint: str
+    previous_contrast_db: float | None = None
+
+
 class DeviceConceptExportResponse(BaseModel):
     device_id: str
     format: str

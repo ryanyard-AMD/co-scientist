@@ -1983,6 +1983,110 @@ def device_simulate(
         db.close()
 
 
+def _coerce_scalar(raw: str):
+    """Coerce a single sweep candidate to bool / int / float / str."""
+    s = raw.strip()
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+def _parse_sweep(pairs: list[str]) -> dict:
+    """Parse repeatable --sweep key=v1,v2,v3 into {key: [v1, v2, v3]}."""
+    out: dict = {}
+    for p in pairs:
+        if "=" not in p:
+            raise typer.BadParameter(f"--sweep expects key=v1,v2,..., got {p!r}")
+        k, v = p.split("=", 1)
+        vals = [_coerce_scalar(x) for x in v.split(",") if x.strip() != ""]
+        if not vals:
+            raise typer.BadParameter(f"--sweep {k!r} has no values")
+        out[k.strip()] = vals
+    return out
+
+
+@device_app.command("optimize")
+def device_optimize(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    sweep: Optional[List[str]] = typer.Option(
+        None, "--sweep",
+        help="Knob to sweep, e.g. --sweep n_elements=6,8,12 "
+             "--sweep aperture=0.008,0.01,0.012 (repeatable)",
+    ),
+    max_candidates: int = typer.Option(24, "--max-candidates", help="Cap on combinations"),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
+    json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
+):
+    """Sweep candidate geometries and write the best onto the card. Ranks the cartesian
+    product of --sweep knobs by predicted acoustic contrast (physics delegated to repro),
+    persists the winner like `simulate`, and shows the gain over the previous prediction."""
+    db = _get_session()
+    try:
+        search_space = _parse_sweep(sweep or [])
+        if not search_space:
+            console.print("[red]Provide at least one --sweep key=v1,v2,...[/red]")
+            raise typer.Exit(code=1)
+        result = device_svc.optimize(
+            db, device_id, goal_id, search_space,
+            max_candidates=max_candidates, timeout=timeout,
+        )
+        if json_out:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+
+        console.print(
+            f"[bold]Swept[/bold] {', '.join(result.swept_keys)} "
+            f"→ {result.n_candidates} candidates "
+            f"([dim]{result.rooms_built} room build(s)[/dim])"
+        )
+
+        cand = Table(title="Ranked candidates (best first)")
+        cand.add_column("Overrides")
+        cand.add_column("Elements", justify="right")
+        cand.add_column("Contrast (dB)", justify="right")
+        for i, c in enumerate(result.candidates):
+            ov = ", ".join(f"{k}={v}" for k, v in c.overrides.items())
+            style = "bold green" if i == 0 else ""
+            cand.add_row(ov or "(base)", str(c.n_elements),
+                         f"{c.acoustic_contrast_db:.2f}", style=style)
+        console.print(cand)
+
+        verdict = "[green]meets[/green]" if result.meets_target else "[red]below[/red]"
+        console.print(
+            f"\n[bold]Best geometry:[/bold] "
+            + ", ".join(f"{k}={v}" for k, v in result.best_overrides.items())
+        )
+        console.print(
+            f"[bold]Predicted acoustic contrast:[/bold] "
+            f"{result.best_contrast_db:.2f} dB  "
+            f"({verdict} target {result.target_contrast_db:.0f} dB)"
+        )
+        if result.previous_contrast_db is not None:
+            delta = result.best_contrast_db - result.previous_contrast_db
+            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "=")
+            colour = "green" if delta > 0 else ("red" if delta < 0 else "dim")
+            console.print(
+                f"[{colour}]{arrow} {delta:+.2f} dB[/{colour}] vs previous "
+                f"({result.previous_contrast_db:.2f} dB)"
+            )
+    except ValueError as exc:
+        console.print(f"[red]Invalid sweep:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except HTTPException as exc:
+        console.print(f"[red]Optimization failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
 @device_app.command("review")
 def device_review(
     device_id: str = typer.Argument(...),

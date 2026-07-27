@@ -364,11 +364,42 @@ _SIM_RESPONSE = {
 }
 
 
+_OPT_RESPONSE = {
+    "best": {
+        "acoustic_contrast_db": 35.77,
+        "per_band": [
+            {"freq_hz": 2000.0, "contrast_db": 38.0},
+            {"freq_hz": 8000.0, "contrast_db": 33.5},
+        ],
+        "model_flags": {"pal_model": "berktay", "n_elements": 16, "layout": "ula"},
+        "resolved_geometry": {"layout": "ula", "n_elements": 16},
+        "approximations": ["linear superposition of demodulated PAL audio fields"],
+    },
+    "best_overrides": {"n_elements": 16},
+    "best_contrast_db": 35.77,
+    "swept_keys": ["n_elements"],
+    "n_candidates": 3,
+    "rooms_built": 3,
+    "candidates": [
+        {"overrides": {"n_elements": 16}, "acoustic_contrast_db": 35.77, "n_elements": 16,
+         "per_band": [{"freq_hz": 2000.0, "contrast_db": 38.0}]},
+        {"overrides": {"n_elements": 8}, "acoustic_contrast_db": 28.33, "n_elements": 8,
+         "per_band": [{"freq_hz": 2000.0, "contrast_db": 30.0}]},
+        {"overrides": {"n_elements": 4}, "acoustic_contrast_db": 24.89, "n_elements": 4,
+         "per_band": [{"freq_hz": 2000.0, "contrast_db": 26.0}]},
+    ],
+}
+
+
 class _FakeReproClient:
     """Captures the geometry handed to the repro device-sim endpoint."""
 
     last_geometry: dict | None = None
+    last_base: dict | None = None
+    last_search_space: dict | None = None
+    last_max_candidates: int | None = None
     response: dict = _SIM_RESPONSE
+    opt_response: dict = _OPT_RESPONSE
 
     def __init__(self, *args, **kwargs):
         pass
@@ -376,6 +407,12 @@ class _FakeReproClient:
     def simulate_device(self, geometry):
         type(self).last_geometry = geometry
         return self.response
+
+    def optimize_device(self, base, search_space, *, max_candidates=24):
+        type(self).last_base = base
+        type(self).last_search_space = search_space
+        type(self).last_max_candidates = max_candidates
+        return self.opt_response
 
     def close(self):
         pass
@@ -488,3 +525,65 @@ def test_simulate_reports_previous_contrast_delta(mock_agent, db_session):
     # the re-run sees the prior prediction so the CLI can show the delta
     assert second.previous_contrast_db == 43.46
     assert second.acoustic_contrast_db == 30.0
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_optimize_picks_best_and_persists(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    result = svc.optimize(
+        db_session, device_id, goal.id, {"n_elements": [4, 8, 16]}
+    )
+
+    assert result.best_contrast_db == 35.77
+    assert result.best_overrides == {"n_elements": 16}
+    assert result.meets_target is True
+    assert result.n_candidates == 3
+    assert result.swept_keys == ["n_elements"]
+    assert len(result.candidates) == 3
+    assert result.candidates[0].acoustic_contrast_db == 35.77
+
+    # base resolved from the card, search space forwarded to repro
+    assert _FakeReproClient.last_search_space == {"n_elements": [4, 8, 16]}
+    assert _FakeReproClient.last_base["layout"] == "ula"
+
+    # winning prediction persisted onto the card like simulate()
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.simulation["acoustic_contrast_db"] == 35.77
+    assert card.simulation["overrides"] == {"n_elements": 16}
+    assert card.simulation["optimization"]["swept_keys"] == ["n_elements"]
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_optimize_rejects_unknown_knob(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="unknown geometry override"):
+        svc.optimize(db_session, device_id, goal.id, {"bogus_knob": [1, 2]})
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_optimize_rejects_empty_search_space(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="search_space is empty"):
+        svc.optimize(db_session, device_id, goal.id, {})
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_optimize_reports_previous_contrast(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    svc.simulate(db_session, device_id, goal.id)      # seeds a prior prediction (43.46)
+    result = svc.optimize(db_session, device_id, goal.id, {"n_elements": [4, 8, 16]})
+    assert result.previous_contrast_db == 43.46
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_optimize_honors_execution_boundary(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with patch("coscientist.services.governance.settings.enforce_execution_boundary", True):
+        with pytest.raises(Exception) as exc_info:
+            svc.optimize(db_session, device_id, goal.id, {"n_elements": [4, 8]})
+    assert exc_info.value.status_code == 403

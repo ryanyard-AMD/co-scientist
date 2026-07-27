@@ -28,6 +28,8 @@ from coscientist.schemas.device import (
     DeviceConceptGenerateRequest,
     DeviceConceptGenerateResponse,
     DeviceConceptStatusEnum,
+    DeviceOptimizeCandidate,
+    DeviceOptimizeResult,
     DeviceSimulationResult,
     ExpectedPerformance,
     FormFactor,
@@ -506,6 +508,122 @@ def simulate(
         approximations=result.get("approximations", []),
         repro_endpoint=f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
         overrides=overrides or {},
+        previous_contrast_db=previous_contrast_db,
+    )
+
+
+def optimize(
+    db: Session,
+    device_id: str,
+    goal_id: str,
+    search_space: dict,
+    *,
+    max_candidates: int = 24,
+    timeout: float | None = None,
+) -> DeviceOptimizeResult:
+    """Sweep candidate geometries around a card's resolved geometry and pick the best.
+
+    `search_space` maps a geometry knob (element count, cap angle, aperture, ...) to a
+    list of values to try; repro simulates the cartesian product and ranks by contrast.
+    The winning geometry's prediction is written onto the card exactly like `simulate`,
+    so an optimize run refines the card in one shot instead of a manual --set sweep. The
+    prior prediction's contrast is returned as `previous_contrast_db` to show the gain."""
+    governance_svc.assert_execution_boundary("optimize device geometries")
+    goal_svc.raise_if_restricted(db, goal_id)
+
+    if not search_space:
+        raise ValueError("search_space is empty; give at least one knob to sweep")
+    unknown = set(search_space) - ALLOWED_OVERRIDE_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown geometry override(s): {sorted(unknown)}; "
+            f"allowed: {sorted(ALLOWED_OVERRIDE_KEYS)}"
+        )
+
+    card = _get_or_404(db, device_id, goal_id)
+
+    previous_contrast_db: float | None = None
+    if card.simulation:
+        try:
+            previous_contrast_db = json.loads(card.simulation).get("acoustic_contrast_db")
+        except (ValueError, TypeError):
+            previous_contrast_db = None
+
+    base = _resolve_geometry(card)
+
+    client = ReproClient(timeout=timeout or settings.repro_run_timeout)
+    try:
+        result = client.optimize_device(
+            base, search_space, max_candidates=max_candidates
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim/optimize rejected the sweep ({exc.response.status_code}): "
+            f"{exc.response.text[:300]}",
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim unreachable at {settings.repro_url}: {exc}",
+        )
+    finally:
+        client.close()
+
+    best = result.get("best", {})
+    contrast = float(result.get("best_contrast_db", best.get("acoustic_contrast_db", 0.0)))
+    per_band = best.get("per_band", [])
+    best_overrides = result.get("best_overrides", {})
+    target = DEFAULT_TARGET_CONTRAST_DB
+    simulated_at = datetime.now(timezone.utc)
+    endpoint = f"{settings.repro_url.rstrip('/')}/api/v1/device-sim"
+
+    card.simulation = json.dumps(
+        {
+            "simulated_at": simulated_at.isoformat(),
+            "acoustic_contrast_db": contrast,
+            "per_band": per_band,
+            "target_contrast_db": target,
+            "meets_target": contrast >= target,
+            "resolved_geometry": best.get("resolved_geometry", base),
+            "model_flags": best.get("model_flags", {}),
+            "approximations": best.get("approximations", []),
+            "repro_endpoint": f"{endpoint}/optimize",
+            "overrides": best_overrides,
+            "previous_contrast_db": previous_contrast_db,
+            "optimization": {
+                "swept_keys": result.get("swept_keys", []),
+                "n_candidates": result.get("n_candidates", 0),
+                "best_overrides": best_overrides,
+            },
+        }
+    )
+    card.updated_at = simulated_at
+    db.commit()
+    db.refresh(card)
+
+    return DeviceOptimizeResult(
+        device_id=device_id,
+        simulated_at=simulated_at,
+        best_contrast_db=contrast,
+        best_overrides=best_overrides,
+        target_contrast_db=target,
+        meets_target=contrast >= target,
+        swept_keys=result.get("swept_keys", []),
+        n_candidates=result.get("n_candidates", 0),
+        rooms_built=result.get("rooms_built", 0),
+        candidates=[
+            DeviceOptimizeCandidate(
+                overrides=c.get("overrides", {}),
+                acoustic_contrast_db=c.get("acoustic_contrast_db", 0.0),
+                n_elements=c.get("n_elements", 0),
+                per_band=[SimulationPerBand(**b) for b in c.get("per_band", [])],
+            )
+            for c in result.get("candidates", [])
+        ],
+        resolved_geometry=best.get("resolved_geometry", base),
+        model_flags=best.get("model_flags", {}),
+        repro_endpoint=f"{endpoint}/optimize",
         previous_contrast_db=previous_contrast_db,
     )
 
