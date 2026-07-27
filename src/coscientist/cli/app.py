@@ -2023,11 +2023,17 @@ def device_optimize(
     ),
     max_candidates: int = typer.Option(24, "--max-candidates", help="Cap on combinations"),
     timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
+    roadmap: bool = typer.Option(
+        False, "--roadmap",
+        help="Regenerate the goal's research roadmap from the optimized card "
+             "(an LLM call) so next-best actions reflect the new prediction",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
 ):
     """Sweep candidate geometries and write the best onto the card. Ranks the cartesian
     product of --sweep knobs by predicted acoustic contrast (physics delegated to repro),
-    persists the winner like `simulate`, and shows the gain over the previous prediction."""
+    persists the winner like `simulate`, and shows the gain over the previous prediction.
+    Pass --roadmap to regenerate the goal's roadmap from the refined card in one shot."""
     db = _get_session()
     try:
         search_space = _parse_sweep(sweep or [])
@@ -2077,6 +2083,26 @@ def device_optimize(
                 f"[{colour}]{arrow} {delta:+.2f} dB[/{colour}] vs previous "
                 f"({result.previous_contrast_db:.2f} dB)"
             )
+
+        if roadmap:
+            console.print("\n[bold]Regenerating roadmap from the refined card…[/bold]")
+            rm = roadmap_svc.generate(db, goal_id)
+            if rm.total == 0:
+                console.print(
+                    "[yellow]No roadmap items generated — ensure the goal has at least "
+                    "one approach.[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[green]Roadmap run {rm.generation_run_id[:8]}… — {rm.total} items[/green]"
+                )
+                rt = Table(title="Research Roadmap (top items)")
+                rt.add_column("Rank", justify="right")
+                rt.add_column("Lane", style="cyan")
+                rt.add_column("Title")
+                for item in rm.items[:5]:
+                    rt.add_row(str(item.priority_rank), item.lane.value, item.title)
+                console.print(rt)
     except ValueError as exc:
         console.print(f"[red]Invalid sweep:[/red] {exc}")
         raise typer.Exit(code=1)

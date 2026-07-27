@@ -81,3 +81,49 @@ def test_device_optimize_renders_ranked_table():
 def test_device_optimize_requires_sweep():
     result = runner.invoke(app, ["device", "optimize", "dev-1", "goal-1"])
     assert result.exit_code == 1
+
+
+def test_device_optimize_regenerates_roadmap_when_flagged():
+    from coscientist.schemas.roadmap import (
+        ResearchRoadmapItemResponse,
+        ResearchRoadmapListResponse,
+        RoadmapLaneEnum,
+        RoadmapStatusEnum,
+    )
+
+    now = datetime.now(timezone.utc)
+    rm = ResearchRoadmapListResponse(
+        items=[
+            ResearchRoadmapItemResponse(
+                id="rm-1", workspace_id="goal-1", title="Prototype 16-element cap array",
+                description="", lane=RoadmapLaneEnum.device_prototype,
+                status=RoadmapStatusEnum.open, priority_score=0.9, priority_rank=1,
+                rationale="", estimated_cost="medium", estimated_information_gain="high",
+                source_approach_ids=[], source_experiment_id=None, source_device_id="dev-1",
+                generation_run_id="run-1", model_used="m", created_at=now, updated_at=now,
+            )
+        ],
+        total=1,
+        generation_run_id="run-1234",
+    )
+    with patch("coscientist.services.device.optimize", return_value=_fake_result()), \
+            patch("coscientist.services.roadmap.generate", return_value=rm) as rg:
+        result = runner.invoke(
+            app,
+            ["device", "optimize", "dev-1", "goal-1",
+             "--sweep", "n_elements=8,16", "--roadmap"],
+        )
+    assert result.exit_code == 0, result.output
+    rg.assert_called_once()
+    assert "Regenerating roadmap" in result.output
+    assert "Prototype 16-element cap array" in result.output
+
+
+def test_device_optimize_skips_roadmap_by_default():
+    with patch("coscientist.services.device.optimize", return_value=_fake_result()), \
+            patch("coscientist.services.roadmap.generate") as rg:
+        result = runner.invoke(
+            app, ["device", "optimize", "dev-1", "goal-1", "--sweep", "n_elements=8,16"]
+        )
+    assert result.exit_code == 0, result.output
+    rg.assert_not_called()

@@ -230,7 +230,7 @@ A DeviceConceptCard fixes the *architecture* but leaves the physical geometry as
 - **Persisted to the card** in a `simulation` JSON column (Alembic `0032`): `acoustic_contrast_db`, `per_band`, `target_contrast_db` / `meets_target` (against the 15 dB PSZ bar), `resolved_geometry`, `model_flags`, and the model's stated `approximations`. Surfaced on `GET`/`cs device show`; re-running overwrites it.
 - **Honest about fidelity.** The model is real, not a lookup — contrast responds correctly to element count, layout, zone separation, and aperture. Two fidelity knobs keep it physically defensible: a realistic ~−25 dB off-axis `sidelobe_floor` (not the idealized −60 dB the raw Bessel envelope implies) and a `nearfield_length` beam-formation taper that widens the beam close to the array. Both are echoed in `model_flags`. It remains linear-superposition ACC over the demodulated fields, **not** a full KZK/Westervelt nonlinear solve, so predictions still sit somewhat above a reverberant device's realistic ceiling.
 - **Refine one knob** with `cs device simulate <device_id> <goal_id> --set n_elements=16 --set aperture=0.008` (repeatable) — overrides merge onto the resolved geometry, and the output shows the Δ versus the previous prediction. Unknown knobs are rejected so a typo can't silently no-op.
-- **Optimize across many** with `cs device optimize <device_id> <goal_id> --sweep n_elements=8,12,16 --sweep sidelobe_floor=0.056,0.02` — the co-scientist forwards the sweep to repro's `POST /api/v1/device-sim/optimize`, which simulates the cartesian product, ranks by contrast, and returns the best plus every candidate. The reverberant room is cached on the resolved element positions, so weight-only sweeps cost a single room build. The winning geometry is written onto the card exactly like `simulate` (so the roadmap picks it up), and the CLI prints the ranked table and the gain over the previous prediction.
+- **Optimize across many** with `cs device optimize <device_id> <goal_id> --sweep n_elements=8,12,16 --sweep sidelobe_floor=0.056,0.02` — the co-scientist forwards the sweep to repro's `POST /api/v1/device-sim/optimize`, which simulates the cartesian product, ranks by contrast, and returns the best plus every candidate. The reverberant room is cached on the resolved element positions, so weight-only sweeps cost a single room build. The winning geometry is written onto the card exactly like `simulate` (so the roadmap picks it up), and the CLI prints the ranked table and the gain over the previous prediction. Add `--roadmap` to regenerate the goal's research roadmap from the refined card in the same command, closing the loop from an optimized geometry to updated next-best actions.
 
 ### CS-EPIC-ROADMAP: Research Roadmap and Next-Best Experiment Planning
 
@@ -792,7 +792,7 @@ cs device generate <GOAL_ID> [--approach <ID>...]
 cs device list <GOAL_ID> [--status generated|reviewed|superseded]
 cs device show <DEVICE_ID> <GOAL_ID>
 cs device simulate <DEVICE_ID> <GOAL_ID> [--set key=value ...] [--timeout SECS] [--json]
-cs device optimize <DEVICE_ID> <GOAL_ID> --sweep key=v1,v2,v3 [--sweep ...] [--max-candidates N] [--timeout SECS] [--json]
+cs device optimize <DEVICE_ID> <GOAL_ID> --sweep key=v1,v2,v3 [--sweep ...] [--max-candidates N] [--roadmap] [--timeout SECS] [--json]
 cs device review <DEVICE_ID> <GOAL_ID>
 cs device compare <DEVICE_ID>... --goal <GOAL_ID>
 cs device export <DEVICE_ID> <GOAL_ID> [--format markdown|json]
