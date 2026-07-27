@@ -110,6 +110,10 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
         "2. Follow up on experiments that failed or need robustness testing\n"
         "3. Address unresolved risks in device concepts\n"
         "4. Advance approach maturity from theoretical → simulated → measured\n"
+        "5. Use each device concept's `simulation` (predicted acoustic contrast vs "
+        "target): recommend device_prototype steps for concepts that already meet the "
+        "target; for concepts that fall short — or have no simulation yet — recommend "
+        "geometry refinement or running a simulation instead of prototyping.\n"
         "Generate between 3 and 15 items."
     )
 
@@ -163,6 +167,28 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
             status_code=502,
             detail=f"Roadmap agent returned unparseable response: {exc}",
         )
+
+
+def _sim_summary(raw: str | None) -> dict | None:
+    """Compact predicted-performance summary of a device card's simulation for the
+    roadmap agent: enough to judge prototype-readiness (does it meet the target?)
+    without dumping the full geometry/model-flags blob. None if never simulated."""
+    if not raw:
+        return None
+    try:
+        sim = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not sim or sim.get("acoustic_contrast_db") is None:
+        return None
+    geo = sim.get("resolved_geometry", {}) or {}
+    return {
+        "predicted_contrast_db": sim.get("acoustic_contrast_db"),
+        "target_contrast_db": sim.get("target_contrast_db"),
+        "meets_target": sim.get("meets_target"),
+        "layout": geo.get("layout"),
+        "n_elements": geo.get("n_elements"),
+    }
 
 
 def _build_context(db: Session, goal_id: str) -> dict:
@@ -240,6 +266,7 @@ def _build_context(db: Session, goal_id: str) -> dict:
                 "unresolved_risks": json.loads(d.unresolved_risks or "[]"),
                 "next_steps": json.loads(d.next_steps or "[]"),
                 "approach_ids": json.loads(d.approach_ids or "[]"),
+                "simulation": _sim_summary(d.simulation),
             }
             for d in device_concepts
         ],

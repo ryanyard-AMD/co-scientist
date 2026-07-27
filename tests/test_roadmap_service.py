@@ -7,6 +7,7 @@ import pytest
 
 from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
+from coscientist.models.device import DeviceConceptCard
 from coscientist.models.roadmap import ResearchRoadmapItem
 from coscientist.schemas.roadmap import (
     AgentRoadmapItem,
@@ -388,3 +389,64 @@ def test_evidence_gaps_unknown_goal_404(db_session):
     with pytest.raises(HTTPException) as exc:
         svc.identify_evidence_gaps(db_session, "nope")
     assert exc.value.status_code == 404
+
+
+# --- device simulation feeds the roadmap context ---
+
+
+def _seed_device(db, workspace_id, *, simulation="{}"):
+    now = datetime.now(timezone.utc)
+    card = DeviceConceptCard(
+        id=str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        name="Tabletop PAL unit",
+        simulation=simulation,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(card)
+    db.flush()
+    return card
+
+
+def test_sim_summary_none_when_never_simulated():
+    assert svc._sim_summary(None) is None
+    assert svc._sim_summary("{}") is None
+    # simulated record but missing the contrast is treated as no usable prediction
+    assert svc._sim_summary(json.dumps({"resolved_geometry": {"layout": "cap"}})) is None
+
+
+def test_sim_summary_extracts_prediction():
+    summary = svc._sim_summary(json.dumps({
+        "acoustic_contrast_db": 28.33,
+        "target_contrast_db": 15.0,
+        "meets_target": True,
+        "resolved_geometry": {"layout": "cap", "n_elements": 8, "cap_radius_m": 0.12},
+    }))
+    assert summary == {
+        "predicted_contrast_db": 28.33,
+        "target_contrast_db": 15.0,
+        "meets_target": True,
+        "layout": "cap",
+        "n_elements": 8,
+    }
+
+
+def test_build_context_includes_device_simulation(db_session):
+    goal = _create_goal(db_session)
+    _seed_device(db_session, goal.id, simulation=json.dumps({
+        "acoustic_contrast_db": 35.77,
+        "target_contrast_db": 15.0,
+        "meets_target": True,
+        "resolved_geometry": {"layout": "cap", "n_elements": 16},
+    }))
+    _seed_device(db_session, goal.id)  # unsimulated → simulation is None
+    db_session.commit()
+
+    ctx = svc._build_context(db_session, goal.id)
+    sims = {
+        (d["simulation"] or {}).get("predicted_contrast_db")
+        for d in ctx["device_concepts"]
+    }
+    assert 35.77 in sims          # simulated card's prediction reaches the context
+    assert None in sims           # unsimulated card carries simulation=None
