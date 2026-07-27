@@ -144,6 +144,8 @@ class DeviceSimulationResult(BaseModel):
     model_flags: dict = Field(default_factory=dict)
     approximations: list[str] = Field(default_factory=list)
     repro_endpoint: str
+    overrides: dict = Field(default_factory=dict)
+    previous_contrast_db: float | None = None
 
 
 class DeviceConceptExportResponse(BaseModel):

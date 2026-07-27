@@ -442,3 +442,49 @@ def test_simulate_honors_execution_boundary(mock_agent, db_session):
         with pytest.raises(Exception) as exc_info:
             svc.simulate(db_session, device_id, goal.id)
     assert exc_info.value.status_code == 403
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_applies_overrides(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    result = svc.simulate(
+        db_session, device_id, goal.id,
+        overrides={"n_elements": 16, "aperture": 0.008},
+    )
+    geo = _FakeReproClient.last_geometry
+    # overrides win over the card-resolved defaults (n_elements resolved to 8)
+    assert geo["n_elements"] == 16
+    assert geo["aperture"] == 0.008
+    assert geo["layout"] == "ula"          # untouched knob still resolved from card
+    assert result.overrides == {"n_elements": 16, "aperture": 0.008}
+    # recorded on the card for refine-loop transparency
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.simulation["overrides"] == {"n_elements": 16, "aperture": 0.008}
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_rejects_unknown_override(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="unknown geometry override"):
+        svc.simulate(db_session, device_id, goal.id, overrides={"bogus_knob": 3})
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_reports_previous_contrast_delta(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    first = svc.simulate(db_session, device_id, goal.id)
+    assert first.previous_contrast_db is None      # nothing persisted yet
+
+    _FakeReproClient.response = {**_SIM_RESPONSE, "acoustic_contrast_db": 30.0}
+    try:
+        second = svc.simulate(
+            db_session, device_id, goal.id, overrides={"n_elements": 16}
+        )
+    finally:
+        _FakeReproClient.response = _SIM_RESPONSE
+    # the re-run sees the prior prediction so the CLI can show the delta
+    assert second.previous_contrast_db == 43.46
+    assert second.acoustic_contrast_db == 30.0

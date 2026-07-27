@@ -354,6 +354,33 @@ def _infer_layout(geometry_text: str) -> str:
     return "cap"  # a curved PAL cap is the card's own leading option
 
 
+# Geometry knobs a user may override to refine a device (mirrors repro's
+# DeviceGeometryRequest fields). Anything outside this set is rejected so a typo
+# can't silently no-op.
+ALLOWED_OVERRIDE_KEYS = frozenset({
+    "layout", "n_elements", "cap_radius", "cap_deg", "pitch",
+    "positions", "normals", "listener", "dark", "zone_half_extent",
+    "freqs", "room_dims", "t60", "array_origin",
+    "pal_model", "carrier", "aperture", "sidelobe_floor", "nearfield_length",
+})
+
+
+def _apply_overrides(geometry: dict, overrides: dict | None) -> dict:
+    """Merge user overrides onto a resolved geometry so the refine loop — change a
+    knob, re-simulate, see the number move — is real. Unknown keys raise ValueError
+    (→ 400) rather than being silently ignored."""
+    if not overrides:
+        return geometry
+    unknown = set(overrides) - ALLOWED_OVERRIDE_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown geometry override(s): {sorted(unknown)}; "
+            f"allowed: {sorted(ALLOWED_OVERRIDE_KEYS)}"
+        )
+    geometry.update(overrides)
+    return geometry
+
+
 def _resolve_geometry(card: DeviceConceptCard) -> dict:
     """Resolve a DeviceConceptCard's TBD/range geometry knobs into a concrete
     DeviceGeometryRequest for the simulator. Deterministic: same card → same
@@ -402,16 +429,29 @@ def simulate(
     goal_id: str,
     *,
     timeout: float | None = None,
+    overrides: dict | None = None,
 ) -> DeviceSimulationResult:
     """Predict a device concept's acoustic contrast by resolving its geometry and
     handing it to repro's device-sim endpoint (co-scientist holds no numpy). Writes
     the prediction onto the card so the refine loop — edit geometry, re-simulate —
-    is a first-class feature. Idempotent-ish: re-running overwrites the prediction."""
+    is a first-class feature. Idempotent-ish: re-running overwrites the prediction.
+
+    `overrides` lets the caller refine specific resolved knobs (element count, layout,
+    aperture, listener distance, ...); the prior prediction's contrast is returned as
+    `previous_contrast_db` so a re-run shows the delta the refinement produced."""
     governance_svc.assert_execution_boundary("simulate device geometries")
     goal_svc.raise_if_restricted(db, goal_id)
 
     card = _get_or_404(db, device_id, goal_id)
-    geometry = _resolve_geometry(card)
+
+    previous_contrast_db: float | None = None
+    if card.simulation:
+        try:
+            previous_contrast_db = json.loads(card.simulation).get("acoustic_contrast_db")
+        except (ValueError, TypeError):
+            previous_contrast_db = None
+
+    geometry = _apply_overrides(_resolve_geometry(card), overrides)
 
     client = ReproClient(timeout=timeout or settings.repro_run_timeout)
     try:
@@ -446,6 +486,8 @@ def simulate(
             "model_flags": result.get("model_flags", {}),
             "approximations": result.get("approximations", []),
             "repro_endpoint": f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
+            "overrides": overrides or {},
+            "previous_contrast_db": previous_contrast_db,
         }
     )
     card.updated_at = simulated_at
@@ -463,6 +505,8 @@ def simulate(
         model_flags=result.get("model_flags", {}),
         approximations=result.get("approximations", []),
         repro_endpoint=f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
+        overrides=overrides or {},
+        previous_contrast_db=previous_contrast_db,
     )
 
 

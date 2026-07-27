@@ -1,6 +1,6 @@
 import json
 import sys
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -1877,18 +1877,54 @@ def device_show(
         db.close()
 
 
+def _coerce_override_value(raw: str):
+    """Coerce a --set value string to bool / list[float] / int / float / str."""
+    s = raw.strip()
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    if "," in s:
+        return [float(p) for p in s.split(",")]
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+def _parse_overrides(pairs: list[str]) -> dict:
+    out: dict = {}
+    for p in pairs:
+        if "=" not in p:
+            raise typer.BadParameter(f"--set expects key=value, got {p!r}")
+        k, v = p.split("=", 1)
+        out[k.strip()] = _coerce_override_value(v)
+    return out
+
+
 @device_app.command("simulate")
 def device_simulate(
     device_id: str = typer.Argument(...),
     goal_id: str = typer.Argument(...),
+    set_: Optional[List[str]] = typer.Option(
+        None, "--set",
+        help="Refine a resolved geometry knob, e.g. --set n_elements=16 "
+             "--set aperture=0.008 --set listener=0,0.6,0 (repeatable)",
+    ),
     timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
     json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
 ):
     """Predict a device concept's acoustic contrast from its resolved geometry
-    (delegates the physics to repro's device-sim endpoint)."""
+    (delegates the physics to repro's device-sim endpoint). Use --set to refine a
+    knob and re-run: the output shows the delta versus the previous prediction."""
     db = _get_session()
     try:
-        result = device_svc.simulate(db, device_id, goal_id, timeout=timeout)
+        overrides = _parse_overrides(set_ or [])
+        result = device_svc.simulate(
+            db, device_id, goal_id, timeout=timeout, overrides=overrides
+        )
         if json_out:
             console.print_json(result.model_dump_json(indent=2))
             return
@@ -1905,6 +1941,11 @@ def device_simulate(
         f = result.model_flags
         geo.add_row("room / T60", f"{f.get('room_dims_m', '')} / {f.get('t60_s', '')} s")
         geo.add_row("PAL model", str(f.get("pal_model", "")))
+        if result.overrides:
+            geo.add_row(
+                "[yellow]overrides[/yellow]",
+                ", ".join(f"{k}={v}" for k, v in result.overrides.items()),
+            )
         console.print(geo)
 
         verdict = "[green]meets[/green]" if result.meets_target else "[red]below[/red]"
@@ -1913,6 +1954,14 @@ def device_simulate(
             f"{result.acoustic_contrast_db:.2f} dB  "
             f"({verdict} target {result.target_contrast_db:.0f} dB)"
         )
+        if result.previous_contrast_db is not None:
+            delta = result.acoustic_contrast_db - result.previous_contrast_db
+            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "=")
+            colour = "green" if delta > 0 else ("red" if delta < 0 else "dim")
+            console.print(
+                f"[{colour}]{arrow} {delta:+.2f} dB[/{colour}] vs previous "
+                f"({result.previous_contrast_db:.2f} dB)"
+            )
         band = Table(title="Per-band contrast")
         band.add_column("Freq", justify="right")
         band.add_column("Contrast (dB)", justify="right")
@@ -1924,6 +1973,12 @@ def device_simulate(
             console.print("\n[dim]Model approximations:[/dim]")
             for a in result.approximations:
                 console.print(f"  [dim]- {a}[/dim]")
+    except ValueError as exc:
+        console.print(f"[red]Invalid override:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except HTTPException as exc:
+        console.print(f"[red]Simulation failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
     finally:
         db.close()
 
