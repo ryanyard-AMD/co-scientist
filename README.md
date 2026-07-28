@@ -1070,6 +1070,49 @@ pytest tests/ -v
 uvicorn coscientist.main:app --reload --port 8001
 ```
 
+## Backup and Restore
+
+`scripts/backup.sh` captures the source tree, git history, config, and a **consistent
+snapshot of the SQLite database** into a single timestamped `tar.gz`. The database is
+snapshotted via SQLite's online-backup API (not a raw file copy), so the archive is
+consistent even if something is mid-write. `.venv/`, caches, and older `*.db.bak.*` files are
+excluded — the venv is regenerable with `uv sync`.
+
+```bash
+# Back up to the default dir (/opt/backups, or $CS_BACKUP_DIR)
+scripts/backup.sh
+
+# Back up to a specific directory
+scripts/backup.sh /path/to/backups
+
+# Exclude the .env file (which holds API keys) from the archive
+scripts/backup.sh --no-secrets
+```
+
+By default the archive **includes `.env`** (API keys) so it is a full restore — keep archives
+somewhere trusted, or use `--no-secrets` to leave secrets out.
+
+`scripts/restore.sh` extracts an archive and verifies the restored database's integrity:
+
+```bash
+# Extract into ./restored-<timestamp>/
+scripts/restore.sh /opt/backups/coscientist-backup-20260728_002711.tar.gz
+
+# Extract into a chosen destination (must be empty unless --force)
+scripts/restore.sh ARCHIVE /path/to/dest --force
+```
+
+After restoring, rebuild the environment inside the extracted project:
+
+```bash
+cd restored-<timestamp>/co-scientist
+uv sync                # recreate .venv (excluded from the backup)
+alembic upgrade head   # only when restoring schema onto a fresh/empty database
+```
+
+Both scripts honor `CS_DB_NAME` (default `coscientist.db`); `backup.sh` also honors
+`CS_BACKUP_DIR`. Pass `--help` to either for full usage.
+
 ## Project Structure
 
 ```
@@ -1147,4 +1190,8 @@ src/coscientist/
     ├── templates.py       # shared Jinja2Templates instance
     ├── templates/         # Jinja2 templates (base, pages, partials)
     └── static/app.css     # hand-written stylesheet
+
+scripts/
+├── backup.sh             # project + consistent SQLite snapshot → timestamped tar.gz
+└── restore.sh            # extract + verify a backup.sh archive
 ```
