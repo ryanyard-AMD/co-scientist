@@ -244,6 +244,7 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed
 - Idempotent generation: each `POST /generate` creates a fresh `generation_run_id` batch; prior items remain in DB with their original status for audit
 - Full traceability: each item links back to `source_approach_ids`, `source_experiment_id`, and/or `source_device_id`
+- **Simulation-aware prototype planning**: each device concept's persisted `simulation` (predicted acoustic contrast vs target, layout, element count — see `cs device simulate`/`optimize`) is summarised into the agent context, so concepts that already meet the target get `device_prototype` items while those that fall short (or are unsimulated) get geometry-refinement or run-a-simulation items instead
 
 **Roadmap updates from execution outcomes** — as ResultBundles are ingested and an Experiment Card's validation aggregation is recomputed, the roadmap reacts automatically (no re-generation needed). The whole refresh is a deterministic projection of the current aggregation, so replayed ingestions never double-create follow-ups or drift ranks.
 

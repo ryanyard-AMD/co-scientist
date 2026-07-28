@@ -180,6 +180,31 @@ def test_generate_sets_generation_run_id_on_all_items(db_session):
     assert result.generation_run_id in run_ids
 
 
+def test_run_agent_truncated_response_raises_clear_error(db_session):
+    """A max_tokens-truncated completion must fail with an actionable 502, not an
+    opaque JSONDecodeError on the incomplete array."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    goal = _create_goal(db_session)
+    _seed_approach(db_session, goal.id)
+
+    fake_message = SimpleNamespace(
+        content=[SimpleNamespace(text='[{"title": "Do a thing", "descrip')],
+        usage=SimpleNamespace(input_tokens=100, output_tokens=8192),
+        stop_reason="max_tokens",
+    )
+    fake_client = SimpleNamespace(
+        messages=SimpleNamespace(create=lambda **kw: fake_message)
+    )
+    with patch("coscientist.services.roadmap.anthropic.Anthropic", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            svc.generate(db_session, goal.id)
+    assert exc_info.value.status_code == 502
+    assert "truncated" in exc_info.value.detail.lower()
+
+
 # --- get_roadmap ---
 
 
