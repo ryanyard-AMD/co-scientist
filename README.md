@@ -314,7 +314,7 @@ A server-rendered web UI for reviewing, editing, scoring, and curating already-g
 
 - **Stack**: Jinja2 templates + [HTMX](https://htmx.org) (loaded from CDN), mounted on the existing FastAPI app under `/ui`. No Node toolchain, no build step, one hand-written CSS file
 - **Thin adapter**: every route calls the existing service functions via `Depends(get_db)` and renders their Pydantic responses — no new business logic, DB models, or migrations
-- **Workspace dashboard** (`/ui/goals/{id}`): goal summary plus counts and links for evidence, approaches, experiments, validation, devices, and roadmap
+- **Workspace dashboard** (`/ui/goals/{id}`): goal summary plus counts and links for evidence, approaches, hypotheses, experiments, validation, devices, and roadmap; the Evaluation card shows a `passing/total` gate summary (how many of the evaluation-page pass/fail gates currently pass) rather than a record count
 - **Approach review**: inspect, edit, approve, reject, merge, and score approach cards; approve/reject/score actions return HTML partials that HTMX swaps in place
 - **Hypothesis review**: list hypothesis combinations with type/conflict badges, inspect rationale, component approaches, and per-pair compatibility (shared hardware, ontology relation, conflicts), and mark generated hypotheses as reviewed
 - **Score explanation panel**: per-dimension score, weight, rationale, and evidence citations (algorithmic scoring — no Claude call)

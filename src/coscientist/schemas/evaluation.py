@@ -158,3 +158,32 @@ class EvaluationReport(BaseModel):
     status_freshness: StatusFreshnessMetrics
     failed_run_usefulness: FailedRunUsefulnessMetrics
     batch_aggregation_quality: BatchAggregationQualityMetrics
+
+    @property
+    def gate_results(self) -> list[bool]:
+        """The pass/fail gates shown on the evaluation page, in display order.
+        Duplicate ingestion contributes two gates (bundles, score updates) to
+        mirror the two badges rendered there; batch aggregation and productivity
+        have no target and are excluded."""
+        return [
+            self.approach_usefulness.usefulness_meets_target,
+            self.approach_usefulness.traceability_meets_target,
+            self.evidence_grounding.grounding_meets_target,
+            self.evidence_grounding.unsupported_meets_target,
+            self.experiment_quality.acceptance_meets_target,
+            self.experiment_quality.validity_meets_target,
+            self.handoff_success.handoff_success_meets_target,
+            self.execution_traceability.traceability_meets_target,
+            self.duplicate_ingestion.duplicate_bundle_count == 0,
+            self.duplicate_ingestion.duplicate_score_update_count == 0,
+            self.status_freshness.meets_target,
+            self.failed_run_usefulness.meets_target,
+        ]
+
+    @property
+    def gates_total(self) -> int:
+        return len(self.gate_results)
+
+    @property
+    def gates_passing(self) -> int:
+        return sum(self.gate_results)

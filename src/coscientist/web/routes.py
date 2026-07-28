@@ -78,6 +78,7 @@ def dashboard(request: Request, goal_id: str, db: Session = Depends(get_db)):
     _, approach_total = approach_svc.list_approaches(db, goal_id, limit=1)
     _, hypothesis_total = hypothesis_svc.list_hypotheses(db, goal_id, limit=1)
     _, experiment_total = experiment_svc.list_experiments(db, goal_id, limit=1)
+    report = evaluation_svc.get_report(db, goal_id)
     counts = {
         "evidence": evidence_total,
         "approaches": approach_total,
@@ -86,6 +87,8 @@ def dashboard(request: Request, goal_id: str, db: Session = Depends(get_db)):
         "validation": validation_svc.list_results(db, goal_id).total,
         "devices": device_svc.list_devices(db, goal_id, limit=1).total,
         "roadmap": roadmap_svc.get_roadmap(db, goal_id, limit=1).total,
+        "evaluation_passing": report.gates_passing,
+        "evaluation_total": report.gates_total,
     }
     return templates.TemplateResponse(
         request, "dashboard.html", {"goal": goal, "counts": counts}
