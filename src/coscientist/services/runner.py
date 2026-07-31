@@ -58,6 +58,15 @@ EXPERIMENT_METRIC_MAP: dict[str, dict[str, str]] = {
         "oAC_best_dB": "acoustic_contrast_db",
         "nsde_achieved_dB": "bright_zone_error",
     },
+    # Robust pressure-matching sound-zone reproduction. Its pressure-matching
+    # solution on the true field is the canonical headline: ac_pm_true_dB is the
+    # bright/dark acoustic contrast, nsde_pm_true_dB the normalized signal
+    # distortion (bright-zone reproduction error) — the cgmm analogues of VAR's
+    # oAC_best_dB / nsde_achieved_dB. Confirmed from run 1eed21a5.
+    "cgmm-based-sound-zone-generation-using-r-v1": {
+        "ac_pm_true_dB": "acoustic_contrast_db",
+        "nsde_pm_true_dB": "bright_zone_error",
+    },
 }
 
 _TERMINAL_OK = "success"

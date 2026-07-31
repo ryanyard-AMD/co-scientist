@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     repro_api_key: str | None = None
     repro_poll_interval: float = 2.0
     repro_run_timeout: float = 600.0
+    # Per-request httpx read timeout for calls to the repro API. recommend-method
+    # (corpus-wide retrieval + ranking) legitimately takes ~30s, so a tight 30s
+    # client timeout cuts it off under any load; give each request real headroom.
+    repro_client_timeout: float = 120.0
     # P4: the runner resolves which reproduction to run by asking repro's
     # recommend-method endpoint (top runnable candidate for the card's hypothesis)
     # instead of a local method_family→simulator registry.

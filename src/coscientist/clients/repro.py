@@ -15,10 +15,11 @@ class ReproClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 30.0,
+        timeout: float | None = None,
     ):
         self._base_url = (base_url or settings.repro_url).rstrip("/")
         self._api_key = api_key or settings.repro_api_key
+        timeout = timeout if timeout is not None else settings.repro_client_timeout
         headers = {}
         if self._api_key:
             headers["x-api-key"] = self._api_key
