@@ -189,7 +189,7 @@ def _run_device_agent(
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
@@ -207,6 +207,14 @@ def _run_device_agent(
         elapsed_ms=elapsed_ms,
         response_summary=raw[:512],
     )
+    if message.stop_reason == "max_tokens":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Device agent response was truncated (hit max_tokens). "
+                "The JSON array is incomplete; retry or reduce the number of concepts."
+            ),
+        )
     try:
         data = json.loads(raw)
         if not isinstance(data, list):
