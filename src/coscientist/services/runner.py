@@ -34,6 +34,7 @@ from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.runner import (
     ApproachRunSummary,
     ComparisonResult,
+    ExecutionPreflightResponse,
     MetricComparison,
     RunnerResult,
 )
@@ -255,6 +256,157 @@ def _build_proposal(card, method_family: str | None) -> dict:
     if method_family:
         proposal["method_family"] = method_family
     return proposal
+
+
+def _metric_contract(client: ReproClient, workspace_id: str, reproduction_id: str) -> dict:
+    """Return repro's declared metric surface for the selected reproduction.
+
+    The local EXPERIMENT_METRIC_MAP is still used as the translation fallback
+    until repro exposes canonical metric names directly.
+    """
+    contract: dict = {
+        "reproduction_id": reproduction_id,
+        "native_to_canonical": EXPERIMENT_METRIC_MAP.get(reproduction_id, {}),
+        "surface": None,
+    }
+    surface = client.get_metrics_surface(workspace_id)
+    contract["surface"] = surface
+    for item in surface.get("reproductions", []):
+        if item.get("experiment_id") == reproduction_id:
+            contract["surface_reproduction"] = item
+            break
+    return contract
+
+
+def preflight_experiment(
+    db: Session,
+    experiment_id: str,
+    goal_id: str,
+) -> ExecutionPreflightResponse:
+    """Resolve the execution plan without submitting or running it.
+
+    This is the contract check between co-scientist and repro: it verifies the
+    card can be mapped to a runnable reproduction, records the selected candidate,
+    and surfaces pass-condition metrics the reproduction cannot emit.
+    """
+    goal_svc.raise_if_restricted(db, goal_id)
+    card = experiment_svc.get(db, experiment_id, goal_id)
+    preview = experiment_svc.preview_run_requests(db, experiment_id, goal_id=goal_id)
+    blocking: list[str] = []
+    warnings: list[str] = []
+
+    method_family: str | None = None
+    proposal: dict = {}
+    try:
+        method_family, paper_ids = _primary_approach(db, card.approach_ids)
+        proposal = _build_proposal(card, method_family)
+    except HTTPException as exc:
+        blocking.append(str(exc.detail))
+        paper_ids = []
+
+    pass_conditions = _pass_conditions(card.validation.pass_conditions)
+    if blocking:
+        return ExecutionPreflightResponse(
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            runnable=False,
+            blocking_reasons=blocking,
+            warnings=warnings,
+            run_count=preview.expanded_run_count,
+            method_family=method_family,
+            pass_conditions=pass_conditions,
+            design_run_payload=proposal,
+        )
+
+    try:
+        with ReproClient() as client:
+            workspaces = _list_workspaces(client)
+            home_ws = _home_workspace(workspaces, paper_ids)
+            rec = client.recommend_method(
+                home_ws, proposal, top_k=settings.runner_recommend_top_k, draft=False
+            )
+            candidate = _select_candidate(rec)
+            reproduction_id = candidate["experiment_ids"][0]
+            candidate_ws = _workspace_for_paper(workspaces, candidate["paper_id"])
+            metric_contract = _metric_contract(client, candidate_ws, reproduction_id)
+    except HTTPException as exc:
+        blocking.append(str(exc.detail))
+        return ExecutionPreflightResponse(
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            runnable=False,
+            blocking_reasons=blocking,
+            warnings=warnings,
+            run_count=preview.expanded_run_count,
+            method_family=method_family,
+            pass_conditions=pass_conditions,
+            design_run_payload=proposal,
+        )
+    except httpx.HTTPError as exc:
+        blocking.append(f"repro API error during preflight: {exc}")
+        return ExecutionPreflightResponse(
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            runnable=False,
+            blocking_reasons=blocking,
+            warnings=warnings,
+            run_count=preview.expanded_run_count,
+            method_family=method_family,
+            pass_conditions=pass_conditions,
+            design_run_payload=proposal,
+        )
+
+    proposal = dict(proposal)
+    proposal["experiment_id"] = reproduction_id
+    unmeasurable = (
+        _unmeasurable_conditions(pass_conditions, reproduction_id)
+        if settings.runner_align_pass_conditions
+        else []
+    )
+    native_map = metric_contract.get("native_to_canonical") or {}
+    if not native_map:
+        blocking.append(
+            f"selected reproduction {reproduction_id!r} has no native-to-canonical metric map"
+        )
+    if unmeasurable:
+        warnings.append(
+            "selected reproduction cannot emit every pass-condition metric: "
+            + ", ".join(unmeasurable)
+        )
+
+    cand_families = candidate.get("method_families", [])
+    recommendation = {
+        "candidate_paper_id": candidate.get("paper_id"),
+        "title": candidate.get("title"),
+        "score": candidate.get("score"),
+        "experiment_id": reproduction_id,
+        "method_families": cand_families,
+        "family_match": candidate.get("family_match"),
+        "card_method_family": method_family,
+        "diverged_from_card_family": bool(method_family) and method_family not in cand_families,
+        "unmeasurable_pass_conditions": unmeasurable,
+    }
+
+    return ExecutionPreflightResponse(
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        runnable=not blocking,
+        blocking_reasons=blocking,
+        warnings=warnings,
+        run_count=preview.expanded_run_count,
+        method_family=method_family,
+        selected_reproduction_id=reproduction_id,
+        repro_workspace_id=candidate_ws,
+        candidate_paper_id=candidate.get("paper_id"),
+        candidate_title=candidate.get("title"),
+        candidate_method_families=cand_families,
+        family_match=candidate.get("family_match"),
+        pass_conditions=pass_conditions,
+        unmeasurable_conditions=unmeasurable,
+        metric_contract=metric_contract,
+        design_run_payload=proposal,
+        recommendation=recommendation,
+    )
 
 
 def _poll(client: ReproClient, run_id: str, timeout: float) -> dict:

@@ -3,6 +3,27 @@ from pydantic import BaseModel, Field
 from coscientist.schemas.validation import ValidationResultResponse
 
 
+class ExecutionPreflightResponse(BaseModel):
+    experiment_id: str
+    goal_id: str
+    runnable: bool
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    run_count: int
+    method_family: str | None = None
+    selected_reproduction_id: str | None = None
+    repro_workspace_id: str | None = None
+    candidate_paper_id: str | None = None
+    candidate_title: str | None = None
+    candidate_method_families: list[str] = Field(default_factory=list)
+    family_match: bool | None = None
+    pass_conditions: list[dict] = Field(default_factory=list)
+    unmeasurable_conditions: list[str] = Field(default_factory=list)
+    metric_contract: dict = Field(default_factory=dict)
+    design_run_payload: dict = Field(default_factory=dict)
+    recommendation: dict | None = None
+
+
 class RunnerResult(BaseModel):
     experiment_id: str
     goal_id: str

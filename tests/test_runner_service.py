@@ -278,7 +278,7 @@ def test_run_builds_proposal_and_records_provenance(db_session, monkeypatch):
     assert prop["hypothesis"] == "Higher order increases contrast."
     assert prop["metrics"] == ["acoustic_contrast_db"]
     assert prop["experiment_id"] == _VAST_EXPERIMENT_ID
-    # pass_conditions dict → PassCondition list with parsed operator/metric
+    # pass_conditions dict -> PassCondition list with parsed operator/metric
     assert prop["pass_conditions"] == [
         {"metric": "acoustic_contrast_db", "operator": ">=", "value": 20.0}
     ]
@@ -291,6 +291,53 @@ def test_run_builds_proposal_and_records_provenance(db_session, monkeypatch):
     assert batch["honored"] == honored
     assert batch["recommendation"]["experiment_id"] == _VAST_EXPERIMENT_ID
     assert batch["recommendation"]["card_method_family"] == "acoustic_contrast_control"
+
+
+def test_preflight_resolves_execution_plan(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+    fake = _FakeReproClient(
+        surface={
+            "paper_id": _VAST_PAPER_ID,
+            "reproductions": [
+                {
+                    "experiment_id": _VAST_EXPERIMENT_ID,
+                    "method_families": list(_VAST_FAMILIES),
+                    "metrics": ["oAC_best_dB", "nsde_achieved_dB"],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+
+    result = svc.preflight_experiment(db_session, exp.id, gid)
+
+    assert result.runnable is True
+    assert result.blocking_reasons == []
+    assert result.selected_reproduction_id == _VAST_EXPERIMENT_ID
+    assert result.repro_workspace_id == "ws-vast"
+    assert result.method_family == "acoustic_contrast_control"
+    assert result.pass_conditions == [
+        {"metric": "acoustic_contrast_db", "operator": ">=", "value": 20.0}
+    ]
+    assert result.design_run_payload["experiment_id"] == _VAST_EXPERIMENT_ID
+    assert result.metric_contract["native_to_canonical"]["oAC_best_dB"] == "acoustic_contrast_db"
+    assert result.recommendation["family_match"] is True
+
+
+def test_preflight_reports_no_runnable_reproduction(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+    fake = _FakeReproClient(candidates=[_vast_candidate(runnable=False, experiment_ids=[])])
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+
+    result = svc.preflight_experiment(db_session, exp.id, gid)
+
+    assert result.runnable is False
+    assert result.selected_reproduction_id is None
+    assert any("no runnable reproduction" in reason for reason in result.blocking_reasons)
 
 
 def test_run_records_divergence_when_family_differs(db_session, monkeypatch):

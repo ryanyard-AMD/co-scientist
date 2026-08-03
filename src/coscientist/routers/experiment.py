@@ -18,6 +18,7 @@ from coscientist.schemas.experiment import (
     RunRequestPreview,
 )
 from coscientist.schemas.runner import RunnerResult
+from coscientist.schemas.runner import ExecutionPreflightResponse
 from coscientist.services import experiment as svc
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import runner as runner_svc
@@ -100,6 +101,15 @@ def preview_run_requests(
     db: Session = Depends(get_db),
 ):
     return svc.preview_run_requests(db, experiment_id, cap=cap, goal_id=goal_id)
+
+
+@router.post("/{experiment_id}/preflight", response_model=ExecutionPreflightResponse)
+def preflight_experiment(
+    goal_id: str,
+    experiment_id: str,
+    db: Session = Depends(get_db),
+):
+    return runner_svc.preflight_experiment(db, experiment_id, goal_id)
 
 
 @router.post("/{experiment_id}/run", response_model=RunnerResult)
