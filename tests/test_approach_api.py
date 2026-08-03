@@ -112,6 +112,25 @@ def test_get_approach_not_found(client):
     assert resp.status_code == 404
 
 
+def test_approach_detail_routes_are_goal_scoped(client):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    created = client.post(f"/co-scientist/goals/{goal_a['id']}/approaches", json={
+        "name": "BF", "method_family": "beamforming",
+    }).json()
+
+    wrong_base = f"/co-scientist/goals/{goal_b['id']}/approaches/{created['id']}"
+    assert client.get(wrong_base).status_code == 404
+    assert client.get(f"{wrong_base}/execution-evidence").status_code == 404
+    assert client.patch(wrong_base, json={"name": "Wrong"}).status_code == 404
+    assert client.post(wrong_base + "/transition", json={"status": "reviewed"}).status_code == 404
+    assert client.delete(wrong_base).status_code == 404
+
+    correct = client.get(f"/co-scientist/goals/{goal_a['id']}/approaches/{created['id']}")
+    assert correct.status_code == 200
+    assert correct.json()["name"] == "BF"
+
+
 def test_patch_approach(client):
     goal = _create_goal(client)
     created = client.post(f"/co-scientist/goals/{goal['id']}/approaches", json={
@@ -191,6 +210,22 @@ def test_merge_approaches(client):
     merged = resp.json()
     assert "loudspeaker_array" in merged["hardware_requirements"]
     assert "microphone_array" in merged["hardware_requirements"]
+
+
+def test_merge_approaches_is_goal_scoped(client):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    a1 = client.post(f"/co-scientist/goals/{goal_a['id']}/approaches", json={
+        "name": "BF1", "method_family": "beamforming",
+    }).json()
+    a2 = client.post(f"/co-scientist/goals/{goal_a['id']}/approaches", json={
+        "name": "BF2", "method_family": "beamforming",
+    }).json()
+    resp = client.post(f"/co-scientist/goals/{goal_b['id']}/approaches/merge", json={
+        "source_approach_id": a1["id"],
+        "target_approach_id": a2["id"],
+    })
+    assert resp.status_code == 404
 
 
 def test_find_duplicates(client):

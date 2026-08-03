@@ -39,7 +39,7 @@ def find_duplicates(goal_id: str, db: Session = Depends(get_db)):
 
 @router.post("/merge", response_model=ApproachCardResponse)
 def merge_approaches(goal_id: str, body: ApproachMergeRequest, db: Session = Depends(get_db)):
-    return svc.merge_approaches(db, body)
+    return svc.merge_approaches(db, body, goal_id)
 
 
 @router.post("/revise", response_model=ReviseRunResponse)
@@ -69,17 +69,18 @@ def list_approaches(
 
 @router.get("/{approach_id}", response_model=ApproachCardResponse)
 def get_approach(goal_id: str, approach_id: str, db: Session = Depends(get_db)):
-    return svc.get(db, approach_id)
+    return svc.get(db, approach_id, goal_id)
 
 
 @router.get("/{approach_id}/execution-evidence", response_model=ApproachExecutionEvidenceResponse)
 def approach_execution_evidence(goal_id: str, approach_id: str, db: Session = Depends(get_db)):
+    svc.get(db, approach_id, goal_id)
     return evidence_svc.build_execution_evidence(db, approach_id)
 
 
 @router.patch("/{approach_id}", response_model=ApproachCardResponse)
 def update_approach(goal_id: str, approach_id: str, body: ApproachCardUpdate, db: Session = Depends(get_db)):
-    return svc.update(db, approach_id, body)
+    return svc.update(db, approach_id, body, goal_id)
 
 
 @router.post("/{approach_id}/transition", response_model=ApproachCardResponse)
@@ -89,10 +90,10 @@ def transition_approach(
     body: ApproachStatusUpdate,
     db: Session = Depends(get_db),
 ):
-    return svc.transition(db, approach_id, body.status)
+    return svc.transition(db, approach_id, body.status, goal_id)
 
 
 @router.delete("/{approach_id}", status_code=204)
 def delete_approach(goal_id: str, approach_id: str, db: Session = Depends(get_db)):
-    svc.delete(db, approach_id)
+    svc.delete(db, approach_id, goal_id)
     return Response(status_code=204)

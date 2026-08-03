@@ -157,7 +157,7 @@ def list_handoff_requests(
     experiment_id: str,
     db: Session = Depends(get_db),
 ):
-    return handoff_svc.list_handoff_requests(db, experiment_id)
+    return handoff_svc.list_handoff_requests(db, experiment_id, goal_id)
 
 
 @router.get("/{experiment_id}/decisions", response_model=ApprovalDecisionListResponse)

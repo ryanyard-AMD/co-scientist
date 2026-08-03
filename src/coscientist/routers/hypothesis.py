@@ -50,7 +50,7 @@ def list_hypotheses(
 
 @router.get("/{hypothesis_id}", response_model=HypothesisCardResponse)
 def get_hypothesis(goal_id: str, hypothesis_id: str, db: Session = Depends(get_db)):
-    return svc.get(db, hypothesis_id)
+    return svc.get(db, hypothesis_id, goal_id)
 
 
 @router.patch("/{hypothesis_id}", response_model=HypothesisCardResponse)
@@ -59,7 +59,7 @@ def update_hypothesis(
     body: HypothesisCardUpdate,
     db: Session = Depends(get_db),
 ):
-    return svc.update(db, hypothesis_id, body)
+    return svc.update(db, hypothesis_id, body, goal_id)
 
 
 @router.post("/{hypothesis_id}/transition", response_model=HypothesisCardResponse)
@@ -68,10 +68,10 @@ def transition_hypothesis(
     body: HypothesisStatusUpdate,
     db: Session = Depends(get_db),
 ):
-    return svc.transition(db, hypothesis_id, body.status)
+    return svc.transition(db, hypothesis_id, body.status, goal_id)
 
 
 @router.delete("/{hypothesis_id}", status_code=204)
 def delete_hypothesis(goal_id: str, hypothesis_id: str, db: Session = Depends(get_db)):
-    svc.delete(db, hypothesis_id)
+    svc.delete(db, hypothesis_id, goal_id)
     return Response(status_code=204)

@@ -57,7 +57,7 @@ def list_experiments(
 
 @router.get("/{experiment_id}", response_model=ExperimentCardResponse)
 def get_experiment(goal_id: str, experiment_id: str, db: Session = Depends(get_db)):
-    return svc.get(db, experiment_id)
+    return svc.get(db, experiment_id, goal_id)
 
 
 @router.patch("/{experiment_id}", response_model=ExperimentCardResponse)
@@ -66,7 +66,7 @@ def update_experiment(
     body: ExperimentCardUpdate,
     db: Session = Depends(get_db),
 ):
-    return svc.update(db, experiment_id, body)
+    return svc.update(db, experiment_id, body, goal_id)
 
 
 @router.post("/{experiment_id}/transition", response_model=ExperimentCardResponse)
@@ -75,7 +75,7 @@ def transition_experiment(
     body: ExperimentStatusUpdate,
     db: Session = Depends(get_db),
 ):
-    result = svc.transition(db, experiment_id, body.status)
+    result = svc.transition(db, experiment_id, body.status, goal_id)
     if body.status in (ExperimentStatusEnum.completed, ExperimentStatusEnum.failed):
         roadmap_svc.retire_for_experiment(db, experiment_id, goal_id)
     return result
@@ -88,7 +88,9 @@ def set_execution_status(
     force: bool = Query(default=False),
     db: Session = Depends(get_db),
 ):
-    return svc.set_execution_status(db, experiment_id, body.execution_status, force=force)
+    return svc.set_execution_status(
+        db, experiment_id, body.execution_status, force=force, goal_id=goal_id
+    )
 
 
 @router.get("/{experiment_id}/run-request-preview", response_model=RunRequestPreview)
@@ -97,7 +99,7 @@ def preview_run_requests(
     cap: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
-    return svc.preview_run_requests(db, experiment_id, cap=cap)
+    return svc.preview_run_requests(db, experiment_id, cap=cap, goal_id=goal_id)
 
 
 @router.post("/{experiment_id}/run", response_model=RunnerResult)
@@ -123,10 +125,10 @@ def export_experiment(
     fmt: str = Query(default="yaml", alias="format"),
     db: Session = Depends(get_db),
 ):
-    return svc.export_experiment(db, experiment_id, fmt)
+    return svc.export_experiment(db, experiment_id, fmt, goal_id)
 
 
 @router.delete("/{experiment_id}", status_code=204)
 def delete_experiment(goal_id: str, experiment_id: str, db: Session = Depends(get_db)):
-    svc.delete(db, experiment_id)
+    svc.delete(db, experiment_id, goal_id)
     return Response(status_code=204)

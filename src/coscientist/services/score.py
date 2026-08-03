@@ -399,9 +399,9 @@ def _compute_risk_penalty(approach: ApproachCardResponse) -> float:
     return min(high_risks * 0.05, 0.2)
 
 
-def _get_approach_or_404(db: Session, approach_id: str) -> ApproachCard:
+def _get_approach_or_404(db: Session, approach_id: str, goal_id: str | None = None) -> ApproachCard:
     card = db.get(ApproachCard, approach_id)
-    if card is None:
+    if card is None or (goal_id is not None and card.workspace_id != goal_id):
         raise HTTPException(status_code=404, detail=f"Approach {approach_id!r} not found")
     return card
 
@@ -410,9 +410,10 @@ def score_approach(
     db: Session,
     approach_id: str,
     weight_profile: WeightProfileEnum = WeightProfileEnum.default,
+    goal_id: str | None = None,
 ) -> ApproachScoreResponse:
-    approach = approach_svc.get(db, approach_id)
-    card = _get_approach_or_404(db, approach_id)
+    approach = approach_svc.get(db, approach_id, goal_id)
+    card = _get_approach_or_404(db, approach_id, goal_id)
     goal = goal_svc.get(db, approach.workspace_id)
     evidence = _get_evidence_for_approach(db, approach)
     weights = WEIGHT_PROFILES[weight_profile.value]
@@ -506,8 +507,8 @@ def score_all_approaches(
     return results
 
 
-def get_scores(db: Session, approach_id: str) -> ApproachScoreResponse:
-    approach = approach_svc.get(db, approach_id)
+def get_scores(db: Session, approach_id: str, goal_id: str | None = None) -> ApproachScoreResponse:
+    approach = approach_svc.get(db, approach_id, goal_id)
     rows = list(db.scalars(
         select(RubricScore)
         .where(RubricScore.approach_id == approach_id)
@@ -663,5 +664,6 @@ def rescore(
     db: Session,
     approach_id: str,
     weight_profile: WeightProfileEnum = WeightProfileEnum.default,
+    goal_id: str | None = None,
 ) -> ApproachScoreResponse:
-    return score_approach(db, approach_id, weight_profile)
+    return score_approach(db, approach_id, weight_profile, goal_id=goal_id)

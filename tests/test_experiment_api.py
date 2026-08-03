@@ -123,6 +123,50 @@ def test_get_experiment_not_found(client):
     assert resp.status_code == 404
 
 
+def test_experiment_detail_routes_are_goal_scoped(client, db_session):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal_a["id"], "beamforming")
+    created = _create_experiment(client, goal_a["id"], [a1["id"]])
+
+    wrong_base = f"/co-scientist/goals/{goal_b['id']}/experiments/{created['id']}"
+    assert client.get(wrong_base).status_code == 404
+    assert client.patch(wrong_base, json={"name": "Wrong"}).status_code == 404
+    assert client.post(wrong_base + "/transition", json={"status": "reviewed"}).status_code == 404
+    assert client.post(wrong_base + "/execution-status", json={"execution_status": "submitted"}).status_code == 404
+    assert client.get(wrong_base + "/run-request-preview").status_code == 404
+    assert client.post(wrong_base + "/score").status_code == 404
+    assert client.get(wrong_base + "/export?format=yaml").status_code == 404
+    assert client.get(wrong_base + "/evidence-label").status_code == 404
+    assert client.get(wrong_base + "/handoff-requests").status_code == 404
+    assert client.delete(wrong_base).status_code == 404
+
+    correct = client.get(f"/co-scientist/goals/{goal_a['id']}/experiments/{created['id']}")
+    assert correct.status_code == 200
+    assert correct.json()["name"] == "Test Experiment"
+
+
+def test_create_experiment_rejects_cross_goal_hypothesis(client, db_session):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal_a["id"], "beamforming")
+    a2 = _create_scored_approach(client, db_session, goal_a["id"], "pressure_matching")
+    b1 = _create_scored_approach(client, db_session, goal_b["id"], "beamforming")
+    hypothesis = client.post(f"/co-scientist/goals/{goal_a['id']}/hypotheses", json={
+        "name": "H1", "text": "t", "rationale": "r",
+        "approach_ids": [a1["id"], a2["id"]],
+    }).json()
+
+    resp = client.post(f"/co-scientist/goals/{goal_b['id']}/experiments", json={
+        "name": "Bad Link",
+        "objective": "Should fail",
+        "hypothesis_text": "Wrong hypothesis",
+        "approach_ids": [b1["id"]],
+        "hypothesis_id": hypothesis["id"],
+    })
+    assert resp.status_code == 422
+
+
 def test_update_experiment(client, db_session):
     goal = _create_goal(client)
     a1 = _create_scored_approach(client, db_session, goal["id"], "beamforming")

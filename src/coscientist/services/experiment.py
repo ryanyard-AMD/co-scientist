@@ -144,9 +144,9 @@ def _handoff(card: ExperimentCard) -> ExecutionHandoff:
     )
 
 
-def _get_or_404(db: Session, experiment_id: str) -> ExperimentCard:
+def _get_or_404(db: Session, experiment_id: str, goal_id: str | None = None) -> ExperimentCard:
     card = db.get(ExperimentCard, experiment_id)
-    if card is None:
+    if card is None or (goal_id is not None and card.workspace_id != goal_id):
         raise HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
     return card
 
@@ -163,6 +163,8 @@ def create(db: Session, goal_id: str, data: ExperimentCardCreate) -> ExperimentC
         hc = db.get(HypothesisCard, data.hypothesis_id)
         if hc is None:
             raise HTTPException(status_code=404, detail=f"Hypothesis {data.hypothesis_id!r} not found")
+        if hc.workspace_id != goal.workspace_id:
+            raise HTTPException(status_code=422, detail=f"Hypothesis {data.hypothesis_id!r} belongs to a different workspace")
 
     now = datetime.now(timezone.utc)
     sweep_count = _compute_sweep_cardinality(data.independent_variables)
@@ -206,8 +208,8 @@ def create(db: Session, goal_id: str, data: ExperimentCardCreate) -> ExperimentC
     return _to_response(card)
 
 
-def get(db: Session, experiment_id: str) -> ExperimentCardResponse:
-    return _to_response(_get_or_404(db, experiment_id))
+def get(db: Session, experiment_id: str, goal_id: str | None = None) -> ExperimentCardResponse:
+    return _to_response(_get_or_404(db, experiment_id, goal_id))
 
 
 def list_experiments(
@@ -231,8 +233,13 @@ def list_experiments(
     return [_to_response(r) for r in rows], total or 0
 
 
-def update(db: Session, experiment_id: str, data: ExperimentCardUpdate) -> ExperimentCardResponse:
-    card = _get_or_404(db, experiment_id)
+def update(
+    db: Session,
+    experiment_id: str,
+    data: ExperimentCardUpdate,
+    goal_id: str | None = None,
+) -> ExperimentCardResponse:
+    card = _get_or_404(db, experiment_id, goal_id)
     if data.name is not None:
         card.name = data.name
     if data.objective is not None:
@@ -276,8 +283,13 @@ def update(db: Session, experiment_id: str, data: ExperimentCardUpdate) -> Exper
     return _to_response(card)
 
 
-def transition(db: Session, experiment_id: str, new_status: ExperimentStatusEnum) -> ExperimentCardResponse:
-    card = _get_or_404(db, experiment_id)
+def transition(
+    db: Session,
+    experiment_id: str,
+    new_status: ExperimentStatusEnum,
+    goal_id: str | None = None,
+) -> ExperimentCardResponse:
+    card = _get_or_404(db, experiment_id, goal_id)
     current = ExperimentStatusEnum(card.status)
     if new_status not in ALLOWED_TRANSITIONS[current]:
         allowed = {s.value for s in ALLOWED_TRANSITIONS[current]}
@@ -301,13 +313,14 @@ def set_execution_status(
     new_status: ExecutionStatusEnum,
     *,
     force: bool = False,
+    goal_id: str | None = None,
 ) -> ExperimentCardResponse:
     """Advance the execution lifecycle (separate from approval `status`).
 
     `force` bypasses the transition guard for idempotent status syncs from the
     Experimentation System (e.g. re-receiving the same terminal status).
     """
-    card = _get_or_404(db, experiment_id)
+    card = _get_or_404(db, experiment_id, goal_id)
     current = ExecutionStatusEnum(card.execution_status)
     if not force and new_status != current and new_status not in ALLOWED_EXECUTION_TRANSITIONS[current]:
         allowed = {s.value for s in ALLOWED_EXECUTION_TRANSITIONS[current]}
@@ -325,8 +338,8 @@ def set_execution_status(
     return _to_response(card)
 
 
-def delete(db: Session, experiment_id: str) -> None:
-    card = _get_or_404(db, experiment_id)
+def delete(db: Session, experiment_id: str, goal_id: str | None = None) -> None:
+    card = _get_or_404(db, experiment_id, goal_id)
     if card.status != ExperimentStatusEnum.generated.value:
         raise HTTPException(
             status_code=409,
@@ -797,8 +810,13 @@ def _to_yaml_value(value: Any, indent: int = 0) -> str:
         return str(value)
 
 
-def export_experiment(db: Session, experiment_id: str, fmt: str = "yaml") -> ExperimentExportResponse:
-    card = _get_or_404(db, experiment_id)
+def export_experiment(
+    db: Session,
+    experiment_id: str,
+    fmt: str = "yaml",
+    goal_id: str | None = None,
+) -> ExperimentExportResponse:
+    card = _get_or_404(db, experiment_id, goal_id)
     response = _to_response(card)
 
     data = {
@@ -1003,7 +1021,7 @@ _EXPERIMENT_SCORERS = {
 
 
 def score_experiment(db: Session, experiment_id: str, goal_id: str) -> ExperimentScoreResponse:
-    experiment = get(db, experiment_id)
+    experiment = get(db, experiment_id, goal_id)
     goal = goal_svc.get(db, goal_id)
     dimensions = []
     total = 0.0
@@ -1031,9 +1049,15 @@ def score_experiment(db: Session, experiment_id: str, goal_id: str) -> Experimen
 # RunRequest preview (CS-EXP-012)
 # ---------------------------------------------------------------------------
 
-def preview_run_requests(db: Session, experiment_id: str, *, cap: int = 50) -> RunRequestPreview:
+def preview_run_requests(
+    db: Session,
+    experiment_id: str,
+    *,
+    cap: int = 50,
+    goal_id: str | None = None,
+) -> RunRequestPreview:
     """Show how a card would expand into RunRequests before submission."""
-    card = _get_or_404(db, experiment_id)
+    card = _get_or_404(db, experiment_id, goal_id)
     resp = _to_response(card)
 
     if resp.execution_handoff.submission_mode == SubmissionModeEnum.single_run:

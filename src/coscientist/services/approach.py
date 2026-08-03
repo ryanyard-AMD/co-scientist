@@ -78,9 +78,9 @@ def _to_response(card: ApproachCard) -> ApproachCardResponse:
     )
 
 
-def _get_or_404(db: Session, approach_id: str) -> ApproachCard:
+def _get_or_404(db: Session, approach_id: str, goal_id: str | None = None) -> ApproachCard:
     card = db.get(ApproachCard, approach_id)
-    if card is None:
+    if card is None or (goal_id is not None and card.workspace_id != goal_id):
         raise HTTPException(status_code=404, detail=f"Approach {approach_id!r} not found")
     return card
 
@@ -117,8 +117,8 @@ def create(db: Session, goal_id: str, data: ApproachCardCreate) -> ApproachCardR
     return _to_response(card)
 
 
-def get(db: Session, approach_id: str) -> ApproachCardResponse:
-    return _to_response(_get_or_404(db, approach_id))
+def get(db: Session, approach_id: str, goal_id: str | None = None) -> ApproachCardResponse:
+    return _to_response(_get_or_404(db, approach_id, goal_id))
 
 
 def list_approaches(
@@ -142,8 +142,13 @@ def list_approaches(
     return [_to_response(r) for r in rows], total or 0
 
 
-def update(db: Session, approach_id: str, data: ApproachCardUpdate) -> ApproachCardResponse:
-    card = _get_or_404(db, approach_id)
+def update(
+    db: Session,
+    approach_id: str,
+    data: ApproachCardUpdate,
+    goal_id: str | None = None,
+) -> ApproachCardResponse:
+    card = _get_or_404(db, approach_id, goal_id)
     if data.name is not None:
         card.name = data.name
     if data.problem_fit is not None:
@@ -174,8 +179,13 @@ def update(db: Session, approach_id: str, data: ApproachCardUpdate) -> ApproachC
     return _to_response(card)
 
 
-def transition(db: Session, approach_id: str, new_status: ApproachStatusEnum) -> ApproachCardResponse:
-    card = _get_or_404(db, approach_id)
+def transition(
+    db: Session,
+    approach_id: str,
+    new_status: ApproachStatusEnum,
+    goal_id: str | None = None,
+) -> ApproachCardResponse:
+    card = _get_or_404(db, approach_id, goal_id)
     current = ApproachStatusEnum(card.status)
     if new_status not in ALLOWED_TRANSITIONS[current]:
         allowed = {s.value for s in ALLOWED_TRANSITIONS[current]}
@@ -193,8 +203,8 @@ def transition(db: Session, approach_id: str, new_status: ApproachStatusEnum) ->
     return _to_response(card)
 
 
-def delete(db: Session, approach_id: str) -> None:
-    card = _get_or_404(db, approach_id)
+def delete(db: Session, approach_id: str, goal_id: str | None = None) -> None:
+    card = _get_or_404(db, approach_id, goal_id)
     if card.status != ApproachStatusEnum.generated.value:
         raise HTTPException(
             status_code=409,
@@ -592,9 +602,13 @@ def find_duplicates(db: Session, goal_id: str) -> list[DuplicateWarning]:
     return warnings
 
 
-def merge_approaches(db: Session, data: ApproachMergeRequest) -> ApproachCardResponse:
-    source = _get_or_404(db, data.source_approach_id)
-    target = _get_or_404(db, data.target_approach_id)
+def merge_approaches(
+    db: Session,
+    data: ApproachMergeRequest,
+    goal_id: str | None = None,
+) -> ApproachCardResponse:
+    source = _get_or_404(db, data.source_approach_id, goal_id)
+    target = _get_or_404(db, data.target_approach_id, goal_id)
 
     if source.workspace_id != target.workspace_id:
         raise HTTPException(status_code=422, detail="Cannot merge approaches from different workspaces")

@@ -22,7 +22,7 @@ label_router = APIRouter(prefix="/goals/{goal_id}/experiments", tags=["governanc
 def experiment_evidence_label(
     goal_id: str, experiment_id: str, db: Session = Depends(get_db)
 ):
-    return svc.experiment_evidence_label(db, experiment_id)
+    return svc.experiment_evidence_label(db, experiment_id, goal_id)
 
 
 @audit_router.get("", response_model=ExecutionAuditLogListResponse)

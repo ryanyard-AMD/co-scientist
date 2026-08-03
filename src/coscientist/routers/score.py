@@ -62,7 +62,7 @@ def score_approach(
     body: ScoreRequest,
     db: Session = Depends(get_db),
 ):
-    return svc.score_approach(db, approach_id, body.weight_profile)
+    return svc.score_approach(db, approach_id, body.weight_profile, goal_id=goal_id)
 
 
 @router.get("/{approach_id}/scores", response_model=ApproachScoreResponse)
@@ -71,7 +71,7 @@ def get_scores(
     approach_id: str,
     db: Session = Depends(get_db),
 ):
-    return svc.get_scores(db, approach_id)
+    return svc.get_scores(db, approach_id, goal_id)
 
 
 @router.post("/{approach_id}/rescore", response_model=ApproachScoreResponse)
@@ -81,4 +81,4 @@ def rescore(
     body: ScoreRequest,
     db: Session = Depends(get_db),
 ):
-    return svc.rescore(db, approach_id, body.weight_profile)
+    return svc.rescore(db, approach_id, body.weight_profile, goal_id=goal_id)

@@ -144,9 +144,13 @@ def derive_evidence_label(
     return "proposed"
 
 
-def experiment_evidence_label(db: Session, experiment_id: str) -> EvidenceLabelResponse:
+def experiment_evidence_label(
+    db: Session,
+    experiment_id: str,
+    goal_id: str | None = None,
+) -> EvidenceLabelResponse:
     card = db.get(ExperimentCard, experiment_id)
-    if card is None:
+    if card is None or (goal_id is not None and card.workspace_id != goal_id):
         raise HTTPException(
             status_code=404, detail=f"Experiment card {experiment_id!r} not found"
         )

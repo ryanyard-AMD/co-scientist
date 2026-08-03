@@ -23,3 +23,29 @@ Coverage:
 
 - `tests/test_hypothesis_api.py`
 - `tests/test_hypothesis_service.py`
+
+## Step 2: Goal-Scoped Nested Resources
+
+Problem:
+
+- Several routes were nested under `/goals/{goal_id}` but fetched or mutated
+  resources by object ID only.
+- A caller that knew an approach, hypothesis, or experiment ID could access it
+  through the wrong goal path.
+- Experiment creation validated approach ownership but did not validate that a
+  supplied hypothesis belonged to the same workspace.
+
+Fix:
+
+- Approach, hypothesis, experiment, score, handoff-list, and evidence-label
+  service calls now accept optional `goal_id` scope and return `404` on
+  workspace mismatch.
+- Goal-nested routers pass `goal_id` into those service calls.
+- Experiment creation rejects cross-workspace hypothesis links.
+
+Coverage:
+
+- `tests/test_approach_api.py`
+- `tests/test_hypothesis_api.py`
+- `tests/test_experiment_api.py`
+- `tests/test_score_api.py`

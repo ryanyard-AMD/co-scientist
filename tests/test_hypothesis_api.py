@@ -133,6 +133,27 @@ def test_get_hypothesis_not_found(client):
     assert resp.status_code == 404
 
 
+def test_hypothesis_detail_routes_are_goal_scoped(client, db_session):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    a1 = _create_scored_approach(client, db_session, goal_a["id"], "beamforming")
+    a2 = _create_scored_approach(client, db_session, goal_a["id"], "pressure_matching")
+    created = client.post(f"/co-scientist/goals/{goal_a['id']}/hypotheses", json={
+        "name": "H1", "text": "t", "rationale": "r",
+        "approach_ids": [a1["id"], a2["id"]],
+    }).json()
+
+    wrong_base = f"/co-scientist/goals/{goal_b['id']}/hypotheses/{created['id']}"
+    assert client.get(wrong_base).status_code == 404
+    assert client.patch(wrong_base, json={"name": "Wrong"}).status_code == 404
+    assert client.post(wrong_base + "/transition", json={"status": "reviewed"}).status_code == 404
+    assert client.delete(wrong_base).status_code == 404
+
+    correct = client.get(f"/co-scientist/goals/{goal_a['id']}/hypotheses/{created['id']}")
+    assert correct.status_code == 200
+    assert correct.json()["name"] == "H1"
+
+
 def test_update_hypothesis(client, db_session):
     goal = _create_goal(client)
     a1 = _create_scored_approach(client, db_session, goal["id"], "beamforming")

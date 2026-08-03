@@ -66,9 +66,9 @@ def _to_response(card: HypothesisCard) -> HypothesisCardResponse:
     )
 
 
-def _get_or_404(db: Session, hypothesis_id: str) -> HypothesisCard:
+def _get_or_404(db: Session, hypothesis_id: str, goal_id: str | None = None) -> HypothesisCard:
     card = db.get(HypothesisCard, hypothesis_id)
-    if card is None:
+    if card is None or (goal_id is not None and card.workspace_id != goal_id):
         raise HTTPException(status_code=404, detail=f"Hypothesis {hypothesis_id!r} not found")
     return card
 
@@ -108,8 +108,8 @@ def create(db: Session, goal_id: str, data: HypothesisCardCreate) -> HypothesisC
     return _to_response(card)
 
 
-def get(db: Session, hypothesis_id: str) -> HypothesisCardResponse:
-    return _to_response(_get_or_404(db, hypothesis_id))
+def get(db: Session, hypothesis_id: str, goal_id: str | None = None) -> HypothesisCardResponse:
+    return _to_response(_get_or_404(db, hypothesis_id, goal_id))
 
 
 def list_hypotheses(
@@ -133,8 +133,13 @@ def list_hypotheses(
     return [_to_response(r) for r in rows], total or 0
 
 
-def update(db: Session, hypothesis_id: str, data: HypothesisCardUpdate) -> HypothesisCardResponse:
-    card = _get_or_404(db, hypothesis_id)
+def update(
+    db: Session,
+    hypothesis_id: str,
+    data: HypothesisCardUpdate,
+    goal_id: str | None = None,
+) -> HypothesisCardResponse:
+    card = _get_or_404(db, hypothesis_id, goal_id)
     if data.name is not None:
         card.name = data.name
     if data.text is not None:
@@ -155,8 +160,13 @@ def update(db: Session, hypothesis_id: str, data: HypothesisCardUpdate) -> Hypot
     return _to_response(card)
 
 
-def transition(db: Session, hypothesis_id: str, new_status: HypothesisStatusEnum) -> HypothesisCardResponse:
-    card = _get_or_404(db, hypothesis_id)
+def transition(
+    db: Session,
+    hypothesis_id: str,
+    new_status: HypothesisStatusEnum,
+    goal_id: str | None = None,
+) -> HypothesisCardResponse:
+    card = _get_or_404(db, hypothesis_id, goal_id)
     current = HypothesisStatusEnum(card.status)
     if new_status not in ALLOWED_TRANSITIONS[current]:
         allowed = {s.value for s in ALLOWED_TRANSITIONS[current]}
@@ -174,8 +184,8 @@ def transition(db: Session, hypothesis_id: str, new_status: HypothesisStatusEnum
     return _to_response(card)
 
 
-def delete(db: Session, hypothesis_id: str) -> None:
-    card = _get_or_404(db, hypothesis_id)
+def delete(db: Session, hypothesis_id: str, goal_id: str | None = None) -> None:
+    card = _get_or_404(db, hypothesis_id, goal_id)
     if card.status != HypothesisStatusEnum.generated.value:
         raise HTTPException(
             status_code=409,

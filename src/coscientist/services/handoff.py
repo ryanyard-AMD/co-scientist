@@ -206,7 +206,13 @@ def request_resubmission(
     return _to_response(row)
 
 
-def list_handoff_requests(db: Session, experiment_id: str) -> HandoffRequestListResponse:
+def list_handoff_requests(
+    db: Session,
+    experiment_id: str,
+    goal_id: str | None = None,
+) -> HandoffRequestListResponse:
+    if goal_id is not None:
+        _get_card_or_404(db, experiment_id, goal_id)
     rows = db.scalars(
         select(HandoffRequest)
         .where(HandoffRequest.experiment_id == experiment_id)

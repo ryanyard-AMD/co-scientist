@@ -76,6 +76,26 @@ def test_score_approach_not_found(client):
     assert resp.status_code == 404
 
 
+def test_score_routes_are_goal_scoped(client, db_session):
+    goal_a = _create_goal(client)
+    goal_b = _create_goal(client)
+    _seed_evidence(db_session, goal_a["id"], ["beamforming"])
+    _seed_evidence(db_session, goal_a["id"], ["beamforming"])
+    approaches = _generate_and_review(client, db_session, goal_a["id"])
+    approach_id = approaches[0]["id"]
+
+    wrong_base = f"/co-scientist/goals/{goal_b['id']}/approaches/{approach_id}"
+    assert client.post(wrong_base + "/score", json={}).status_code == 404
+    assert client.get(wrong_base + "/scores").status_code == 404
+    assert client.post(wrong_base + "/rescore", json={}).status_code == 404
+
+    correct = client.post(
+        f"/co-scientist/goals/{goal_a['id']}/approaches/{approach_id}/score",
+        json={},
+    )
+    assert correct.status_code == 201
+
+
 def test_get_scores(client, db_session):
     goal = _create_goal(client)
     _seed_evidence(db_session, goal["id"], ["beamforming"])
