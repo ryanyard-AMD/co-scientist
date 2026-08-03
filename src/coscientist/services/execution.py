@@ -186,11 +186,12 @@ def register_run_request(
         latest_update_at=_utcnow(),
     )
     db.add(ref)
+    db.flush()
+    if execution_batch_id:
+        recompute_batch(db, execution_batch_id, commit=False)
     if commit:
         db.commit()
         db.refresh(ref)
-    if execution_batch_id:
-        recompute_batch(db, execution_batch_id)
     return ref
 
 
@@ -208,7 +209,11 @@ def _get_run_or_404(db: Session, run_request_id: str) -> RunRequestReference:
 
 
 def apply_run_status_update(
-    db: Session, run_request_id: str, update: RunStatusUpdate
+    db: Session,
+    run_request_id: str,
+    update: RunStatusUpdate,
+    *,
+    commit: bool = True,
 ) -> RunRequestReferenceResponse:
     ref = _get_run_or_404(db, run_request_id)
     ref.status = update.status.value
@@ -222,12 +227,17 @@ def apply_run_status_update(
         run_request_ids=[run_request_id],
         detail={"status": update.status.value},
     )
-    db.commit()
-    db.refresh(ref)
     if ref.execution_batch_id:
-        recompute_batch(db, ref.execution_batch_id)
+        recompute_batch(db, ref.execution_batch_id, commit=False)
     else:
-        _sync_experiment_execution_status(db, ref.experiment_id, _run_status_to_execution(update.status))
+        _sync_experiment_execution_status(
+            db, ref.experiment_id, _run_status_to_execution(update.status), commit=False
+        )
+    if commit:
+        db.commit()
+        db.refresh(ref)
+    else:
+        db.flush()
     return _run_to_response(ref)
 
 
@@ -300,7 +310,12 @@ _BATCH_TO_EXECUTION = {
 }
 
 
-def recompute_batch(db: Session, batch_id: str) -> ExecutionBatchReference:
+def recompute_batch(
+    db: Session,
+    batch_id: str,
+    *,
+    commit: bool = True,
+) -> ExecutionBatchReference:
     batch = db.get(ExecutionBatchReference, batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"ExecutionBatch {batch_id!r} not found")
@@ -325,15 +340,26 @@ def recompute_batch(db: Session, batch_id: str) -> ExecutionBatchReference:
     agg = _aggregate_status(counts)
     batch.aggregate_status = agg.value
     batch.updated_at = _utcnow()
-    db.commit()
-    db.refresh(batch)
-    _sync_experiment_execution_status(db, batch.experiment_id, _BATCH_TO_EXECUTION[agg])
+    _sync_experiment_execution_status(
+        db, batch.experiment_id, _BATCH_TO_EXECUTION[agg], commit=False
+    )
+    if commit:
+        db.commit()
+        db.refresh(batch)
+    else:
+        db.flush()
     return batch
 
 
-def _sync_experiment_execution_status(db: Session, experiment_id: str, status: ExecutionStatusEnum) -> None:
+def _sync_experiment_execution_status(
+    db: Session,
+    experiment_id: str,
+    status: ExecutionStatusEnum,
+    *,
+    commit: bool = True,
+) -> None:
     try:
-        experiment_svc.set_execution_status(db, experiment_id, status, force=True)
+        experiment_svc.set_execution_status(db, experiment_id, status, force=True, commit=commit)
     except HTTPException:
         # Experiment card may have been archived/removed; status sync is best-effort.
         pass

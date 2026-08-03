@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.models.approach import ApproachCard
 from coscientist.models.execution import RunRequestReference
 from coscientist.models.experiment import ExperimentCard
 from coscientist.models.validation import ResultBundleReference, ValidationAggregation
@@ -227,17 +228,81 @@ def recompute_aggregation(db: Session, experiment_id: str) -> ValidationAggregat
     return agg
 
 
-def _sync_run_request_status(db: Session, body: ResultBundleIngest) -> None:
+def _run_request_for_bundle(
+    db: Session,
+    body: ResultBundleIngest,
+    card: ExperimentCard,
+) -> RunRequestReference | None:
     ref = db.scalar(
         select(RunRequestReference).where(
             RunRequestReference.run_request_id == body.run_request_id
         )
     )
     if ref is None:
+        return None
+    if ref.experiment_id != body.experiment_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"RunRequest {body.run_request_id!r} belongs to experiment "
+                f"{ref.experiment_id!r}, not {body.experiment_id!r}"
+            ),
+        )
+    if ref.goal_id != card.workspace_id or ref.workspace_id != card.workspace_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"RunRequest {body.run_request_id!r} belongs to a different workspace",
+        )
+    if body.execution_batch_id and ref.execution_batch_id and body.execution_batch_id != ref.execution_batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"RunRequest {body.run_request_id!r} belongs to batch "
+                f"{ref.execution_batch_id!r}, not {body.execution_batch_id!r}"
+            ),
+        )
+    if card.execution_batch_id and ref.execution_batch_id and ref.execution_batch_id != card.execution_batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"RunRequest {body.run_request_id!r} is not part of experiment batch "
+                f"{card.execution_batch_id!r}"
+            ),
+        )
+    return ref
+
+
+def _validated_approach_ids(
+    db: Session,
+    body: ResultBundleIngest,
+    card: ExperimentCard,
+) -> list[str]:
+    card_approach_ids = json.loads(card.approach_ids) if card.approach_ids else []
+    approach_ids = body.approach_ids or card_approach_ids
+    if body.approach_ids:
+        unknown = set(body.approach_ids) - set(card_approach_ids)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"ResultBundle approach_ids are not linked to experiment: {sorted(unknown)}",
+            )
+    for approach_id in approach_ids:
+        approach = db.get(ApproachCard, approach_id)
+        if approach is None or approach.workspace_id != card.workspace_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Approach {approach_id!r} is not in experiment workspace {card.workspace_id!r}",
+            )
+    return approach_ids
+
+
+def _sync_run_request_status(db: Session, body: ResultBundleIngest, card: ExperimentCard) -> None:
+    ref = _run_request_for_bundle(db, body, card)
+    if ref is None:
         return
     run_status = _BUNDLE_TO_RUN_STATUS[body.validation_status]
     execution_svc.apply_run_status_update(
-        db, body.run_request_id, RunStatusUpdate(status=run_status)
+        db, body.run_request_id, RunStatusUpdate(status=run_status), commit=False
     )
 
 
@@ -245,11 +310,29 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
     card = _get_experiment_or_404(db, body.experiment_id)
     goal_id = card.workspace_id
     key = _ingestion_key(body)
+    if body.execution_batch_id and card.execution_batch_id and body.execution_batch_id != card.execution_batch_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"ResultBundle batch {body.execution_batch_id!r} does not match "
+                f"experiment batch {card.execution_batch_id!r}"
+            ),
+        )
+    _run_request_for_bundle(db, body, card)
+    approach_ids = _validated_approach_ids(db, body, card)
 
     existing = db.scalar(
         select(ResultBundleReference).where(ResultBundleReference.ingestion_key == key)
     )
     if existing is not None:
+        if existing.experiment_id != body.experiment_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"ResultBundle ingestion key {key!r} already belongs to "
+                    f"experiment {existing.experiment_id!r}"
+                ),
+            )
         agg = recompute_aggregation(db, body.experiment_id)
         db.commit()
         db.refresh(existing)
@@ -271,7 +354,7 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
         experiment_id=body.experiment_id,
         goal_id=goal_id,
         hypothesis_id=body.hypothesis_id or card.hypothesis_id,
-        approach_ids=json.dumps(body.approach_ids or (json.loads(card.approach_ids) if card.approach_ids else [])),
+        approach_ids=json.dumps(approach_ids),
         execution_batch_id=body.execution_batch_id or card.execution_batch_id,
         validation_status=body.validation_status.value,
         metrics=json.dumps(body.metrics),
@@ -291,7 +374,7 @@ def ingest_result_bundle(db: Session, body: ResultBundleIngest) -> ResultBundleI
     db.add(bundle)
     db.flush()
 
-    _sync_run_request_status(db, body)
+    _sync_run_request_status(db, body, card)
     agg = recompute_aggregation(db, body.experiment_id)
 
     governance_svc.record_execution_event(

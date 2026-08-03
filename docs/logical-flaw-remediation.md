@@ -49,3 +49,30 @@ Coverage:
 - `tests/test_hypothesis_api.py`
 - `tests/test_experiment_api.py`
 - `tests/test_score_api.py`
+
+## Step 3: Atomic ResultBundle Ingestion and Correlation Checks
+
+Problem:
+
+- ResultBundle ingestion synced RunRequest status through helpers that committed
+  before score, device, and roadmap side effects completed.
+- A later failure could leave a bundle/run status persisted without the
+  corresponding downstream updates.
+- Incoming bundle payloads could name a RunRequest or approach IDs that were not
+  correlated with the target Experiment Card.
+
+Fix:
+
+- Execution status, RunRequest status, and batch recomputation helpers can now
+  participate in caller-owned transactions.
+- ResultBundle ingestion applies run status sync with `commit=False` and commits
+  only after aggregation, scoring, approach/device refresh, and roadmap refresh
+  complete.
+- ResultBundle ingestion rejects RunRequests, batches, and explicit
+  `approach_ids` that do not match the target experiment/workspace.
+
+Coverage:
+
+- `tests/test_result_bundle.py`
+- `tests/test_execution_service.py`
+- `tests/test_approval_api.py`

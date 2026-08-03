@@ -314,6 +314,7 @@ def set_execution_status(
     *,
     force: bool = False,
     goal_id: str | None = None,
+    commit: bool = True,
 ) -> ExperimentCardResponse:
     """Advance the execution lifecycle (separate from approval `status`).
 
@@ -333,8 +334,11 @@ def set_execution_status(
         )
     card.execution_status = new_status.value
     card.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(card)
+    if commit:
+        db.commit()
+        db.refresh(card)
+    else:
+        db.flush()
     return _to_response(card)
 
 

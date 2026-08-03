@@ -1,6 +1,13 @@
 """Tests for CS-EPIC-VALIDATION ResultBundle ingestion + aggregation."""
 
+import pytest
+from sqlalchemy import select
+
 from conftest import GOAL_PAYLOAD
+from coscientist.models.execution import RunRequestReference
+from coscientist.models.validation import ResultBundleReference
+from coscientist.schemas.validation import ResultBundleIngest
+from coscientist.services import result_bundle as result_bundle_svc
 from test_approval_api import _create_scored_approach, _create_reviewed_experiment
 
 PREFIX = "/co-scientist"
@@ -112,6 +119,74 @@ def test_ingest_syncs_run_request_status(client, db_session):
     client.post(f"{PREFIX}/result-bundles", json=_bundle(exp["id"], rr_id, status="passed"))
     run = client.get(f"{PREFIX}/run-requests/{rr_id}").json()
     assert run["status"] == "completed"
+
+
+def test_ingest_rejects_mismatched_run_request_experiment(client, db_session):
+    goal = client.post(f"{PREFIX}/goals", json=GOAL_PAYLOAD).json()
+    approach = _create_scored_approach(client, db_session, goal["id"])
+    exp1 = _create_reviewed_experiment(client, goal["id"], approach["id"])
+    exp2 = _create_reviewed_experiment(client, goal["id"], approach["id"])
+    client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp1['id']}/approve", json={})
+    sub = client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp1['id']}/submit", json={}).json()
+    rr_id = sub["runs"][0]["run_request_id"]
+
+    resp = client.post(f"{PREFIX}/result-bundles", json=_bundle(exp2["id"], rr_id))
+    assert resp.status_code == 422
+    assert "belongs to experiment" in resp.text
+
+
+def test_ingest_rejects_unlinked_approach_ids(client, db_session):
+    goal = client.post(f"{PREFIX}/goals", json=GOAL_PAYLOAD).json()
+    linked = _create_scored_approach(client, db_session, goal["id"], method_family="beamforming")
+    unlinked = _create_scored_approach(client, db_session, goal["id"], method_family="pressure_matching")
+    exp = _create_reviewed_experiment(client, goal["id"], linked["id"])
+
+    resp = client.post(
+        f"{PREFIX}/result-bundles",
+        json=_bundle(exp["id"], "rr-manual", approach_ids=[unlinked["id"]]),
+    )
+    assert resp.status_code == 422
+    assert "not linked to experiment" in resp.text
+
+
+def test_ingest_rolls_back_run_status_when_downstream_update_fails(
+    client, db_session, monkeypatch
+):
+    goal = client.post(f"{PREFIX}/goals", json=GOAL_PAYLOAD).json()
+    approach = _create_scored_approach(client, db_session, goal["id"])
+    exp = _create_reviewed_experiment(client, goal["id"], approach["id"])
+    client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/approve", json={})
+    sub = client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/submit", json={}).json()
+    rr_id = sub["runs"][0]["run_request_id"]
+
+    def fail_score_update(*args, **kwargs):
+        raise RuntimeError("score update failed")
+
+    monkeypatch.setattr(
+        result_bundle_svc.score_update_svc,
+        "apply_execution_score_update",
+        fail_score_update,
+    )
+
+    with pytest.raises(RuntimeError, match="score update failed"):
+        result_bundle_svc.ingest_result_bundle(
+            db_session,
+            ResultBundleIngest(**_bundle(exp["id"], rr_id, status="passed")),
+        )
+    db_session.rollback()
+
+    persisted_bundle = db_session.scalar(
+        select(ResultBundleReference).where(
+            ResultBundleReference.run_request_id == rr_id
+        )
+    )
+    run_ref = db_session.scalar(
+        select(RunRequestReference).where(
+            RunRequestReference.run_request_id == rr_id
+        )
+    )
+    assert persisted_bundle is None
+    assert run_ref.status == "pending"
 
 
 def test_aggregation_404_when_absent(client, db_session):
