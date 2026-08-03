@@ -268,6 +268,68 @@ def _build_proposal(card, method_family: str | None) -> dict:
     return proposal
 
 
+def _handoff_preview_payload(card, preview, method_family: str | None) -> dict:
+    """Build co_scientist.run_request.v1 for repro's preview endpoint."""
+    pass_conditions = _pass_conditions(card.validation.pass_conditions)
+    first_run = preview.runs[0].parameters if preview.runs else {}
+    experiment = {
+        "name": card.name,
+        "objective": card.objective,
+        "hypothesis_text": card.hypothesis_text,
+        "experiment_type": card.experiment_type.value,
+        "baseline_methods": card.baseline_methods,
+        "fixed_assumptions": card.fixed_assumptions,
+        "metrics": card.metrics,
+        "validation": card.validation.model_dump(mode="json"),
+        "pass_conditions": pass_conditions,
+        "runtime": card.runtime.model_dump(mode="json"),
+        "artifacts": card.artifacts,
+    }
+    if method_family:
+        experiment["method_family"] = method_family
+    return {
+        "schema": "co_scientist.run_request.v1",
+        "co_scientist": {
+            "experiment_id": card.id,
+            "goal_id": card.workspace_id,
+            "workspace_id": card.workspace_id,
+            "execution_batch_id": None,
+            "correlation_id": None,
+            "hypothesis_id": card.hypothesis_id,
+            "approach_ids": card.approach_ids,
+        },
+        "experiment": experiment,
+        "run": {
+            "index": 0,
+            "count": preview.expanded_run_count,
+            "parameters": first_run,
+            "initial_status": "pending",
+        },
+        "approval_policy": {
+            "approval_mode": "preview",
+            "cost_class": card.estimated_cost,
+            "credentialed": False,
+        },
+        "resource_policy": {
+            "required_capabilities": list(card.execution_handoff.required_capabilities),
+            "runner_pool_preference": card.execution_handoff.runner_pool_preference,
+        },
+        "result_contract": {
+            "result_bundle_endpoint": "/co-scientist/result-bundles",
+            "required_correlation": {
+                "experiment_id": card.id,
+                "goal_id": card.workspace_id,
+                "hypothesis_id": card.hypothesis_id,
+                "approach_ids": card.approach_ids,
+            },
+            "expected_metrics": card.metrics,
+            "expected_artifacts": card.artifacts,
+            "pass_conditions": pass_conditions,
+        },
+        "control_plane_uri": card.execution_handoff.experiment_control_plane,
+    }
+
+
 def _metric_contract(client: ReproClient, workspace_id: str, reproduction_id: str) -> dict:
     """Return repro's declared metric surface for the selected reproduction.
 
@@ -327,6 +389,77 @@ def preflight_experiment(
             pass_conditions=pass_conditions,
             design_run_payload=proposal,
         )
+
+    try:
+        with ReproClient() as client:
+            preview_report = client.preview_handoff(
+                _handoff_preview_payload(card, preview, method_family),
+                top_k=settings.runner_recommend_top_k,
+            )
+        reproduction_id = preview_report.get("selected_reproduction_id")
+        proposal = dict(preview_report.get("proposal") or proposal)
+        if reproduction_id:
+            proposal["experiment_id"] = reproduction_id
+        unmeasurable = (
+            _unmeasurable_conditions(pass_conditions, reproduction_id)
+            if reproduction_id and settings.runner_align_pass_conditions
+            else []
+        )
+        warnings.extend(preview_report.get("warnings") or [])
+        if unmeasurable:
+            warnings.append(
+                "selected reproduction cannot emit every pass-condition metric: "
+                + ", ".join(unmeasurable)
+            )
+        native_map = EXPERIMENT_METRIC_MAP.get(reproduction_id or "", {})
+        blocking.extend(preview_report.get("blocking_reasons") or [])
+        if reproduction_id and not native_map:
+            blocking.append(
+                f"selected reproduction {reproduction_id!r} has no native-to-canonical metric map"
+            )
+        cand_families = preview_report.get("selected_method_families") or []
+        recommendation = {
+            "candidate_paper_id": preview_report.get("selected_paper_id"),
+            "title": preview_report.get("selected_reproduction_id"),
+            "score": None,
+            "experiment_id": reproduction_id,
+            "method_families": cand_families,
+            "family_match": preview_report.get("method_family_supported"),
+            "card_method_family": method_family,
+            "diverged_from_card_family": bool(method_family) and method_family not in cand_families,
+            "unmeasurable_pass_conditions": unmeasurable,
+            "honored": preview_report.get("honored") or [],
+            "dropped": preview_report.get("dropped") or [],
+            "source": "handoffs.preview",
+        }
+        return ExecutionPreflightResponse(
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            runnable=not blocking and bool(preview_report.get("runnable")),
+            blocking_reasons=blocking,
+            warnings=warnings,
+            run_count=preview.expanded_run_count,
+            method_family=method_family,
+            selected_reproduction_id=reproduction_id,
+            repro_workspace_id=None,
+            candidate_paper_id=preview_report.get("selected_paper_id"),
+            candidate_title=preview_report.get("selected_reproduction_id"),
+            candidate_method_families=cand_families,
+            family_match=preview_report.get("method_family_supported"),
+            pass_conditions=pass_conditions,
+            unmeasurable_conditions=unmeasurable,
+            metric_contract={
+                "reproduction_id": reproduction_id,
+                "native_to_canonical": native_map,
+                "preview": preview_report,
+            },
+            design_run_payload=proposal,
+            recommendation=recommendation,
+        )
+    except (httpx.HTTPError, AttributeError):
+        # Compatibility path for older repro deployments that do not yet expose
+        # /api/v1/handoffs/preview.
+        pass
 
     try:
         with ReproClient() as client:

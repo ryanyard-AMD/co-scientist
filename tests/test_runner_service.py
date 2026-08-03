@@ -186,6 +186,26 @@ class _FakeReproClient:
         return self.metrics
 
 
+class _PreviewReproClient:
+    """Fake for the new /api/v1/handoffs/preview path."""
+
+    def __init__(self, report: dict):
+        self.report = report
+        self.payload = None
+        self.top_k = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def preview_handoff(self, payload, *, top_k=None):
+        self.payload = payload
+        self.top_k = top_k
+        return self.report
+
+
 def _fake_validation(monkeypatch):
     return {}
 
@@ -302,6 +322,53 @@ def test_preflight_resolves_execution_plan(db_session, monkeypatch):
     assert result.design_run_payload["experiment_id"] == _VAST_EXPERIMENT_ID
     assert result.metric_contract["native_to_canonical"]["oAC_best_dB"] == "acoustic_contrast_db"
     assert result.recommendation["family_match"] is True
+
+
+def test_preflight_uses_repro_handoff_preview(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+    report = {
+        "schema": "co_scientist.run_request.v1",
+        "runnable": True,
+        "blocking_reasons": [],
+        "warnings": ["handoff preview warning"],
+        "proposal": {
+            "objective": "Measure contrast",
+            "hypothesis": "Higher order increases contrast.",
+            "independent_variables": {},
+            "metrics": ["acoustic_contrast_db"],
+            "pass_conditions": [
+                {"metric": "acoustic_contrast_db", "operator": ">=", "value": 20.0}
+            ],
+            "method_family": "acoustic_contrast_control",
+            "experiment_id": _VAST_EXPERIMENT_ID,
+        },
+        "selected_reproduction_id": _VAST_EXPERIMENT_ID,
+        "selected_paper_id": _VAST_PAPER_ID,
+        "selected_method_families": list(_VAST_FAMILIES),
+        "honored": [{"proposal_name": "t60", "canonical": "reverb_t60_s"}],
+        "dropped": [{"proposal_name": "speaker_count", "reason": "unsupported"}],
+        "method_family_supported": True,
+        "result_contract": {"expected_metrics": ["acoustic_contrast_db"]},
+    }
+    fake = _PreviewReproClient(report)
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+
+    result = svc.preflight_experiment(db_session, exp.id, gid)
+
+    assert result.runnable is True
+    assert result.selected_reproduction_id == _VAST_EXPERIMENT_ID
+    assert result.metric_contract["native_to_canonical"]["oAC_best_dB"] == "acoustic_contrast_db"
+    assert result.recommendation["source"] == "handoffs.preview"
+    assert result.recommendation["honored"] == report["honored"]
+    assert result.recommendation["dropped"] == report["dropped"]
+    assert "handoff preview warning" in result.warnings
+    assert fake.top_k is not None
+    assert fake.payload["schema"] == "co_scientist.run_request.v1"
+    assert fake.payload["experiment"]["method_family"] == "acoustic_contrast_control"
+    assert fake.payload["co_scientist"]["experiment_id"] == exp.id
+    assert fake.payload["result_contract"]["required_correlation"]["approach_ids"] == [ac.id]
 
 
 def test_preflight_reports_no_runnable_reproduction(db_session, monkeypatch):

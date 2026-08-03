@@ -106,6 +106,20 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def preview_handoff(self, payload: dict, *, top_k: int | None = None) -> dict:
+        """POST /api/v1/handoffs/preview — validate/design a RunRequest handoff.
+
+        Accepts co_scientist.run_request.v1 and returns repro's preview report:
+        selected reproduction, designed spec, honored/dropped variables, warnings,
+        and blocking reasons. No run is submitted.
+        """
+        params: dict = {}
+        if top_k is not None:
+            params["top_k"] = top_k
+        resp = self._client.post("/api/v1/handoffs/preview", params=params, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     def simulate_device(self, geometry: dict) -> dict:
         """POST /api/v1/device-sim — predict a device geometry's acoustic contrast.
 

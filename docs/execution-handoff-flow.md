@@ -15,6 +15,14 @@ The production execution path should be:
 resolves the contract between co-scientist and repro without submitting or
 running anything.
 
+Preflight now sends the first expanded `co_scientist.run_request.v1` payload to
+repro's `POST /api/v1/handoffs/preview` endpoint. Repro normalizes that payload
+into its `ExperimentProposal`, selects or recommends a curated reproduction,
+designs the grounded spec, and returns honored/dropped variables plus warnings
+without queueing a run. The older `recommend-method` / `metrics-surface`
+sequence remains as a compatibility fallback for repro deployments that do not
+yet expose `/handoffs/preview`.
+
 The response reports:
 
 - whether the experiment is runnable;
@@ -25,6 +33,8 @@ The response reports:
 - unmeasurable pass-condition metrics;
 - the repro metric contract and local native-to-canonical fallback map;
 - the design-run payload that would be sent downstream.
+- the repro preview report's honored/dropped variables and selection warnings
+  when available.
 
 Use preflight before approval/submission. A failed preflight should block normal
 submission unless a human explicitly accepts the risk and records the reason.
