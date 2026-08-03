@@ -65,6 +65,12 @@ The downstream system should reject the RunRequest up front when it cannot honor
 this contract. Completed runs should report through ResultBundle ingestion using
 the IDs in `result_contract.required_correlation`.
 
+When `experiment_control_plane` is set on the card, the default submitter sends
+this payload to repro's `POST /api/v1/handoffs/run` endpoint and stores the
+returned control-plane `run_id` as the co-scientist `RunRequestReference`. When no
+control-plane URI is configured, the submitter preserves the local generated-ID
+stand-in used for offline development and tests.
+
 ## Direct Runner Compatibility
 
 The direct repro runner is a compatibility adapter, not the target production

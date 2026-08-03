@@ -120,6 +120,15 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def run_handoff(self, payload: dict, *, top_k: int | None = None) -> dict:
+        """POST /api/v1/handoffs/run — queue a RunRequest in repro's control plane."""
+        params: dict = {}
+        if top_k is not None:
+            params["top_k"] = top_k
+        resp = self._client.post("/api/v1/handoffs/run", params=params, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     def simulate_device(self, geometry: dict) -> dict:
         """POST /api/v1/device-sim — predict a device geometry's acoustic contrast.
 

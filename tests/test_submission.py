@@ -1,6 +1,8 @@
 """Tests for CS-EPIC-APPROVAL RunRequest submission (approved card -> RunRequests)."""
 
 from conftest import GOAL_PAYLOAD
+from coscientist.models.experiment import ExperimentCard
+from coscientist.services import submission as submission_svc
 from test_approval_api import _create_scored_approach, _create_reviewed_experiment
 
 PREFIX = "/co-scientist"
@@ -97,3 +99,53 @@ def test_submit_run_requests_are_listable(client, db_session):
     batch_id = resp.json()["execution_batch_id"]
     listed = client.get(f"{PREFIX}/run-requests", params={"batch_id": batch_id}).json()
     assert listed["total"] == resp.json()["run_request_count"]
+
+
+class _FakeReproClient:
+    def __init__(self, base_url=None):
+        self.base_url = base_url
+        self.payloads = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def run_handoff(self, payload, *, top_k=None):
+        self.payloads.append(payload)
+        return {"run": {"run_id": f"run-live-{len(self.payloads)}"}}
+
+
+def test_default_submitter_calls_repro_when_control_plane_uri(monkeypatch):
+    fake = _FakeReproClient(base_url="http://repro")
+    monkeypatch.setattr(submission_svc, "ReproClient", lambda base_url=None: fake)
+    payload = {
+        "schema": "co_scientist.run_request.v1",
+        "control_plane_uri": "http://repro",
+    }
+
+    run_id = submission_svc._default_run_request_submitter(payload)
+
+    assert run_id == "run-live-1"
+    assert fake.payloads == [payload]
+
+
+def test_submit_uses_live_repro_when_card_has_control_plane(client, db_session, monkeypatch):
+    goal, exp = _approved_experiment(client, db_session)
+    fake = _FakeReproClient(base_url="http://repro")
+    monkeypatch.setattr(submission_svc, "ReproClient", lambda base_url=None: fake)
+    row = db_session.get(ExperimentCard, exp["id"])
+    row.experiment_control_plane = "http://repro"
+    db_session.commit()
+
+    resp = client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/submit", json={})
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["runs"][0]["run_request_id"] == "run-live-1"
+    assert fake.payloads
+    payload = fake.payloads[0]
+    assert payload["schema"] == "co_scientist.run_request.v1"
+    assert payload["control_plane_uri"] == "http://repro"
+    assert payload["co_scientist"]["experiment_id"] == exp["id"]

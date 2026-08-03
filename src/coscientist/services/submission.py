@@ -7,8 +7,9 @@ and the approval policy that governs the runs, then tracks status via
 CS-EPIC-EXECUTION rollups.
 
 The actual call to the Experimentation System RunRequest API is abstracted
-behind ``run_request_submitter`` so it can be swapped for a live client once
-that API exists; the default generates an external-style RunRequest ID.
+behind ``run_request_submitter``. The default calls repro's handoff-run endpoint
+when a card carries a control-plane URI, and otherwise generates an
+external-style RunRequest ID for offline development/tests.
 """
 
 import json
@@ -21,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from coscientist.models.execution import ExecutionBatchReference, RunRequestReference
 from coscientist.models.experiment import ExperimentCard
+from coscientist.clients.repro import ReproClient
+from coscientist.config import settings
 from coscientist.schemas.approval import (
     ApprovalModeEnum,
     SubmissionRequest,
@@ -41,8 +44,22 @@ from coscientist.services import runner as runner_svc
 def _default_run_request_submitter(payload: dict) -> str:
     """Stand-in for the Experimentation System RunRequest API call.
 
-    Returns the external RunRequest ID. Swap/monkeypatch this for a live client.
+    Returns the external RunRequest ID. When the card names a control-plane URI,
+    submit to repro's handoff-run endpoint; otherwise preserve the local generated
+    ID used by offline tests and development flows.
     """
+    control_plane_uri = payload.get("control_plane_uri")
+    if control_plane_uri:
+        with ReproClient(base_url=control_plane_uri) as client:
+            response = client.run_handoff(
+                payload,
+                top_k=settings.runner_recommend_top_k,
+            )
+        run = response.get("run") or {}
+        run_id = run.get("run_id")
+        if not run_id:
+            raise RuntimeError("repro handoff-run response did not include run.run_id")
+        return run_id
     return f"rr-{uuid.uuid4().hex}"
 
 
