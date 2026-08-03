@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from coscientist.schemas.validation import ValidationResultResponse
+from coscientist.schemas.validation import ResultBundleIngestResponse, ValidationResultResponse
 
 
 class ExecutionPreflightResponse(BaseModel):
@@ -32,7 +32,8 @@ class RunnerResult(BaseModel):
     repro_status: str
     raw_metrics: dict[str, float]
     measured_metrics: dict[str, float]
-    validation: ValidationResultResponse
+    validation: ValidationResultResponse | None = None
+    result_bundle: ResultBundleIngestResponse | None = None
     # recommend-method provenance: which reproduction repro chose for the card's
     # hypothesis, and whether it diverged from the card's committed method_family.
     recommendation: dict | None = None

@@ -187,29 +187,7 @@ class _FakeReproClient:
 
 
 def _fake_validation(monkeypatch):
-    captured = {}
-
-    def _submit(db, experiment_id, goal_id, submission):
-        captured["submission"] = submission
-        return ValidationResultResponse(
-            id=str(uuid.uuid4()),
-            experiment_id=experiment_id,
-            goal_id=goal_id,
-            approach_id="",
-            decision=ValidationDecisionEnum.validated,
-            reproduction_status=ReproductionStatusEnum.reproduced,
-            confidence=0.9,
-            reasoning="ok",
-            criterion_results=[],
-            refinement_suggestions=[],
-            measured_metrics=submission.measured_metrics,
-            artifact_paths=submission.artifact_paths,
-            model_used="test",
-            created_at=datetime.now(timezone.utc),
-        )
-
-    monkeypatch.setattr(svc.validation_svc, "submit_results", _submit)
-    return captured
+    return {}
 
 
 @pytest.fixture(autouse=True)
@@ -226,26 +204,26 @@ def test_run_success_translates_and_validates(db_session, monkeypatch):
 
     monkeypatch.setattr(
         svc, "ReproClient",
-        lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0, "label": "x"}),
+        lambda: _FakeReproClient(metrics={"oAC_best_dB": 22.5, "nsde_achieved_dB": -25.0, "label": "x"}),
     )
-    captured = _fake_validation(monkeypatch)
 
     result = svc.run_experiment(db_session, exp.id, gid)
 
     assert result.run_id == "run-123"
     # simulator now names the repro reproduction repro recommended, not a local script
     assert result.simulator == _VAST_EXPERIMENT_ID
-    assert result.measured_metrics == {"acoustic_contrast_db": 18.5, "bright_zone_error": -25.0}
+    assert result.measured_metrics == {"acoustic_contrast_db": 22.5, "bright_zone_error": -25.0}
     # non-numeric native keys are dropped from raw too
     assert "label" not in result.raw_metrics
-    # validation received the translated metrics
-    assert captured["submission"].measured_metrics == {"acoustic_contrast_db": 18.5, "bright_zone_error": -25.0}
+    assert result.validation.decision == ValidationDecisionEnum.validated
+    assert result.result_bundle.bundle.validation_status.value == "passed"
+    assert result.result_bundle.aggregation.aggregate_status.value == "passed"
     # recommendation provenance surfaced; no divergence (card family is in candidate families)
     assert result.recommendation["experiment_id"] == _VAST_EXPERIMENT_ID
     assert result.recommendation["diverged_from_card_family"] is False
-    # card was transitioned to running before validation handoff
     db_session.refresh(exp)
-    assert exp.status == ExperimentStatusEnum.running.value
+    assert exp.status == ExperimentStatusEnum.completed.value
+    assert exp.execution_status == "completed"
 
 
 def test_run_builds_proposal_and_records_provenance(db_session, monkeypatch):
@@ -401,14 +379,12 @@ def test_run_records_unmeasurable_pass_conditions(db_session, monkeypatch):
         svc, "ReproClient",
         lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
     )
-    captured = _fake_validation(monkeypatch)
-
     result = svc.run_experiment(db_session, exp.id, gid)
     assert "latency_ms" in result.recommendation["unmeasurable_pass_conditions"]
     assert "acoustic_contrast_db" not in result.recommendation["unmeasurable_pass_conditions"]
-    # The unmeasurable list must reach validation so it isn't treated as a failure.
-    assert "latency_ms" in captured["submission"].unmeasurable_conditions
-    assert "acoustic_contrast_db" not in captured["submission"].unmeasurable_conditions
+    assert "latency_ms" in result.result_bundle.bundle.provenance["unmeasurable_conditions"]
+    latency = next(c for c in result.validation.criterion_results if c.name == "latency_ms")
+    assert latency.measured is None
 
 
 def test_pass_conditions_canonicalizes_metric_name():
@@ -709,9 +685,9 @@ def test_run_comparison_tie_has_no_winner(db_session, monkeypatch):
     assert "clear winner" in result.rationale.lower() or "tie" in result.rationale.lower()
 
 
-def test_validation_error_rolls_back_to_approved(db_session, monkeypatch):
-    # If validation raises (infra error, not a refuted verdict) after the card is moved to
-    # 'running', the runner rolls it back to 'approved' so it stays re-runnable.
+def test_result_bundle_error_rolls_back_to_approved(db_session, monkeypatch):
+    # If bundle ingestion raises after the card is moved to 'running', the runner
+    # rolls it back to 'approved' so it stays re-runnable.
     gid = _make_goal(db_session)
     ac = _approach(db_session, gid)
     exp = _experiment(db_session, gid, [ac.id])
@@ -721,10 +697,10 @@ def test_validation_error_rolls_back_to_approved(db_session, monkeypatch):
         lambda: _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0}),
     )
 
-    def _boom(db, experiment_id, goal_id, submission):
-        raise HTTPException(status_code=502, detail="validation agent unavailable")
+    def _boom(db, body):
+        raise HTTPException(status_code=502, detail="bundle sink unavailable")
 
-    monkeypatch.setattr(svc.validation_svc, "submit_results", _boom)
+    monkeypatch.setattr(svc.result_bundle_svc, "ingest_result_bundle", _boom)
 
     with pytest.raises(HTTPException) as exc:
         svc.run_experiment(db_session, exp.id, gid)

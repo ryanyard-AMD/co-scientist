@@ -32,8 +32,10 @@ submission unless a human explicitly accepts the risk and records the reason.
 ## Current Transition State
 
 The direct `experiment run` path still exists for compatibility and developer
-testing. The intended production path is RunRequest handoff followed by
-ResultBundle ingestion.
+testing. It now creates co-scientist execution references and emits a
+ResultBundle through the same ingestion service used by external handoff
+completions. The intended production path remains RunRequest handoff followed by
+ResultBundle ingestion from the external system.
 
 ## RunRequest Contract
 
@@ -52,3 +54,20 @@ The payload includes:
 The downstream system should reject the RunRequest up front when it cannot honor
 this contract. Completed runs should report through ResultBundle ingestion using
 the IDs in `result_contract.required_correlation`.
+
+## Direct Runner Compatibility
+
+The direct repro runner is a compatibility adapter, not the target production
+executor. When it completes a run, it now:
+
+1. creates an `ExecutionBatchReference`;
+2. registers a `RunRequestReference` for the repro run ID;
+3. derives a deterministic bundle status from measured metrics and pass
+   conditions;
+4. ingests a `ResultBundle`;
+5. transitions the legacy experiment card status from `running` to
+   `completed`, `failed`, or `inconclusive`.
+
+This keeps score updates, approach execution evidence, device evidence, and
+roadmap refreshes on the canonical ResultBundle path even during local/direct
+execution.

@@ -31,6 +31,7 @@ from coscientist.domain import canonicalize_metric
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.models.experiment import ExperimentCard
 from coscientist.schemas.experiment import ExperimentStatusEnum
+from coscientist.schemas.execution import RunRequestStatusEnum
 from coscientist.schemas.runner import (
     ApproachRunSummary,
     ComparisonResult,
@@ -38,13 +39,22 @@ from coscientist.schemas.runner import (
     MetricComparison,
     RunnerResult,
 )
-from coscientist.schemas.validation import ExperimentResultSubmission
+from coscientist.schemas.validation import (
+    BundleValidationStatusEnum,
+    CriterionResult,
+    ReproductionStatusEnum,
+    ResultBundleIngest,
+    ResultBundleIngestResponse,
+    ValidationDecisionEnum,
+    ValidationResultResponse,
+)
+from coscientist.services import execution as execution_svc
 from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import roadmap as roadmap_svc
-from coscientist.services import validation as validation_svc
+from coscientist.services import result_bundle as result_bundle_svc
 
 
 # repro experiment_id → {native metrics.json key: canonical co-scientist name}.
@@ -424,6 +434,204 @@ def _poll(client: ReproClient, run_id: str, timeout: float) -> dict:
         time.sleep(settings.repro_poll_interval)
 
 
+def _condition_passed(measured: float, operator: str, target: float) -> bool:
+    if operator == ">=":
+        return measured >= target
+    if operator == "<=":
+        return measured <= target
+    if operator == ">":
+        return measured > target
+    if operator == "<":
+        return measured < target
+    if operator in ("=", "=="):
+        return measured == target
+    return measured >= target
+
+
+def _bundle_status(
+    measured: dict[str, float],
+    pass_conditions: list[dict],
+    unmeasurable: list[str],
+) -> tuple[BundleValidationStatusEnum, list[CriterionResult]]:
+    unmeasurable_set = set(unmeasurable)
+    criterion_results: list[CriterionResult] = []
+    measurable_count = 0
+    failed = False
+    missing = False
+    for cond in pass_conditions:
+        metric = cond["metric"]
+        target = float(cond["value"])
+        operator = cond["operator"]
+        value = measured.get(metric)
+        if metric in unmeasurable_set or value is None:
+            missing = True
+            criterion_results.append(
+                CriterionResult(
+                    name=metric,
+                    measured=None,
+                    target=target,
+                    operator=operator,
+                    passed=False,
+                    unit="",
+                )
+            )
+            continue
+        measurable_count += 1
+        passed = _condition_passed(value, operator, target)
+        failed = failed or not passed
+        criterion_results.append(
+            CriterionResult(
+                name=metric,
+                measured=value,
+                target=target,
+                operator=operator,
+                passed=passed,
+                unit="",
+            )
+        )
+    if not pass_conditions:
+        return BundleValidationStatusEnum.inconclusive, criterion_results
+    if measurable_count == 0:
+        return BundleValidationStatusEnum.blocked, criterion_results
+    if failed:
+        return BundleValidationStatusEnum.failed, criterion_results
+    if missing:
+        return BundleValidationStatusEnum.partial, criterion_results
+    return BundleValidationStatusEnum.passed, criterion_results
+
+
+def _validation_response_from_bundle(
+    *,
+    experiment_id: str,
+    goal_id: str,
+    measured: dict[str, float],
+    artifact_paths: dict[str, str],
+    status: BundleValidationStatusEnum,
+    criterion_results: list[CriterionResult],
+):
+    decision = {
+        BundleValidationStatusEnum.passed: ValidationDecisionEnum.validated,
+        BundleValidationStatusEnum.failed: ValidationDecisionEnum.refuted,
+        BundleValidationStatusEnum.blocked: ValidationDecisionEnum.inconclusive,
+        BundleValidationStatusEnum.partial: ValidationDecisionEnum.inconclusive,
+        BundleValidationStatusEnum.inconclusive: ValidationDecisionEnum.inconclusive,
+    }[status]
+    reproduction_status = {
+        BundleValidationStatusEnum.passed: ReproductionStatusEnum.reproduced,
+        BundleValidationStatusEnum.failed: ReproductionStatusEnum.failed,
+        BundleValidationStatusEnum.blocked: ReproductionStatusEnum.blocked,
+        BundleValidationStatusEnum.partial: ReproductionStatusEnum.partially_reproduced,
+        BundleValidationStatusEnum.inconclusive: ReproductionStatusEnum.blocked,
+    }[status]
+    return ValidationResultResponse(
+        id=f"bundle:{experiment_id}",
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        approach_id="",
+        decision=decision,
+        reproduction_status=reproduction_status,
+        confidence=1.0,
+        reasoning=f"Deterministic ResultBundle verdict: {status.value}",
+        criterion_results=criterion_results,
+        refinement_suggestions=[],
+        measured_metrics=measured,
+        artifact_paths=artifact_paths,
+        model_used="result-bundle-deterministic",
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def _ingest_direct_result_bundle(
+    db: Session,
+    *,
+    experiment_id: str,
+    goal_id: str,
+    approach_ids: list[str],
+    run_id: str,
+    measured: dict[str, float],
+    raw_metrics: dict[str, float],
+    artifact_paths: dict[str, str],
+    recommendation: dict,
+    design: dict,
+) -> tuple[ResultBundleIngestResponse, ValidationResultResponse, BundleValidationStatusEnum]:
+    row = db.get(ExperimentCard, experiment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
+
+    batch = execution_svc.create_execution_batch(
+        db,
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        workspace_id=goal_id,
+        submission_mode="direct_repro_run",
+        submitter=governance_svc.HANDOFF_AGENT_NAME,
+        approval_policy={"approval_mode": "direct_repro_run"},
+        control_plane_uri=row.experiment_control_plane,
+        commit=False,
+    )
+    row.execution_batch_id = batch.id
+    row.run_request_ids = json.dumps([run_id])
+    row.handoff_status = "submitted"
+    db.flush()
+
+    execution_svc.register_run_request(
+        db,
+        run_request_id=run_id,
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        workspace_id=goal_id,
+        execution_batch_id=batch.id,
+        correlation_id=batch.correlation_id,
+        hypothesis_id=row.hypothesis_id,
+        approach_ids=approach_ids,
+        parameters={},
+        control_plane_uri=row.experiment_control_plane,
+        status=RunRequestStatusEnum.running,
+        commit=False,
+    )
+
+    pass_conditions = _pass_conditions(json.loads(row.validation or "{}").get("pass_conditions", {}))
+    unmeasurable = recommendation.get("unmeasurable_pass_conditions", [])
+    status, criteria = _bundle_status(measured, pass_conditions, unmeasurable)
+    response = result_bundle_svc.ingest_result_bundle(
+        db,
+        ResultBundleIngest(
+            result_bundle_id=f"rb-{run_id}",
+            run_request_id=run_id,
+            run_id=run_id,
+            attempt_id="1",
+            experiment_id=experiment_id,
+            approach_ids=approach_ids,
+            execution_batch_id=batch.id,
+            validation_status=status,
+            metrics=measured,
+            artifacts=artifact_paths,
+            provenance={
+                "source": "direct_repro_runner",
+                "raw_metrics": raw_metrics,
+                "recommendation": recommendation,
+                "design_run": design,
+                "unmeasurable_conditions": unmeasurable,
+            },
+            deviations=[
+                json.dumps(item, sort_keys=True) if not isinstance(item, str) else item
+                for item in design.get("dropped", [])
+            ],
+            warnings=[] if status == BundleValidationStatusEnum.passed else [f"deterministic_status={status.value}"],
+            is_partial=status == BundleValidationStatusEnum.partial,
+        ),
+    )
+    validation = _validation_response_from_bundle(
+        experiment_id=experiment_id,
+        goal_id=goal_id,
+        measured=measured,
+        artifact_paths=artifact_paths,
+        status=status,
+        criterion_results=criteria,
+    )
+    return response, validation, status
+
+
 def _record_run_provenance(
     db: Session,
     experiment_id: str,
@@ -538,35 +746,45 @@ def run_experiment(
             ),
         )
 
-    # The run succeeded and produced metrics. Transition to 'running' and hand off to
-    # validation. If validation raises (infra error, not a refuted verdict), roll the
-    # card back to 'approved' so it stays re-runnable — the state machine has no
-    # running→approved edge, so this compensating write is the runner's responsibility.
+    artifact_paths = {"metrics_json": f"runs/{run_id}/metrics.json"}
+
+    # The run succeeded and produced metrics. Route it through ResultBundle
+    # ingestion so execution evidence, scoring, device confidence, and roadmap
+    # refresh use the same path as external handoff completions.
     experiment_svc.transition(db, experiment_id, ExperimentStatusEnum.running)
-    diverge_note = (
-        f" recommended method diverges from card family {card_family!r} "
-        f"(ran {cand_families})."
-        if diverged
-        else ""
-    )
-    submission = ExperimentResultSubmission(
-        measured_metrics=measured,
-        artifact_paths={"metrics_json": f"runs/{run_id}/metrics.json"},
-        notes=(
-            f"Auto-run via repro recommend-method ({experiment_id_repro}, run {run_id}); "
-            f"honored={len(honored)} dropped={len(dropped)}.{diverge_note}"
-        ),
-        unmeasurable_conditions=unmeasurable,
-    )
     try:
-        result = validation_svc.submit_results(db, experiment_id, goal_id, submission)
+        bundle, validation, bundle_status = _ingest_direct_result_bundle(
+            db,
+            experiment_id=experiment_id,
+            goal_id=goal_id,
+            approach_ids=card.approach_ids,
+            run_id=run_id,
+            measured=measured,
+            raw_metrics={
+                k: float(v)
+                for k, v in raw_metrics.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            },
+            artifact_paths=artifact_paths,
+            recommendation=recommendation,
+            design=design,
+        )
     except Exception:
+        db.rollback()
         card_row = db.get(ExperimentCard, experiment_id)
         if card_row is not None and card_row.status == ExperimentStatusEnum.running.value:
             card_row.status = ExperimentStatusEnum.approved.value
             card_row.updated_at = datetime.now(timezone.utc)
             db.commit()
         raise
+    final_status = {
+        BundleValidationStatusEnum.passed: ExperimentStatusEnum.completed,
+        BundleValidationStatusEnum.failed: ExperimentStatusEnum.failed,
+        BundleValidationStatusEnum.blocked: ExperimentStatusEnum.inconclusive,
+        BundleValidationStatusEnum.partial: ExperimentStatusEnum.inconclusive,
+        BundleValidationStatusEnum.inconclusive: ExperimentStatusEnum.inconclusive,
+    }[bundle_status]
+    experiment_svc.transition(db, experiment_id, final_status)
 
     return RunnerResult(
         experiment_id=experiment_id,
@@ -576,7 +794,8 @@ def run_experiment(
         repro_status=_TERMINAL_OK,
         raw_metrics={k: float(v) for k, v in raw_metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
         measured_metrics=measured,
-        validation=result,
+        validation=validation,
+        result_bundle=bundle,
         recommendation=recommendation,
     )
 
