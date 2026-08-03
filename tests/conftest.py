@@ -1,3 +1,7 @@
+import os
+
+os.environ["CS_HYPOTHESIS_USE_LLM"] = "false"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event

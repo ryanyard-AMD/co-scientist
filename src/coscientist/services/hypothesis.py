@@ -651,18 +651,30 @@ def _build_hypothesis_card(
     fields = dict(det)
 
     if settings.hypothesis_use_llm and settings.anthropic_api_key:
-        out = _run_hypothesis_agent(
-            db, goal, approaches, scores_list, compatibility, hypothesis_type
-        )
-        fields["name"] = out.name.strip() or det["name"]
-        fields["text"] = out.text.strip() or det["text"]
-        fields["rationale"] = out.rationale.strip() or det["rationale"]
-        # Reframed lists override the deterministic union, but backfill from it
-        # when the model returns an empty list (never silently emptied).
-        fields["expected_benefits"] = out.expected_benefits or det["expected_benefits"]
-        fields["assumptions"] = out.assumptions or det["assumptions"]
-        fields["failure_modes"] = out.failure_modes or det["failure_modes"]
-        fields["required_experiments"] = out.required_experiments or det["required_experiments"]
+        try:
+            out = _run_hypothesis_agent(
+                db, goal, approaches, scores_list, compatibility, hypothesis_type
+            )
+        except anthropic.APIError as exc:
+            governance_svc.log_agent_call(
+                db=db,
+                workspace_id=goal.id,
+                service="hypothesis",
+                action="synthesize_hypothesis",
+                model_used=settings.validation_model,
+                response_summary="fell back to deterministic hypothesis synthesis",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            fields["name"] = out.name.strip() or det["name"]
+            fields["text"] = out.text.strip() or det["text"]
+            fields["rationale"] = out.rationale.strip() or det["rationale"]
+            # Reframed lists override the deterministic union, but backfill from it
+            # when the model returns an empty list (never silently emptied).
+            fields["expected_benefits"] = out.expected_benefits or det["expected_benefits"]
+            fields["assumptions"] = out.assumptions or det["assumptions"]
+            fields["failure_modes"] = out.failure_modes or det["failure_modes"]
+            fields["required_experiments"] = out.required_experiments or det["required_experiments"]
 
     return HypothesisCard(
         id=str(uuid.uuid4()),
