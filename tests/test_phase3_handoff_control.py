@@ -91,6 +91,34 @@ def test_retry_after_failure_creates_no_duplicate_run_requests(client, db_sessio
     assert "retry" in types
 
 
+def test_submitter_receives_full_execution_contract(client, db_session, monkeypatch):
+    goal, approach, exp = _approved_experiment(client, db_session)
+    captured = []
+
+    def _capture(payload):
+        captured.append(payload)
+        return submission_svc._default_run_request_submitter(payload)
+
+    monkeypatch.setattr(submission_svc, "run_request_submitter", _capture)
+
+    resp = client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/submit", json={})
+    assert resp.status_code == 201
+    assert captured
+
+    payload = captured[0]
+    assert payload["schema"] == "co_scientist.run_request.v1"
+    assert payload["co_scientist"]["experiment_id"] == exp["id"]
+    assert payload["co_scientist"]["goal_id"] == goal["id"]
+    assert payload["co_scientist"]["approach_ids"] == [approach["id"]]
+    assert payload["experiment"]["objective"] == exp["objective"]
+    assert payload["experiment"]["hypothesis_text"] == exp["hypothesis_text"]
+    assert payload["experiment"]["metrics"] == exp["metrics"]
+    assert payload["experiment"]["pass_conditions"] == []
+    assert payload["run"]["parameters"] == {}
+    assert payload["result_contract"]["required_correlation"]["experiment_id"] == exp["id"]
+    assert payload["result_contract"]["required_correlation"]["approach_ids"] == [approach["id"]]
+
+
 def test_existing_run_for_params_reused(client, db_session):
     goal, approach, exp, sub = _submitted_experiment(client, db_session)
     rr = db_session.query(RunRequestReference).filter(

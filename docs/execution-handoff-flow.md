@@ -34,3 +34,21 @@ submission unless a human explicitly accepts the risk and records the reason.
 The direct `experiment run` path still exists for compatibility and developer
 testing. The intended production path is RunRequest handoff followed by
 ResultBundle ingestion.
+
+## RunRequest Contract
+
+Submission sends each downstream run as `schema: co_scientist.run_request.v1`.
+The payload includes:
+
+- `co_scientist`: experiment, goal, workspace, batch, correlation, hypothesis,
+  and approach IDs;
+- `experiment`: objective, hypothesis, baselines, assumptions, metrics,
+  canonical pass conditions, runtime, and expected artifacts;
+- `run`: per-run sweep parameters, run index, run count, and initial status;
+- `approval_policy` and `resource_policy`;
+- `result_contract`: the ResultBundle endpoint, required correlation fields,
+  expected metrics/artifacts, and pass conditions.
+
+The downstream system should reject the RunRequest up front when it cannot honor
+this contract. Completed runs should report through ResultBundle ingestion using
+the IDs in `result_contract.required_correlation`.

@@ -35,6 +35,7 @@ from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import governance as governance_svc
 from coscientist.services import handoff as handoff_svc
+from coscientist.services import runner as runner_svc
 
 
 def _default_run_request_submitter(payload: dict) -> str:
@@ -96,6 +97,81 @@ def _existing_run_for_params(
     return None
 
 
+def _loads(raw: str | None, default):
+    if not raw:
+        return default
+    return json.loads(raw)
+
+
+def _run_request_payload(
+    *,
+    card: ExperimentCard,
+    batch: ExecutionBatchReference,
+    approval_policy: dict,
+    parameters: dict,
+    run_index: int,
+    run_count: int,
+    run_status: RunRequestStatusEnum,
+) -> dict:
+    """Build the downstream execution contract for one RunRequest.
+
+    The external system should be able to decide whether it can execute the run
+    from this payload alone; IDs are repeated in several blocks so callbacks and
+    ResultBundles can be correlated without reverse lookups.
+    """
+    validation = _loads(card.validation, {})
+    pass_conditions = runner_svc._pass_conditions(validation.get("pass_conditions", {}))
+    approach_ids = _loads(card.approach_ids, [])
+    return {
+        "schema": "co_scientist.run_request.v1",
+        "co_scientist": {
+            "experiment_id": card.id,
+            "goal_id": card.workspace_id,
+            "workspace_id": card.workspace_id,
+            "execution_batch_id": batch.id,
+            "correlation_id": batch.correlation_id,
+            "hypothesis_id": card.hypothesis_id,
+            "approach_ids": approach_ids,
+        },
+        "experiment": {
+            "name": card.name,
+            "objective": card.objective,
+            "hypothesis_text": card.hypothesis_text,
+            "experiment_type": card.experiment_type,
+            "baseline_methods": _loads(card.baseline_methods, []),
+            "fixed_assumptions": _loads(card.fixed_assumptions, {}),
+            "metrics": _loads(card.metrics, []),
+            "validation": validation,
+            "pass_conditions": pass_conditions,
+            "runtime": _loads(card.runtime, {}),
+            "artifacts": _loads(card.artifacts, []),
+        },
+        "run": {
+            "index": run_index,
+            "count": run_count,
+            "parameters": parameters,
+            "initial_status": run_status.value,
+        },
+        "approval_policy": approval_policy,
+        "resource_policy": approval_policy.get("resource_policy", {}),
+        "result_contract": {
+            "result_bundle_endpoint": "/co-scientist/result-bundles",
+            "required_correlation": {
+                "experiment_id": card.id,
+                "goal_id": card.workspace_id,
+                "execution_batch_id": batch.id,
+                "correlation_id": batch.correlation_id,
+                "hypothesis_id": card.hypothesis_id,
+                "approach_ids": approach_ids,
+            },
+            "expected_metrics": _loads(card.metrics, []),
+            "expected_artifacts": _loads(card.artifacts, []),
+            "pass_conditions": pass_conditions,
+        },
+        "control_plane_uri": card.experiment_control_plane,
+    }
+
+
 def submit_experiment(
     db: Session,
     experiment_id: str,
@@ -151,18 +227,21 @@ def submit_experiment(
     submitted: list[SubmittedRunRequest] = []
     run_request_ids: list[str] = []
     try:
-        for item in preview.runs:
+        for index, item in enumerate(preview.runs):
             existing = _existing_run_for_params(db, experiment_id, item.parameters)
             if existing is not None:
                 # Idempotent retry: reuse the RunRequest already handed off.
                 rr_id = existing.run_request_id
             else:
-                payload = {
-                    "experiment_id": experiment_id,
-                    "parameters": item.parameters,
-                    "approval_policy": policy,
-                    "correlation_id": batch.correlation_id,
-                }
+                payload = _run_request_payload(
+                    card=card,
+                    batch=batch,
+                    approval_policy=policy,
+                    parameters=item.parameters,
+                    run_index=index,
+                    run_count=total,
+                    run_status=run_status,
+                )
                 rr_id = run_request_submitter(payload)
                 execution_svc.register_run_request(
                     db,
