@@ -69,7 +69,7 @@ Database-backed taxonomy for personal sound zone domain concepts, replacing hard
 - **Corpus-derived, goal-scoped method taxonomy** (`cs ontology derive <goal_id>`): instead of forcing every goal into the fixed 7 seed method families, Claude induces the method families actually present in that goal's corpus from a broad retrieval sample, and persists them as goal-scoped `OntologyTerm`s (`workspace_id == goal_id`). Terms with `workspace_id = NULL` are the shared global seed. Scout's term loader is goal-aware: per category, goal-scoped terms override the global seed when present (methods use the derived set; metric/hardware/failure_mode stay global). **`cs scout run` requires a derived method taxonomy for the goal and refuses (`422`) if none is persisted** — this replaces the old silent fall-back to the global seed, which could bucket a goal's evidence into the wrong domain (e.g. classifying sound-field-reproduction papers into the PSZ seed families). Use `--dry-run` to review induced families without persisting (note: a dry-run does **not** satisfy scout's precondition), and `cs ontology list -w <goal_id>` to inspect derived terms.
 - **Pinned method families** (`cs goal pin <goal_id> <family>...` or `cs goal create --pin`): induction is a sample-plus-LLM step, so a given `derive` may or may not name a goal's defining technologies as standalone families. A goal can declare *must-have* families (stored as `pinned_method_families`, canonicalized onto the controlled vocabulary — see the next bullet) that induction is instructed to include and that are guaranteed to be persisted — reserved against the `--max-families` budget and never truncated — even if the agent omits them. `cs ontology derive --pin <family>` adds ad-hoc pins on top of the goal's declared set; on a real (non-dry-run) derive these are merged into the goal's `pinned_method_families` and persisted, so a later re-derive still honors them. A `--dry-run` derive uses the ad-hoc pins for the preview but does not mutate the goal.
 - **Corpus-grounded induction** (`CS_TAXONOMY_GROUND_IN_CORPUS`, default on): to reduce the non-determinism of pure LLM induction, the derive step feeds the corpus's real Method entity nodes into the induction prompt. It fetches `GET /entities/papers/{id}` for the sampled papers (bounded to 15 papers / 40 method names) and lists those Title Case Method-node names as grounding hints, asking the agent to align a family's `canonical_name` to a node when they correspond — so the induced taxonomy reconciles with the GraphRAG graph rather than drifting on wording. Hints are advisory: only families actually supported by the chunks are kept, and pinned-family guarantees are unchanged. Whole-corpus embedding topic clusters (`GET /advanced/topics/clusters`) can be added as weak hints via `CS_TAXONOMY_USE_TOPIC_CLUSTERS` (default off — the endpoint recomputes k-means on demand and is slow; the call is bounded by `CS_TAXONOMY_CLUSTER_TIMEOUT` and failures degrade to no hint).
-- **Controlled `method_family` vocabulary (repro-aligned)**: a card's `method_family` must exact-match a repro reproduction's declared family for the runner to route it to a real experiment (step 8), so induced/pinned families are canonicalized onto a controlled vocabulary anchored on repro's declared families (`domain.REPRO_ANCHOR_FAMILIES`). `domain.canonicalize_family()` snake-cases a name then collapses known synonyms/near-duplicates to their anchor via `domain.FAMILY_ALIASES` (e.g. `personal_sound_zone_control` → `sound_zone_control`, `variable_span_tradeoff_filter` → `variable_span_tradeoff`). Induction applies this in two ways: the anchor list is fed into the LLM prompt as a preferred vocabulary, and `_normalize_families` deterministically collapses aliases and **merges** colliding families (unioning keywords/relationships) rather than dropping them. Families with no repro reproduction pass through unchanged (extra, unrunnable — the runner refuses them cleanly). Because re-deriving a taxonomy is lossy (it does not re-classify existing evidence/approach rows), `cs ontology canonicalize <goal_id> [--dry-run]` backfills an existing goal's stored method terms and approach-card `method_family` values onto the current vocabulary in place.
+- **Controlled `method_family` vocabulary (repro-aligned)**: a card's `method_family` must exact-match a repro reproduction's declared family for the runner to route it to a real experiment (step 9), so induced/pinned families are canonicalized onto a controlled vocabulary anchored on repro's declared families (`domain.REPRO_ANCHOR_FAMILIES`). `domain.canonicalize_family()` snake-cases a name then collapses known synonyms/near-duplicates to their anchor via `domain.FAMILY_ALIASES` (e.g. `personal_sound_zone_control` → `sound_zone_control`, `variable_span_tradeoff_filter` → `variable_span_tradeoff`). Induction applies this in two ways: the anchor list is fed into the LLM prompt as a preferred vocabulary, and `_normalize_families` deterministically collapses aliases and **merges** colliding families (unioning keywords/relationships) rather than dropping them. Families with no repro reproduction pass through unchanged (extra, unrunnable — the runner refuses them cleanly). Because re-deriving a taxonomy is lossy (it does not re-classify existing evidence/approach rows), `cs ontology canonicalize <goal_id> [--dry-run]` backfills an existing goal's stored method terms and approach-card `method_family` values onto the current vocabulary in place.
 - **Controlled metric vocabulary (runner-aligned)**: the same drift affects metric names — a goal success criterion `acoustic_contrast` becomes pass condition `acoustic_contrast_min`, but the runner emits the canonical `acoustic_contrast_db` (per `EXPERIMENT_METRIC_MAP`), so the two never reconcile and a measured metric is wrongly reported `unmeasurable`. `domain.canonicalize_metric()` snake-cases a metric name then maps known synonyms onto their canonical key using a reverse index of `domain.METRIC_NAMES` (e.g. `acoustic_contrast` → `acoustic_contrast_db`; canonical keys are fixed points; metrics absent from the vocabulary pass through). It is applied at experiment generation (`_derive_metrics`/`_derive_validation`, so new cards are born clean and free of the `acoustic_contrast`/`acoustic_contrast_db` self-duplicate) and again at the runner boundary (`_pass_conditions`, so existing stored cards reconcile at run time with no backfill).
 
 ### CS-EPIC-APPROACH: Approach Card Generation and Curation
@@ -164,9 +164,11 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 - `list_pending()` surfaces all `reviewed` experiments, optionally filtered by goal
 - `duplicate_experiment()` creates an editable copy (status=`generated`, name+" (copy)") with no decisions
 
+**Execution preflight** (`POST /experiments/{id}/preflight`): resolves the co-scientist ↔ repro contract without submitting or running anything. It expands the first `co_scientist.run_request.v1` payload and sends it to repro's `POST /api/v1/handoffs/preview`, which selects or recommends a curated reproduction and designs the grounded spec, returning `runnable`, blocking reasons, warnings, honored/dropped variables, the metric contract, and unmeasurable pass-condition metrics. Repro deployments without `/handoffs/preview` fall back to the older `recommend-method` + `metrics-surface` sequence. See [docs/execution-handoff-flow.md](docs/execution-handoff-flow.md).
+
 **RunRequest submission** (approved card → RunRequests, `POST /experiments/{id}/submit`): the co-scientist hands an approved card to the external Experimentation System as one or more RunRequests instead of executing it directly.
 
-- **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter` so a live client can be swapped in.
+- **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter`; the default submitter sends the full `co_scientist.run_request.v1` payload (experiment context, per-run sweep parameters, approval/resource policy, and the ResultBundle result contract) to repro's `POST /api/v1/handoffs/run` when the card carries an `experiment_control_plane` URI, and falls back to a locally generated run id when it does not.
 - **Full correlation on every RunRequest** (CS-EXEC-007): each `RunRequestReference` carries the `correlation_id`, `goal_id`, `experiment_id`, `execution_batch_id`, plus the `hypothesis_id` and `approach_ids` it tests — so events from the Experimentation System reconcile directly to Approach/Hypothesis cards without traversing the Experiment card.
 - **Approval policy on every batch** (CS-APPROVAL-008): `approval_id`, `approver`, `approved_at`, `cost_class` (defaults to the card's estimated cost), `credentialed` flag, `resource_policy` (required capabilities + overrides), and `retry_policy` are stored on the `ExecutionBatchReference`.
 - **Batch approval modes** (CS-APPROVAL-009): `approve_batch` submits all runs as `pending`; `approve_each_run` submits every run as `blocked` awaiting per-run approval; `approval_required_above_threshold` blocks runs only when the expanded count exceeds `approval_threshold`. The resulting card `execution_status` follows the batch rollup (`submitted` vs `blocked`).
@@ -529,10 +531,56 @@ cs approval history <EXPERIMENT_ID> <GOAL_ID>   # chronological decision log
 cs approval duplicate <EXPERIMENT_ID> <GOAL_ID> # editable copy at 'generated' status
 ```
 
-### 8. Run on the real simulator (automated)
+### 8. Preflight and submit to the Experimentation System (production path)
+
+The production execution path never runs the experiment inside co-scientist: it resolves the
+contract with the Experimentation System (repro), hands the card over as RunRequests, and waits for
+ResultBundles. Full contract in [docs/execution-handoff-flow.md](docs/execution-handoff-flow.md).
+
+**Preflight** resolves the execution plan without submitting or running anything. It is API-only —
+there is no `cs` command for it:
+
+```bash
+curl -X POST http://localhost:8001/co-scientist/goals/<GOAL_ID>/experiments/<EXPERIMENT_ID>/preflight
+```
+
+Preflight builds the first `co_scientist.run_request.v1` payload and posts it to repro's
+`POST /api/v1/handoffs/preview`, which normalises it into an `ExperimentProposal`, selects or
+recommends a curated reproduction, designs the grounded spec, and returns honored/dropped variables
+plus warnings — without queueing a run. Repro deployments that do not expose `/handoffs/preview`
+fall back to the older `recommend-method` + `metrics-surface` sequence. The response reports
+`runnable`, blocking reasons and warnings, the selected reproduction and workspace, the card and
+candidate method families, canonical pass conditions, unmeasurable pass-condition metrics, the
+metric contract (repro's surface plus the local native→canonical fallback map), and the design-run
+payload that would be sent downstream. A `runnable: false` is usually an honest capability gap — no
+curated reproduction covers the card's method family — rather than a bug, so read
+`blocking_reasons` before changing anything.
+
+**Submit** hands an approved card over as one RunRequest per swept run:
+
+```bash
+cs approval submit <EXPERIMENT_ID> <GOAL_ID>
+```
+
+When the card carries an `experiment_control_plane` URI, each RunRequest is POSTed to repro's
+`POST /api/v1/handoffs/run` and the returned control-plane run id becomes the
+`RunRequestReference`; with no URI configured the submitter keeps the local generated-id stand-in
+used for offline development and tests. Submission does *not* currently gate on a failed preflight,
+so run preflight before approving. Failed handoffs are preserved and retryable into the same batch
+(`cs approval retry`) without duplicating runs. Completed runs report back through ResultBundle
+ingestion (`POST /co-scientist/result-bundles`), which drives validation aggregation, approach
+scores, device evidence, and roadmap refreshes.
+
+### 9. Run on the real simulator directly (compatibility path)
 
 An approved experiment can be executed against the [repro](../experiment) runner, which drives
-real PSZ acoustic simulators. This replaces hand-typing metrics. Rather than dispatching from a
+real PSZ acoustic simulators. This is the direct compatibility adapter kept for developer testing,
+not the production handoff of step 8 — it still executes in-process and polls repro itself. On
+completion it creates an `ExecutionBatchReference` and a `RunRequestReference`, derives a bundle
+status from the measured metrics and pass conditions, and ingests a `ResultBundle`, so score,
+approach-evidence, device-evidence, and roadmap updates stay on the canonical ingestion path.
+
+Rather than dispatching from a
 local `method_family → simulator` table, co-scientist **asks repro to recommend the reproduction**
 (handoff P4): it turns the card into a repro `ExperimentProposal` and calls
 **recommend-method** (`POST /workspaces/{id}/recommend-method`) with the card's hypothesis. Repro
@@ -607,12 +655,12 @@ The comparison summary (child ids, per-approach measured metrics, per-metric win
 approach) rides the parent's `batch_expansion.comparison` JSON — no new table. A direct
 single-method run of a multi-approach card is still refused as a child-only guard; a hand-built
 *combination* card (a fused method authored via the manual `create` API) would be wrongly
-decomposed, so route those to the manual path (step 9) with `cs validation submit`.
+decomposed, so route those to the manual path (step 10) with `cs validation submit`.
 
-### 9. Submit results manually and validate
+### 10. Submit results manually and validate
 
 Once an experiment is `running`, submit measured metrics to trigger automated validation. (When
-using the automated runner in step 8 this happens for you.)
+using the automated runner in step 9 this happens for you.)
 
 ```bash
 cs validation submit <EXPERIMENT_ID> <GOAL_ID> \
@@ -632,7 +680,7 @@ cs approach list <GOAL_ID> --status validated  # if all criteria passed
 cs approach list <GOAL_ID> --status refuted    # if any criterion failed
 ```
 
-### 10. Synthesise device concepts
+### 11. Synthesise device concepts
 
 With validated approaches in hand, generate candidate device architectures.
 
@@ -656,7 +704,7 @@ cs device export <DEVICE_ID> <GOAL_ID> --format json
 cs device review <DEVICE_ID> <GOAL_ID>              # mark as reviewed
 ```
 
-### 11. Generate and manage the research roadmap
+### 12. Generate and manage the research roadmap
 
 With approaches, experiments, and device concepts in place, generate a ranked view of what to do next.
 
@@ -672,7 +720,7 @@ cs roadmap complete <ITEM_ID> <GOAL_ID>              # manually mark an item as 
 
 After completing or failing an experiment, linked roadmap items retire automatically — no manual step needed.
 
-### 12. Inspect agent logs and restrict a goal
+### 13. Inspect agent logs and restrict a goal
 
 Every agent-driven Claude call (validation, device, roadmap) is logged for audit.
 
@@ -919,6 +967,7 @@ All endpoints are prefixed with `/co-scientist`.
 | PATCH | `/goals/{id}/experiments/{eid}` | Update experiment card fields |
 | POST | `/goals/{id}/experiments/{eid}/transition` | Transition experiment status |
 | POST | `/goals/{id}/experiments/{eid}/score` | Score experiment against 10-dimension rubric |
+| POST | `/goals/{id}/experiments/{eid}/preflight` | Resolve the repro execution plan without submitting or running (API only) |
 | GET | `/goals/{id}/experiments/{eid}/export` | Export experiment spec as YAML or Python config |
 | DELETE | `/goals/{id}/experiments/{eid}` | Delete a generated experiment |
 
