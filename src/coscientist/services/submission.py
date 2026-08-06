@@ -34,6 +34,7 @@ from coscientist.schemas.execution import RunRequestStatusEnum
 from coscientist.schemas.experiment import ExperimentStatusEnum
 from coscientist.schemas.governance import ExecutionAuditActionEnum
 from coscientist.schemas.handoff import HandoffRequestStatusEnum, HandoffRequestTypeEnum
+from coscientist.services import approach as approach_svc
 from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import governance as governance_svc
@@ -120,6 +121,20 @@ def _loads(raw: str | None, default):
     return json.loads(raw)
 
 
+def _method_family(db: Session, approach_ids: list[str]) -> str | None:
+    """The card's method family, sent to bias the execution system's choice of
+    reproduction. Preflight sends it; without it submit can select a different
+    reproduction than the one preflight cleared. Single-approach only, matching
+    ``runner._primary_approach``.
+    """
+    if len(approach_ids) != 1:
+        return None
+    try:
+        return approach_svc.get(db, approach_ids[0]).method_family
+    except HTTPException:
+        return None
+
+
 def _run_request_payload(
     *,
     card: ExperimentCard,
@@ -129,6 +144,7 @@ def _run_request_payload(
     run_index: int,
     run_count: int,
     run_status: RunRequestStatusEnum,
+    method_family: str | None = None,
 ) -> dict:
     """Build the downstream execution contract for one RunRequest.
 
@@ -139,6 +155,21 @@ def _run_request_payload(
     validation = _loads(card.validation, {})
     pass_conditions = runner_svc._pass_conditions(validation.get("pass_conditions", {}))
     approach_ids = _loads(card.approach_ids, [])
+    experiment = {
+        "name": card.name,
+        "objective": card.objective,
+        "hypothesis_text": card.hypothesis_text,
+        "experiment_type": card.experiment_type,
+        "baseline_methods": _loads(card.baseline_methods, []),
+        "fixed_assumptions": _loads(card.fixed_assumptions, {}),
+        "metrics": _loads(card.metrics, []),
+        "validation": validation,
+        "pass_conditions": pass_conditions,
+        "runtime": _loads(card.runtime, {}),
+        "artifacts": _loads(card.artifacts, []),
+    }
+    if method_family:
+        experiment["method_family"] = method_family
     return {
         "schema": "co_scientist.run_request.v1",
         "co_scientist": {
@@ -150,19 +181,7 @@ def _run_request_payload(
             "hypothesis_id": card.hypothesis_id,
             "approach_ids": approach_ids,
         },
-        "experiment": {
-            "name": card.name,
-            "objective": card.objective,
-            "hypothesis_text": card.hypothesis_text,
-            "experiment_type": card.experiment_type,
-            "baseline_methods": _loads(card.baseline_methods, []),
-            "fixed_assumptions": _loads(card.fixed_assumptions, {}),
-            "metrics": _loads(card.metrics, []),
-            "validation": validation,
-            "pass_conditions": pass_conditions,
-            "runtime": _loads(card.runtime, {}),
-            "artifacts": _loads(card.artifacts, []),
-        },
+        "experiment": experiment,
         "run": {
             "index": run_index,
             "count": run_count,
@@ -240,6 +259,7 @@ def submit_experiment(
         db.flush()
 
     run_status = _run_status_for_mode(body.approval_mode, total, body.approval_threshold)
+    method_family = _method_family(db, card_approach_ids)
 
     submitted: list[SubmittedRunRequest] = []
     run_request_ids: list[str] = []
@@ -258,6 +278,7 @@ def submit_experiment(
                     run_index=index,
                     run_count=total,
                     run_status=run_status,
+                    method_family=method_family,
                 )
                 rr_id = run_request_submitter(payload)
                 execution_svc.register_run_request(

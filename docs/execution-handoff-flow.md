@@ -55,7 +55,8 @@ The payload includes:
 - `co_scientist`: experiment, goal, workspace, batch, correlation, hypothesis,
   and approach IDs;
 - `experiment`: objective, hypothesis, baselines, assumptions, metrics,
-  canonical pass conditions, runtime, and expected artifacts;
+  canonical pass conditions, runtime, expected artifacts, and the card's
+  `method_family`;
 - `run`: per-run sweep parameters, run index, run count, and initial status;
 - `approval_policy` and `resource_policy`;
 - `result_contract`: the ResultBundle endpoint, required correlation fields,
@@ -65,11 +66,36 @@ The downstream system should reject the RunRequest up front when it cannot honor
 this contract. Completed runs should report through ResultBundle ingestion using
 the IDs in `result_contract.required_correlation`.
 
+`experiment.method_family` biases repro's choice of reproduction. Preflight and
+submission must send the same value: without it repro re-ranks by objective and
+hypothesis text alone and can select a different reproduction than the one
+preflight cleared, so a clean preflight is followed by a `409` on submit. Both
+payload builders resolve it from the card's single approach; combination cards
+(more than one approach) send no hint, matching `runner._primary_approach`.
+
 When `experiment_control_plane` is set on the card, the default submitter sends
 this payload to repro's `POST /api/v1/handoffs/run` endpoint and stores the
 returned control-plane `run_id` as the co-scientist `RunRequestReference`. When no
 control-plane URI is configured, the submitter preserves the local generated-ID
 stand-in used for offline development and tests.
+
+## Return Leg (not yet connected)
+
+Step 5 above does not happen on its own today. Repro accepts
+`result_contract.result_bundle_endpoint` and stores it as callback metadata on
+the RunRequest, but never dispatches it, so `POST /co-scientist/result-bundles`
+is never called and a submitted `RunRequestReference` stays `pending` regardless
+of what the run does downstream. The endpoint co-scientist advertises is also a
+relative path, and `run_request.v1` carries no base URL for repro to resolve it
+against.
+
+Until that is settled — see P7 in repro's
+`docs/coscientist-experiment-handoff-requests.md` — a submitted run's result has
+to be fetched deliberately, either from repro's poll surface
+(`GET /api/v1/experiment-cards/runs/{run_id}/completion`) or by posting the
+bundle to the ingestion endpoint by hand. Queued runs also require a repro
+worker (`exp-runner worker`) to be running; nothing in repro's API server drains
+the control-plane queue.
 
 ## Direct Runner Compatibility
 

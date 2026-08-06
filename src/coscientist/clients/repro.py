@@ -126,7 +126,14 @@ class ReproClient:
         if top_k is not None:
             params["top_k"] = top_k
         resp = self._client.post("/api/v1/handoffs/run", params=params, json=payload)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # This message is what gets persisted as the handoff request's error,
+            # and repro reports *why* it refused only in the body.
+            raise httpx.HTTPStatusError(
+                f"{exc} — repro said: {resp.text[:500]}", request=exc.request, response=resp
+            ) from exc
         return resp.json()
 
     def simulate_device(self, geometry: dict) -> dict:
