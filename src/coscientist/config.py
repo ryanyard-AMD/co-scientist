@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./coscientist.db"
     api_prefix: str = "/co-scientist"
+    public_base_url: str | None = None
     debug: bool = False
     port: int = 8001
     retrieval_url: str = "http://localhost:8000"

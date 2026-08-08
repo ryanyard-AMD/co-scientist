@@ -164,11 +164,11 @@ Immutable audit trail for experiment approval decisions, with gated status trans
 - `list_pending()` surfaces all `reviewed` experiments, optionally filtered by goal
 - `duplicate_experiment()` creates an editable copy (status=`generated`, name+" (copy)") with no decisions
 
-**Execution preflight** (`POST /experiments/{id}/preflight`): resolves the co-scientist ↔ repro contract without submitting or running anything. It expands the first `co_scientist.run_request.v1` payload and sends it to repro's `POST /api/v1/handoffs/preview`, which selects or recommends a curated reproduction and designs the grounded spec, returning `runnable`, blocking reasons, warnings, honored/dropped variables, the metric contract, and unmeasurable pass-condition metrics. Repro deployments without `/handoffs/preview` fall back to the older `recommend-method` + `metrics-surface` sequence. See [docs/execution-handoff-flow.md](docs/execution-handoff-flow.md).
+**Execution preflight** (`POST /experiments/{id}/preflight`): resolves the co-scientist ↔ repro contract without submitting or running anything. It expands the first `co_scientist.run_request.v1` payload and sends it to repro's `POST /api/v1/handoffs/preview`, using the card's `experiment_control_plane` URI when configured and `CS_REPRO_URL` otherwise. Repro selects or recommends a curated reproduction and designs the grounded spec, returning `runnable`, blocking reasons, warnings, honored/dropped variables, the metric contract, and unmeasurable pass-condition metrics. Repro deployments without `/handoffs/preview` fall back to the older `recommend-method` + `metrics-surface` sequence. See [docs/execution-handoff-flow.md](docs/execution-handoff-flow.md).
 
 **RunRequest submission** (approved card → RunRequests, `POST /experiments/{id}/submit`): the co-scientist hands an approved card to the external Experimentation System as one or more RunRequests instead of executing it directly.
 
-- **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter`; the default submitter sends the full `co_scientist.run_request.v1` payload (experiment context, the card's `method_family`, per-run sweep parameters, approval/resource policy, and the ResultBundle result contract) to repro's `POST /api/v1/handoffs/run` when the card carries an `experiment_control_plane` URI, and falls back to a locally generated run id when it does not. Submission sends the same `method_family` hint preflight does — repro selects the reproduction from it, so omitting it makes submit refuse (409) a card that preflight cleared.
+- **Sweep expansion**: uses the RunRequest preview to expand the card into per-run parameter sets, creating one `RunRequestReference` per run under a single `ExecutionBatchReference` (CS-EXEC-001/002). The external RunRequest API call is abstracted behind `submission.run_request_submitter`; the default submitter sends the full `co_scientist.run_request.v1` payload (experiment context, the card's `method_family`, per-run sweep parameters, approval/resource policy, and the absolute ResultBundle callback URL from `CS_PUBLIC_BASE_URL` + `CS_API_PREFIX`) to repro's `POST /api/v1/handoffs/run` when the card carries an `experiment_control_plane` URI, and falls back to a locally generated run id when it does not. Submission sends the same `method_family` hint preflight does — repro selects the reproduction from it, so omitting it makes submit refuse (409) a card that preflight cleared.
 - **Full correlation on every RunRequest** (CS-EXEC-007): each `RunRequestReference` carries the `correlation_id`, `goal_id`, `experiment_id`, `execution_batch_id`, plus the `hypothesis_id` and `approach_ids` it tests — so events from the Experimentation System reconcile directly to Approach/Hypothesis cards without traversing the Experiment card.
 - **Approval policy on every batch** (CS-APPROVAL-008): `approval_id`, `approver`, `approved_at`, `cost_class` (defaults to the card's estimated cost), `credentialed` flag, `resource_policy` (required capabilities + overrides), and `retry_policy` are stored on the `ExecutionBatchReference`.
 - **Batch approval modes** (CS-APPROVAL-009): `approve_batch` submits all runs as `pending`; `approve_each_run` submits every run as `blocked` awaiting per-run approval; `approval_required_above_threshold` blocks runs only when the expanded count exceeds `approval_threshold`. The resulting card `execution_status` follows the batch rollup (`submitted` vs `blocked`).
@@ -544,8 +544,9 @@ there is no `cs` command for it:
 curl -X POST http://localhost:8001/co-scientist/goals/<GOAL_ID>/experiments/<EXPERIMENT_ID>/preflight
 ```
 
-Preflight builds the first `co_scientist.run_request.v1` payload and posts it to repro's
-`POST /api/v1/handoffs/preview`, which normalises it into an `ExperimentProposal`, selects or
+Preflight builds the first `co_scientist.run_request.v1` payload and posts it to the card's
+`experiment_control_plane` URI, or `CS_REPRO_URL` when the card has none. Repro's
+`POST /api/v1/handoffs/preview` normalises it into an `ExperimentProposal`, selects or
 recommends a curated reproduction, designs the grounded spec, and returns honored/dropped variables
 plus warnings — without queueing a run. Repro deployments that do not expose `/handoffs/preview`
 fall back to the older `recommend-method` + `metrics-surface` sequence. The response reports
@@ -568,7 +569,8 @@ When the card carries an `experiment_control_plane` URI, each RunRequest is POST
 used for offline development and tests. Submission does *not* currently gate on a failed preflight,
 so run preflight before approving. Failed handoffs are preserved and retryable into the same batch
 (`cs approval retry`) without duplicating runs. Completed runs report back through ResultBundle
-ingestion (`POST /co-scientist/result-bundles`), which drives validation aggregation, approach
+ingestion (`POST <CS_PUBLIC_BASE_URL><CS_API_PREFIX>/result-bundles`, default
+`http://localhost:8001/co-scientist/result-bundles`), which drives validation aggregation, approach
 scores, device evidence, and roadmap refreshes.
 
 ### 9. Run on the real simulator directly (compatibility path)

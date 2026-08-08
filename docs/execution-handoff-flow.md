@@ -62,6 +62,11 @@ The payload includes:
 - `result_contract`: the ResultBundle endpoint, required correlation fields,
   expected metrics/artifacts, and pass conditions.
 
+`result_contract.result_bundle_endpoint` is an absolute URL derived from
+`CS_PUBLIC_BASE_URL` plus `CS_API_PREFIX` (default
+`http://localhost:8001/co-scientist/result-bundles`). Configure
+`CS_PUBLIC_BASE_URL` to the address the Experimentation System can reach.
+
 The downstream system should reject the RunRequest up front when it cannot honor
 this contract. Completed runs should report through ResultBundle ingestion using
 the IDs in `result_contract.required_correlation`.
@@ -73,21 +78,20 @@ preflight cleared, so a clean preflight is followed by a `409` on submit. Both
 payload builders resolve it from the card's single approach; combination cards
 (more than one approach) send no hint, matching `runner._primary_approach`.
 
-When `experiment_control_plane` is set on the card, the default submitter sends
-this payload to repro's `POST /api/v1/handoffs/run` endpoint and stores the
-returned control-plane `run_id` as the co-scientist `RunRequestReference`. When no
-control-plane URI is configured, the submitter preserves the local generated-ID
-stand-in used for offline development and tests.
+When `experiment_control_plane` is set on the card, preflight and submission both
+call that same repro control-plane URI. The default submitter sends this payload
+to repro's `POST /api/v1/handoffs/run` endpoint and stores the returned
+control-plane `run_id` as the co-scientist `RunRequestReference`. When no
+control-plane URI is configured, preflight uses `CS_REPRO_URL` and submission
+preserves the local generated-ID stand-in used for offline development and tests.
 
 ## Return Leg (not yet connected)
 
-Step 5 above does not happen on its own today. Repro accepts
-`result_contract.result_bundle_endpoint` and stores it as callback metadata on
-the RunRequest, but never dispatches it, so `POST /co-scientist/result-bundles`
-is never called and a submitted `RunRequestReference` stays `pending` regardless
-of what the run does downstream. The endpoint co-scientist advertises is also a
-relative path, and `run_request.v1` carries no base URL for repro to resolve it
-against.
+Step 5 depends on the runner dispatching the callback. Co-scientist now sends an
+absolute `result_contract.result_bundle_endpoint`, but the runner still has to
+POST a ResultBundle there (or expose a completion surface that an operator polls).
+If callbacks are not enabled downstream, a submitted `RunRequestReference` stays
+`pending` regardless of what the run does in repro.
 
 Until that is settled — see P7 in repro's
 `docs/coscientist-experiment-handoff-requests.md` — a submitted run's result has

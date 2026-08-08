@@ -369,6 +369,43 @@ def test_preflight_uses_repro_handoff_preview(db_session, monkeypatch):
     assert fake.payload["experiment"]["method_family"] == "acoustic_contrast_control"
     assert fake.payload["co_scientist"]["experiment_id"] == exp.id
     assert fake.payload["result_contract"]["required_correlation"]["approach_ids"] == [ac.id]
+    assert (
+        fake.payload["result_contract"]["result_bundle_endpoint"]
+        == "http://localhost:8001/co-scientist/result-bundles"
+    )
+
+
+def test_preflight_uses_card_control_plane_for_preview(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+    exp.experiment_control_plane = "http://configured-runner"
+    db_session.commit()
+    report = {
+        "schema": "co_scientist.run_request.v1",
+        "runnable": True,
+        "blocking_reasons": [],
+        "warnings": [],
+        "proposal": {"objective": "Measure contrast"},
+        "selected_reproduction_id": _VAST_EXPERIMENT_ID,
+        "selected_paper_id": _VAST_PAPER_ID,
+        "selected_method_families": list(_VAST_FAMILIES),
+        "method_family_supported": True,
+    }
+    fake = _PreviewReproClient(report)
+    bases = []
+
+    def _client(*, base_url=None):
+        bases.append(base_url)
+        return fake
+
+    monkeypatch.setattr(svc, "ReproClient", _client)
+
+    result = svc.preflight_experiment(db_session, exp.id, gid)
+
+    assert result.runnable is True
+    assert bases == ["http://configured-runner"]
+    assert fake.payload["control_plane_uri"] == "http://configured-runner"
 
 
 def test_preflight_reports_no_runnable_reproduction(db_session, monkeypatch):

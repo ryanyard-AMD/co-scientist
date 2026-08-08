@@ -53,6 +53,7 @@ from coscientist.services import approach as approach_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import goal as goal_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import handoff_contract
 from coscientist.services import roadmap as roadmap_svc
 from coscientist.services import result_bundle as result_bundle_svc
 
@@ -268,6 +269,12 @@ def _build_proposal(card, method_family: str | None) -> dict:
     return proposal
 
 
+def _repro_client(control_plane_uri: str | None = None) -> ReproClient:
+    if control_plane_uri:
+        return ReproClient(base_url=control_plane_uri)
+    return ReproClient()
+
+
 def _handoff_preview_payload(card, preview, method_family: str | None) -> dict:
     """Build co_scientist.run_request.v1 for repro's preview endpoint."""
     pass_conditions = _pass_conditions(card.validation.pass_conditions)
@@ -315,7 +322,7 @@ def _handoff_preview_payload(card, preview, method_family: str | None) -> dict:
             "runner_pool_preference": card.execution_handoff.runner_pool_preference,
         },
         "result_contract": {
-            "result_bundle_endpoint": "/co-scientist/result-bundles",
+            "result_bundle_endpoint": handoff_contract.result_bundle_endpoint(),
             "required_correlation": {
                 "experiment_id": card.id,
                 "goal_id": card.workspace_id,
@@ -377,6 +384,7 @@ def preflight_experiment(
         paper_ids = []
 
     pass_conditions = _pass_conditions(card.validation.pass_conditions)
+    control_plane_uri = card.execution_handoff.experiment_control_plane
     if blocking:
         return ExecutionPreflightResponse(
             experiment_id=experiment_id,
@@ -391,7 +399,7 @@ def preflight_experiment(
         )
 
     try:
-        with ReproClient() as client:
+        with _repro_client(control_plane_uri) as client:
             preview_report = client.preview_handoff(
                 _handoff_preview_payload(card, preview, method_family),
                 top_k=settings.runner_recommend_top_k,
@@ -462,7 +470,7 @@ def preflight_experiment(
         pass
 
     try:
-        with ReproClient() as client:
+        with _repro_client(control_plane_uri) as client:
             workspaces = _list_workspaces(client)
             home_ws = _home_workspace(workspaces, paper_ids)
             rec = client.recommend_method(

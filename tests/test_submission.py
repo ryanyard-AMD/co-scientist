@@ -149,3 +149,7 @@ def test_submit_uses_live_repro_when_card_has_control_plane(client, db_session, 
     assert payload["schema"] == "co_scientist.run_request.v1"
     assert payload["control_plane_uri"] == "http://repro"
     assert payload["co_scientist"]["experiment_id"] == exp["id"]
+    assert (
+        payload["result_contract"]["result_bundle_endpoint"]
+        == "http://localhost:8001/co-scientist/result-bundles"
+    )

@@ -38,6 +38,7 @@ from coscientist.services import approach as approach_svc
 from coscientist.services import execution as execution_svc
 from coscientist.services import experiment as experiment_svc
 from coscientist.services import governance as governance_svc
+from coscientist.services import handoff_contract
 from coscientist.services import handoff as handoff_svc
 from coscientist.services import runner as runner_svc
 
@@ -191,7 +192,7 @@ def _run_request_payload(
         "approval_policy": approval_policy,
         "resource_policy": approval_policy.get("resource_policy", {}),
         "result_contract": {
-            "result_bundle_endpoint": "/co-scientist/result-bundles",
+            "result_bundle_endpoint": handoff_contract.result_bundle_endpoint(),
             "required_correlation": {
                 "experiment_id": card.id,
                 "goal_id": card.workspace_id,
