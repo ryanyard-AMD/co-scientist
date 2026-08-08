@@ -79,6 +79,17 @@ EXPERIMENT_METRIC_MAP: dict[str, dict[str, str]] = {
         "ac_pm_true_dB": "acoustic_contrast_db",
         "nsde_pm_true_dB": "bright_zone_error",
     },
+    # Selective fixed-filter ANC reproduction. The gated metrics are aggregate
+    # deltas from the MAML-FxLMS benchmark. The strongest goal-level proxy is
+    # the steady-state residual improvement over frozen SFANC in case 1.
+    "meta-learning-sfanc-maml-fxlms-v1": {
+        "d_resid_ss_maml_vs_sfanc_c1_db_median": "noise_reduction",
+        "d_tconv_maml_vs_fxlms_c1_s_median": "convergence_speedup_s",
+        "d_tconv_maml_vs_fxlms_c1_s_frac_pos": "convergence_speedup_fraction",
+        "d_resid_ss_maml_vs_sfanc_c1_db_frac_pos": "noise_reduction_fraction",
+        "d_tconv_maml_vs_fxlms_c2_s_median": "case2_convergence_speedup_s",
+        "d_tconv_maml_vs_fxlms_c2_s_frac_pos": "case2_convergence_speedup_fraction",
+    },
 }
 
 _TERMINAL_OK = "success"
