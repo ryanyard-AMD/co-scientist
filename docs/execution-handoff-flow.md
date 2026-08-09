@@ -85,21 +85,21 @@ control-plane `run_id` as the co-scientist `RunRequestReference`. When no
 control-plane URI is configured, preflight uses `CS_REPRO_URL` and submission
 preserves the local generated-ID stand-in used for offline development and tests.
 
-## Return Leg (not yet connected)
+## Return Leg
 
-Step 5 depends on the runner dispatching the callback. Co-scientist now sends an
-absolute `result_contract.result_bundle_endpoint`, but the runner still has to
-POST a ResultBundle there (or expose a completion surface that an operator polls).
-If callbacks are not enabled downstream, a submitted `RunRequestReference` stays
-`pending` regardless of what the run does in repro.
+Repro stores `result_contract.result_bundle_endpoint` as the control-plane
+`RunRequest.callback.url`. When a worker ingests a terminal ResultBundle, repro
+POSTs a co-scientist-compatible payload to that callback URL. Co-scientist ingests
+the callback through `POST /co-scientist/result-bundles`, reconciles it to the
+stored `RunRequestReference`, updates run and experiment execution status, and
+recomputes validation aggregation.
 
-Until that is settled — see P7 in repro's
-`docs/coscientist-experiment-handoff-requests.md` — a submitted run's result has
-to be fetched deliberately, either from repro's poll surface
-(`GET /api/v1/experiment-cards/runs/{run_id}/completion`) or by posting the
-bundle to the ingestion endpoint by hand. Queued runs also require a repro
-worker (`exp-runner worker`) to be running; nothing in repro's API server drains
-the control-plane queue.
+Callback delivery is best-effort on the repro side: if the POST fails, repro
+records a `callback_failed` event while preserving the runner result. Operators
+can still recover by fetching repro's completion/failure surface and posting the
+bundle to `/co-scientist/result-bundles` manually. Queued runs require a repro
+worker (`exp-runner worker`) to be running; the repro API server queues work but
+does not execute it itself.
 
 ## Direct Runner Compatibility
 

@@ -121,6 +121,46 @@ def test_ingest_syncs_run_request_status(client, db_session):
     assert run["status"] == "completed"
 
 
+def test_ingest_accepts_repro_callback_payload(client, db_session):
+    goal = client.post(f"{PREFIX}/goals", json=GOAL_PAYLOAD).json()
+    approach = _create_scored_approach(client, db_session, goal["id"])
+    exp = _create_reviewed_experiment(client, goal["id"], approach["id"])
+    client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/approve", json={})
+    sub = client.post(f"{PREFIX}/goals/{goal['id']}/experiments/{exp['id']}/submit", json={}).json()
+    rr_id = sub["runs"][0]["run_request_id"]
+
+    resp = client.post(
+        f"{PREFIX}/result-bundles",
+        json={
+            "result_bundle_id": f"rb-{rr_id}-attempt-1",
+            "run_request_id": rr_id,
+            "run_id": rr_id,
+            "attempt_id": "attempt-1",
+            "experiment_id": exp["id"],
+            "hypothesis_id": exp["hypothesis_id"],
+            "approach_ids": [approach["id"]],
+            "validation_status": "passed",
+            "metrics": {"noise_reduction": 16.2, "convergence_speedup_s": 16.18},
+            "artifacts": {"metrics_0": "file://runs/rr-1/metrics.json"},
+            "manifest_uri": "file://runs/rr-1/artifact_manifest.json",
+            "provenance": {
+                "source": "repro_control_plane",
+                "request_id": "req-1",
+                "runner_id": "worker-1",
+                "status": "completed",
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["bundle"]["run_request_id"] == rr_id
+    assert body["bundle"]["validation_status"] == "passed"
+    assert body["aggregation"]["aggregate_status"] == "passed"
+    run = client.get(f"{PREFIX}/run-requests/{rr_id}").json()
+    assert run["status"] == "completed"
+
+
 def test_ingest_rejects_mismatched_run_request_experiment(client, db_session):
     goal = client.post(f"{PREFIX}/goals", json=GOAL_PAYLOAD).json()
     approach = _create_scored_approach(client, db_session, goal["id"])

@@ -569,9 +569,10 @@ When the card carries an `experiment_control_plane` URI, each RunRequest is POST
 used for offline development and tests. Submission does *not* currently gate on a failed preflight,
 so run preflight before approving. Failed handoffs are preserved and retryable into the same batch
 (`cs approval retry`) without duplicating runs. Completed runs report back through ResultBundle
-ingestion (`POST <CS_PUBLIC_BASE_URL><CS_API_PREFIX>/result-bundles`, default
+callback delivery to `POST <CS_PUBLIC_BASE_URL><CS_API_PREFIX>/result-bundles` (default
 `http://localhost:8001/co-scientist/result-bundles`), which drives validation aggregation, approach
-scores, device evidence, and roadmap refreshes.
+scores, device evidence, and roadmap refreshes. If callback delivery fails downstream, the same
+endpoint remains the manual recovery path for posting the ResultBundle.
 
 ### 9. Run on the real simulator directly (compatibility path)
 
