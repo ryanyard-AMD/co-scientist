@@ -121,6 +121,19 @@ class StatusFreshnessMetrics(BaseModel):
     stale_run_request_ids: list[str]
 
 
+class CallbackHealthMetrics(BaseModel):
+    goal_id: str
+    total_control_plane_run_requests: int
+    terminal_control_plane_run_requests: int
+    callback_result_bundles: int
+    callback_received_run_requests: int
+    missing_callback_results: int
+    callback_ingest_rate: float
+    callback_ingest_target: float
+    callback_ingest_meets_target: bool
+    missing_run_request_ids: list[str]
+
+
 class FailedRunUsefulnessMetrics(BaseModel):
     goal_id: str
     failed_run_count: int
@@ -156,6 +169,7 @@ class EvaluationReport(BaseModel):
     execution_traceability: ExecutionTraceabilityMetrics
     duplicate_ingestion: DuplicateIngestionMetrics
     status_freshness: StatusFreshnessMetrics
+    callback_health: CallbackHealthMetrics
     failed_run_usefulness: FailedRunUsefulnessMetrics
     batch_aggregation_quality: BatchAggregationQualityMetrics
 
@@ -177,6 +191,7 @@ class EvaluationReport(BaseModel):
             self.duplicate_ingestion.duplicate_bundle_count == 0,
             self.duplicate_ingestion.duplicate_score_update_count == 0,
             self.status_freshness.meets_target,
+            self.callback_health.callback_ingest_meets_target,
             self.failed_run_usefulness.meets_target,
         ]
 

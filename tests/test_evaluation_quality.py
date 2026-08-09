@@ -38,6 +38,55 @@ def test_freshness_flags_stale_in_flight(client, db_session):
     assert m.max_staleness_seconds > m.threshold_seconds
 
 
+# --- CS-EVAL-013: callback health ---
+
+
+def test_callback_health_passes_after_repro_callback_bundle(client, db_session):
+    goal, _, exp, sub = _submitted_experiment(client, db_session)
+    run_request_id = sub["runs"][0]["run_request_id"]
+    rr = db_session.query(RunRequestReference).filter(
+        RunRequestReference.run_request_id == run_request_id
+    ).one()
+    rr.control_plane_uri = "http://repro"
+    db_session.flush()
+    _ingest(
+        client,
+        exp["id"],
+        run_request_id,
+        status="passed",
+        provenance={"source": "repro_control_plane", "runner_id": "worker-1"},
+    )
+
+    m = svc.callback_health(db_session, goal["id"])
+
+    assert m.total_control_plane_run_requests == sub["run_request_count"]
+    assert m.terminal_control_plane_run_requests == 1
+    assert m.callback_result_bundles == 1
+    assert m.callback_received_run_requests == 1
+    assert m.missing_callback_results == 0
+    assert m.callback_ingest_rate == 1.0
+    assert m.callback_ingest_meets_target is True
+
+
+def test_callback_health_flags_terminal_run_without_callback(client, db_session):
+    goal, _, _, sub = _submitted_experiment(client, db_session)
+    run_request_id = sub["runs"][0]["run_request_id"]
+    rr = db_session.query(RunRequestReference).filter(
+        RunRequestReference.run_request_id == run_request_id
+    ).one()
+    rr.control_plane_uri = "http://repro"
+    rr.status = "completed"
+    db_session.flush()
+
+    m = svc.callback_health(db_session, goal["id"])
+
+    assert m.terminal_control_plane_run_requests == 1
+    assert m.callback_received_run_requests == 0
+    assert m.missing_callback_results == 1
+    assert run_request_id in m.missing_run_request_ids
+    assert m.callback_ingest_meets_target is False
+
+
 # --- CS-EVAL-011: failed-run usefulness ---
 
 
@@ -150,6 +199,7 @@ def test_report_includes_quality_sections(client, db_session):
     goal, _, _, _ = _submitted_experiment(client, db_session)
     report = svc.get_report(db_session, goal["id"])
     assert report.status_freshness.meets_target is True
+    assert report.callback_health.callback_ingest_meets_target is True
     assert report.failed_run_usefulness.meets_target is True
     assert report.batch_aggregation_quality.total_batches >= 1
 
@@ -160,5 +210,6 @@ def test_evaluation_page_shows_quality_sections(client, db_session):
     assert resp.status_code == 200
     body = resp.text
     assert "Status Freshness" in body
+    assert "Callback Health" in body
     assert "Failed-Run Usefulness" in body
     assert "Batch Aggregation Quality" in body

@@ -5,6 +5,7 @@ from coscientist.database import get_db
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
     BatchAggregationQualityMetrics,
+    CallbackHealthMetrics,
     DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
@@ -63,6 +64,11 @@ def duplicate_ingestion(goal_id: str, db: Session = Depends(get_db)):
 @router.get("/status-freshness", response_model=StatusFreshnessMetrics)
 def status_freshness(goal_id: str, db: Session = Depends(get_db)):
     return svc.status_freshness(db, goal_id)
+
+
+@router.get("/callback-health", response_model=CallbackHealthMetrics)
+def callback_health(goal_id: str, db: Session = Depends(get_db)):
+    return svc.callback_health(db, goal_id)
 
 
 @router.get("/failed-run-usefulness", response_model=FailedRunUsefulnessMetrics)

@@ -133,12 +133,12 @@ def test_dashboard_evaluation_card_shows_gate_summary(client):
     resp = client.get(f"/ui/goals/{goal['id']}")
     assert resp.status_code == 200
     assert "⌀" not in resp.text
-    # a fresh goal has no artifacts; the summary renders as "N/12"
+    # a fresh goal has no artifacts; the summary renders as "N/13"
     import re
 
     m = re.search(r'<div class="stat">(\d+)/(\d+)</div>', resp.text)
     assert m is not None, "evaluation gate summary not rendered"
-    assert int(m.group(2)) == 12
+    assert int(m.group(2)) == 13
 
 
 # --- Approaches (CS-UI-002) ---

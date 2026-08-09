@@ -2583,6 +2583,37 @@ def eval_freshness(goal_id: str = typer.Argument(...)):
         db.close()
 
 
+@eval_app.command("callback-health")
+def eval_callback_health(goal_id: str = typer.Argument(...)):
+    """Callback return-leg health — terminal control-plane runs with ResultBundles (CS-EVAL-013)."""
+    db = _get_session()
+    try:
+        m = evaluation_svc.callback_health(db, goal_id)
+        table = Table(title="Callback Health")
+        table.add_column("Metric")
+        table.add_column("Value", justify="right")
+        table.add_column("Target", justify="right")
+        table.add_column("Gate")
+        table.add_row(
+            "Callback ingest",
+            f"{m.callback_ingest_rate:.0%}",
+            f"≥{m.callback_ingest_target:.0%}",
+            _gate(m.callback_ingest_meets_target),
+        )
+        console.print(table)
+        console.print(
+            f"control_plane={m.total_control_plane_run_requests} "
+            f"terminal={m.terminal_control_plane_run_requests} "
+            f"callback_bundles={m.callback_result_bundles} "
+            f"received={m.callback_received_run_requests} "
+            f"missing={m.missing_callback_results}"
+        )
+        if m.missing_run_request_ids:
+            console.print("missing: " + ", ".join(m.missing_run_request_ids))
+    finally:
+        db.close()
+
+
 @eval_app.command("failed-usefulness")
 def eval_failed_usefulness(goal_id: str = typer.Argument(...)):
     """Failed-run usefulness — failures that still guide next work (CS-EVAL-011)."""

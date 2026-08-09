@@ -100,6 +100,18 @@
   <p class="small muted">total {{ sf.total_run_requests }} · in flight {{ sf.in_flight_run_requests }} · max {{ "n/a" if sf.max_staleness_seconds is none else "%.0fs"|format(sf.max_staleness_seconds) }} · mean {{ "n/a" if sf.mean_staleness_seconds is none else "%.0fs"|format(sf.mean_staleness_seconds) }} · threshold {{ sf.threshold_seconds }}s</p>
 </div>
 
+{% set ch = report.callback_health %}
+<div class="panel">
+  <h3 style="margin-top:0">Callback Health <span class="muted small">CS-EVAL-013 · {{ ch.terminal_control_plane_run_requests }} terminal control-plane runs</span></h3>
+  <table>
+    <thead><tr><th>Metric</th><th>Value</th><th>Target</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td>Callback ingest</td><td>{{ "%.0f%%"|format(ch.callback_ingest_rate * 100) }}</td><td>≥ {{ "%.0f%%"|format(ch.callback_ingest_target * 100) }}</td><td>{{ gate(ch.callback_ingest_meets_target) }}</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">control-plane {{ ch.total_control_plane_run_requests }} · callback bundles {{ ch.callback_result_bundles }} · received {{ ch.callback_received_run_requests }} · missing {{ ch.missing_callback_results }}</p>
+</div>
+
 {% set fu = report.failed_run_usefulness %}
 <div class="panel">
   <h3 style="margin-top:0">Failed-Run Usefulness <span class="muted small">CS-EVAL-011 · {{ fu.failed_run_count }} failed runs</span></h3>

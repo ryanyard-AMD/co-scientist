@@ -20,6 +20,7 @@ from coscientist.models.validation import ResultBundleReference, ValidationAggre
 from coscientist.schemas.evaluation import (
     ApproachUsefulnessMetrics,
     BatchAggregationQualityMetrics,
+    CallbackHealthMetrics,
     DuplicateIngestionMetrics,
     EvaluationReport,
     EvidenceGroundingMetrics,
@@ -44,6 +45,7 @@ ACCEPTANCE_TARGET = 0.70
 VALIDITY_TARGET = 0.85
 HANDOFF_SUCCESS_TARGET = 0.95
 FAILED_RUN_USEFULNESS_TARGET = 0.90
+CALLBACK_INGEST_TARGET = 1.0
 
 # RunRequest statuses that are still in flight (awaiting a status update from the
 # Experimentation System). Anything else is terminal and cannot go stale.
@@ -482,6 +484,72 @@ def status_freshness(db: Session, goal_id: str) -> StatusFreshnessMetrics:
     )
 
 
+def _is_callback_bundle(bundle: ResultBundleReference) -> bool:
+    try:
+        provenance = json.loads(bundle.provenance or "{}")
+    except json.JSONDecodeError:
+        return False
+    return provenance.get("source") == "repro_control_plane"
+
+
+def callback_health(db: Session, goal_id: str) -> CallbackHealthMetrics:
+    """CS-EVAL-013: terminal control-plane runs should return via callback.
+
+    The co-scientist cannot see repro's internal callback_failed event directly,
+    so the local health signal is whether every terminal RunRequest that was sent
+    to a control plane for a current Experiment Card has a ResultBundle whose
+    provenance is the repro control-plane callback path. Archived/superseded
+    experiment cards are historical cleanup records and do not fail the current
+    operational gate.
+    """
+    goal_svc.get(db, goal_id)
+    rows = db.scalars(
+        select(RunRequestReference).where(
+            RunRequestReference.goal_id == goal_id,
+            RunRequestReference.control_plane_uri.is_not(None),
+        )
+    ).all()
+    run_requests = []
+    for rr in rows:
+        card = db.get(ExperimentCard, rr.experiment_id)
+        if card is not None and card.status in {"archived", "superseded"}:
+            continue
+        run_requests.append(rr)
+    run_request_ids = {rr.run_request_id for rr in run_requests}
+    terminal_run_request_ids = {
+        rr.run_request_id
+        for rr in run_requests
+        if rr.status not in _RUN_REQUEST_IN_FLIGHT
+    }
+
+    bundles = []
+    if run_request_ids:
+        bundles = db.scalars(
+            select(ResultBundleReference).where(
+                ResultBundleReference.goal_id == goal_id,
+                ResultBundleReference.run_request_id.in_(run_request_ids),
+            )
+        ).all()
+    callback_bundles = [b for b in bundles if _is_callback_bundle(b)]
+    callback_received_ids = {b.run_request_id for b in callback_bundles}
+    missing_ids = sorted(terminal_run_request_ids - callback_received_ids)
+    terminal_count = len(terminal_run_request_ids)
+    callback_received_count = len(terminal_run_request_ids & callback_received_ids)
+    rate = _rate(callback_received_count, terminal_count)
+    return CallbackHealthMetrics(
+        goal_id=goal_id,
+        total_control_plane_run_requests=len(run_requests),
+        terminal_control_plane_run_requests=terminal_count,
+        callback_result_bundles=len(callback_bundles),
+        callback_received_run_requests=callback_received_count,
+        missing_callback_results=len(missing_ids),
+        callback_ingest_rate=rate,
+        callback_ingest_target=CALLBACK_INGEST_TARGET,
+        callback_ingest_meets_target=_meets_min(rate, CALLBACK_INGEST_TARGET, terminal_count),
+        missing_run_request_ids=missing_ids,
+    )
+
+
 def failed_run_usefulness(db: Session, goal_id: str) -> FailedRunUsefulnessMetrics:
     """CS-EVAL-011: measure whether failed runs remain useful evidence.
 
@@ -583,6 +651,7 @@ def get_report(db: Session, goal_id: str) -> EvaluationReport:
         execution_traceability=execution_traceability(db, goal_id),
         duplicate_ingestion=duplicate_ingestion(db, goal_id),
         status_freshness=status_freshness(db, goal_id),
+        callback_health=callback_health(db, goal_id),
         failed_run_usefulness=failed_run_usefulness(db, goal_id),
         batch_aggregation_quality=batch_aggregation_quality(db, goal_id),
     )

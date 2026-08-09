@@ -236,13 +236,13 @@ def test_unknown_goal_raises_404(db_session):
     assert exc.value.status_code == 404
 
 
-def test_report_gate_summary_counts_twelve_gates(db_session):
+def test_report_gate_summary_counts_thirteen_gates(db_session):
     gid = _make_goal(db_session)
     report = svc.get_report(db_session, gid)
-    assert report.gates_total == 12
-    assert len(report.gate_results) == 12
+    assert report.gates_total == 13
+    assert len(report.gate_results) == 13
     assert report.gates_passing == sum(report.gate_results)
-    assert 0 <= report.gates_passing <= 12
+    assert 0 <= report.gates_passing <= 13
 
 
 # --- CS-EVAL-005 productivity ---

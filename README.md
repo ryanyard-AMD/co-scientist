@@ -354,6 +354,7 @@ A read-only metrics layer that computes the quality targets from PRD §20 over t
   - **Status freshness** (CS-EVAL-010): flags in-flight RunRequests whose mirrored status has not updated within `CS_EVAL_STATUS_FRESHNESS_THRESHOLD_SECONDS`, so stale execution-status displays (polling lag) are detectable
   - **Failed-run usefulness** (CS-EVAL-011): share of failed ResultBundles that remain useful evidence — carrying a failure reason, diagnostic artifacts, and a linked roadmap follow-up (target ≥ 90%)
   - **Batch aggregation quality** (CS-EVAL-012): diagnostic batch-completion, partial-aggregation, and mixed-outcome rates so sweep handling can be tuned
+  - **Callback health** (CS-EVAL-013): terminal control-plane RunRequests for current (non-archived/non-superseded) experiments should have a ResultBundle whose provenance is repro's callback path; missing callback results fail the gate and list affected RunRequest ids
 - Exposed via `GET /co-scientist/goals/{id}/evaluation[/...]`, the `cs eval` CLI group, and the `/ui/goals/{id}/evaluation` page
 
 ## Setup
