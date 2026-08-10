@@ -248,6 +248,85 @@ def _induce_taxonomy(
         )
 
 
+def _fallback_taxonomy(
+    *,
+    chunks: list,
+    max_families: int,
+    pinned: list[str],
+    method_hints: list[str],
+    cluster_hints: list[str],
+) -> AgentTaxonomyOutput:
+    """Deterministic taxonomy for no-key / LLM outage cases.
+
+    This keeps autonomous runs moving by using only local, already-retrieved
+    signals: goal pins, GraphRAG method entity hints, runner-recognised anchor
+    families mentioned in sampled text, and optional topic-cluster labels.
+    """
+    by_name: dict[str, InducedFamily] = {}
+    order: list[str] = []
+
+    corpus_text = "\n".join(
+        " ".join(
+            str(getattr(chunk, attr, "") or "")
+            for attr in ("title", "section_title", "text")
+        )
+        for chunk in chunks
+    ).lower()
+
+    def add(name: str, keyword: str | None = None, description: str | None = None) -> None:
+        canon = canonicalize_family(name)
+        if not canon:
+            return
+        kw = (keyword or name or canon.replace("_", " ")).strip().lower()
+        if not kw:
+            kw = canon.replace("_", " ")
+        existing = by_name.get(canon)
+        if existing is None:
+            by_name[canon] = InducedFamily(
+                canonical_name=canon,
+                description=description,
+                keywords=[kw],
+                related_to=[],
+            )
+            order.append(canon)
+            return
+        if kw not in existing.keywords:
+            existing.keywords.append(kw)
+
+    for name in pinned:
+        add(
+            name,
+            description="Pinned method family carried into deterministic taxonomy fallback.",
+        )
+
+    for name in method_hints:
+        add(
+            name,
+            description="Method entity surfaced by retrieval corpus hints.",
+        )
+
+    for anchor in REPRO_ANCHOR_FAMILIES:
+        surface = anchor.replace("_", " ")
+        if surface in corpus_text or anchor in corpus_text:
+            add(
+                anchor,
+                keyword=surface,
+                description="Runner-recognised family mentioned in sampled corpus text.",
+            )
+
+    for cluster in cluster_hints:
+        # Cluster labels can be comma-separated phrases; treat each as a weak
+        # deterministic candidate and let canonicalize_family discard noise.
+        for part in str(cluster).replace(";", ",").split(","):
+            add(
+                part,
+                description="Topic-cluster hint used by deterministic taxonomy fallback.",
+            )
+
+    families = [by_name[name] for name in order]
+    return AgentTaxonomyOutput(families=families[:max_families])
+
+
 def _normalize_families(
     raw: list[InducedFamily], max_families: int, pinned: list[str] | None = None
 ) -> list[InducedFamily]:
@@ -410,10 +489,43 @@ def derive_taxonomy(
             detail="Corpus sampling returned no chunks; cannot derive a taxonomy.",
         )
 
-    raw = _induce_taxonomy(
-        db, goal, chunks, max_families, effective_pins,
-        method_hints=method_hints, cluster_hints=cluster_hints,
-    )
+    fallback_reason: str | None = None
+    if settings.anthropic_api_key:
+        try:
+            raw = _induce_taxonomy(
+                db, goal, chunks, max_families, effective_pins,
+                method_hints=method_hints, cluster_hints=cluster_hints,
+            )
+        except anthropic.APIError as exc:
+            fallback_reason = f"{type(exc).__name__}: {exc}"
+            raw = _fallback_taxonomy(
+                chunks=chunks,
+                max_families=max_families,
+                pinned=effective_pins,
+                method_hints=method_hints,
+                cluster_hints=cluster_hints,
+            )
+    else:
+        fallback_reason = "ANTHROPIC_API_KEY not configured"
+        raw = _fallback_taxonomy(
+            chunks=chunks,
+            max_families=max_families,
+            pinned=effective_pins,
+            method_hints=method_hints,
+            cluster_hints=cluster_hints,
+        )
+
+    if fallback_reason is not None:
+        governance_svc.log_agent_call(
+            db=db,
+            workspace_id=goal.workspace_id,
+            service="taxonomy",
+            action="derive_taxonomy",
+            model_used=settings.validation_model,
+            response_summary="used deterministic taxonomy fallback",
+            error=fallback_reason,
+        )
+
     families = _normalize_families(raw.families, max_families, effective_pins)
     if not families:
         raise HTTPException(

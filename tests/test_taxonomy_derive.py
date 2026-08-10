@@ -2,11 +2,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import anthropic
+import httpx
 import pytest
 from fastapi import HTTPException
 
 from coscientist.config import settings
 from coscientist.clients.retrieval import QueryResponse
+from coscientist.models.governance import AgentActionLog
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
 from coscientist.schemas.goal import GoalCreate, SuccessCriterion
 from coscientist.schemas.taxonomy import AgentTaxonomyOutput, InducedFamily
@@ -284,6 +287,60 @@ def test_no_method_hints_when_entities_empty(db_session, monkeypatch):
             db_session, goal.id, dry_run=True, retrieval_client=MockRetrievalClient()
         )
     assert "METHOD entity nodes" not in captured["system"]
+
+
+def _api_error(message="taxonomy upstream unavailable"):
+    return anthropic.APIError(
+        message,
+        request=httpx.Request("POST", "https://api.anthropic.test/v1/messages"),
+        body=None,
+    )
+
+
+def test_derive_uses_deterministic_fallback_without_api_key(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
+    goal = _create_goal_pinned(db_session, ["selective_fixed_filter_anc"])
+
+    with patch.object(taxonomy_svc, "_induce_taxonomy") as agent:
+        result = taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_MethodNodeClient()
+        )
+
+    agent.assert_not_called()
+    names = {f.canonical_name for f in result.families}
+    assert "selective_fixed_filter_anc" in names
+    assert "acoustic_contrast_control" in names
+    assert "beamforming" in names
+    log = db_session.query(AgentActionLog).filter(
+        AgentActionLog.workspace_id == goal.id,
+        AgentActionLog.service == "taxonomy",
+        AgentActionLog.action == "derive_taxonomy",
+    ).one()
+    assert log.response_summary == "used deterministic taxonomy fallback"
+    assert "ANTHROPIC_API_KEY not configured" in log.error
+
+
+def test_derive_uses_deterministic_fallback_on_api_error(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "bad-key")
+    goal = _create_goal_pinned(db_session, ["selective_fixed_filter_anc"])
+
+    with patch.object(taxonomy_svc, "_induce_taxonomy", side_effect=_api_error()) as agent:
+        result = taxonomy_svc.derive_taxonomy(
+            db_session, goal.id, dry_run=True, retrieval_client=_MethodNodeClient()
+        )
+
+    assert agent.called
+    names = {f.canonical_name for f in result.families}
+    assert "selective_fixed_filter_anc" in names
+    assert "acoustic_contrast_control" in names
+    assert "beamforming" in names
+    log = db_session.query(AgentActionLog).filter(
+        AgentActionLog.workspace_id == goal.id,
+        AgentActionLog.service == "taxonomy",
+        AgentActionLog.action == "derive_taxonomy",
+    ).one()
+    assert log.response_summary == "used deterministic taxonomy fallback"
+    assert "APIError" in log.error
 
 
 def test_topic_clusters_gated_off_by_default(db_session, monkeypatch):

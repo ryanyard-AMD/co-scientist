@@ -1,5 +1,7 @@
 import json
 
+import anthropic
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -310,6 +312,25 @@ def test_synthesize_without_api_key_skips(db_session, monkeypatch):
         )
     assert result.syntheses == []
     assert agent.call_count == 0
+
+
+def test_synthesize_api_error_skips_and_keeps_evidence(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "bad-key")
+    goal = _create_goal(db_session)
+    mock = MockRetrievalClient()
+    err = anthropic.APIError(
+        "invalid x-api-key",
+        request=httpx.Request("POST", "https://api.anthropic.test/v1/messages"),
+        body=None,
+    )
+    with patch.object(scout_svc, "_run_synthesis_agent", side_effect=err) as agent:
+        result = scout_svc.run_scout(
+            db_session, goal.id, ScoutRunRequest(synthesize=True), retrieval_client=mock
+        )
+    assert result.evidence_count > 0
+    assert result.syntheses == []
+    assert agent.called
+    assert scout_svc.get_syntheses(db_session, goal.id) == []
 
 
 # --- Scout quality gate (substantive filter, dedup, score floor, artifacts) ---

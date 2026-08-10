@@ -929,7 +929,19 @@ def run_scout(
 
     syntheses: list[EvidenceSynthesisResponse] = []
     if request.synthesize and settings.anthropic_api_key and all_records:
-        rows = _synthesize_groups(db, goal_id, scout_run_id, all_records, groups)
+        try:
+            rows = _synthesize_groups(db, goal_id, scout_run_id, all_records, groups)
+        except anthropic.APIError as exc:
+            governance_svc.log_agent_call(
+                db=db,
+                workspace_id=goal_id,
+                service="scout",
+                action="synthesize_evidence",
+                model_used=settings.validation_model,
+                response_summary="skipped evidence synthesis after LLM API error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            rows = []
         syntheses = [_synthesis_to_response(r) for r in rows]
 
     return ScoutResultResponse(
