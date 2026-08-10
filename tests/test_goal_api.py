@@ -81,15 +81,15 @@ def test_transition_active_to_archived(client):
     assert resp.json()["status"] == "archived"
 
 
-def test_transition_invalid_raises_422(client):
+def test_transition_archived_to_active(client):
     created = client.post("/co-scientist/goals", json=GOAL_PAYLOAD).json()
-    # archived is terminal — can't go anywhere from archived
     client.post(f"/co-scientist/goals/{created['id']}/transition", json={"status": "archived"})
     resp = client.post(
         f"/co-scientist/goals/{created['id']}/transition",
         json={"status": "active"},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "active"
 
 
 def test_transition_draft_to_draft_invalid(client):

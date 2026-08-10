@@ -82,12 +82,11 @@ def test_transition_active_to_archived(db_session):
     assert result.status == GoalStatusEnum.archived
 
 
-def test_transition_archived_is_terminal(db_session):
+def test_transition_archived_to_active(db_session):
     g = _make_goal(db_session)
     svc.transition(db_session, g.id, GoalStatusEnum.archived)
-    with pytest.raises(HTTPException) as exc:
-        svc.transition(db_session, g.id, GoalStatusEnum.active)
-    assert exc.value.status_code == 422
+    result = svc.transition(db_session, g.id, GoalStatusEnum.active)
+    assert result.status == GoalStatusEnum.active
 
 
 def test_transition_same_status_raises(db_session):

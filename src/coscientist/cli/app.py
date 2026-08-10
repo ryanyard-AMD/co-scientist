@@ -208,7 +208,7 @@ def goal_pin(
 
 @goal_app.command("activate")
 def goal_activate(goal_id: str = typer.Argument(...)):
-    """Transition a draft goal to active."""
+    """Transition a draft or archived goal to active."""
     db = _get_session()
     try:
         result = svc.transition(db, goal_id, GoalStatusEnum.active)

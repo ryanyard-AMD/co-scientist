@@ -20,7 +20,7 @@ from coscientist.schemas.goal import (
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     GoalStatusEnum.draft:    {GoalStatusEnum.active, GoalStatusEnum.archived},
     GoalStatusEnum.active:   {GoalStatusEnum.archived},
-    GoalStatusEnum.archived: set(),
+    GoalStatusEnum.archived: {GoalStatusEnum.active},
 }
 
 def _canonicalize_pins(names: list[str]) -> list[str]:
