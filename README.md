@@ -553,10 +553,10 @@ plus warnings — without queueing a run. Repro deployments that do not expose `
 fall back to the older `recommend-method` + `metrics-surface` sequence. The response reports
 `runnable`, blocking reasons and warnings, the selected reproduction and workspace, the card and
 candidate method families, canonical pass conditions, unmeasurable pass-condition metrics, the
-metric contract (repro's surface plus the local native→canonical fallback map), and the design-run
-payload that would be sent downstream. A `runnable: false` is usually an honest capability gap — no
-curated reproduction covers the card's method family — rather than a bug, so read
-`blocking_reasons` before changing anything.
+metric contract (preferring repro-declared `metric_aliases`, with the local native→canonical map
+only as a compatibility fallback), and the design-run payload that would be sent downstream. A
+`runnable: false` is usually an honest capability gap — no curated reproduction covers the card's
+method family — rather than a bug, so read `blocking_reasons` before changing anything.
 
 **Submit** hands an approved card over as one RunRequest per swept run:
 

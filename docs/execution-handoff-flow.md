@@ -31,7 +31,8 @@ The response reports:
 - the card method family and candidate method families;
 - canonical pass conditions;
 - unmeasurable pass-condition metrics;
-- the repro metric contract and local native-to-canonical fallback map;
+- the repro metric contract, preferring repro-declared `metric_aliases` and using
+  the local native-to-canonical map only as a compatibility fallback;
 - the design-run payload that would be sent downstream.
 - the repro preview report's honored/dropped variables and selection warnings
   when available.
@@ -70,6 +71,12 @@ The payload includes:
 The downstream system should reject the RunRequest up front when it cannot honor
 this contract. Completed runs should report through ResultBundle ingestion using
 the IDs in `result_contract.required_correlation`.
+
+Repro owns reproduction-specific metric names. When `/handoffs/preview` or
+`metrics-surface` returns `metric_aliases`, co-scientist uses those aliases to
+decide which pass conditions are measurable and how native metrics map to
+canonical result fields. If aliases are absent, co-scientist falls back to its
+local compatibility map and surfaces that fallback as a preflight warning.
 
 `experiment.method_family` biases repro's choice of reproduction. Preflight and
 submission must send the same value: without it repro re-ranks by objective and

@@ -258,6 +258,29 @@ def _unmeasurable_conditions(pass_conditions: list[dict], experiment_id: str) ->
     return [c["metric"] for c in pass_conditions if c["metric"] not in measurable]
 
 
+def _metric_aliases(reproduction_id: str | None, aliases: dict | None = None) -> dict[str, str]:
+    """Native-to-canonical metric map, preferring repro-declared aliases.
+
+    Repro owns reproduction-specific metric names. The local map remains as a
+    compatibility fallback for older repro deployments that do not yet expose
+    ``metric_aliases`` in preview or metrics-surface responses.
+    """
+    local = EXPERIMENT_METRIC_MAP.get(reproduction_id or "", {})
+    declared = {
+        str(k): str(v)
+        for k, v in (aliases or {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+    return {**local, **declared}
+
+
+def _unmeasurable_conditions_for_map(pass_conditions: list[dict], native_to_canonical: dict[str, str]) -> list[str]:
+    measurable = set(native_to_canonical.values())
+    if not measurable:
+        return []
+    return [c["metric"] for c in pass_conditions if c["metric"] not in measurable]
+
+
 def _build_proposal(card, method_family: str | None) -> dict:
     """Build a repro ExperimentProposal from the approved experiment card.
 
@@ -356,7 +379,7 @@ def _metric_contract(client: ReproClient, workspace_id: str, reproduction_id: st
     """
     contract: dict = {
         "reproduction_id": reproduction_id,
-        "native_to_canonical": EXPERIMENT_METRIC_MAP.get(reproduction_id, {}),
+        "native_to_canonical": _metric_aliases(reproduction_id),
         "surface": None,
     }
     surface = client.get_metrics_surface(workspace_id)
@@ -364,6 +387,9 @@ def _metric_contract(client: ReproClient, workspace_id: str, reproduction_id: st
     for item in surface.get("reproductions", []):
         if item.get("experiment_id") == reproduction_id:
             contract["surface_reproduction"] = item
+            contract["native_to_canonical"] = _metric_aliases(
+                reproduction_id, item.get("metric_aliases") or {}
+            )
             break
     return contract
 
@@ -419,8 +445,12 @@ def preflight_experiment(
         proposal = dict(preview_report.get("proposal") or proposal)
         if reproduction_id:
             proposal["experiment_id"] = reproduction_id
+        native_map = _metric_aliases(
+            reproduction_id,
+            preview_report.get("metric_aliases") or {},
+        )
         unmeasurable = (
-            _unmeasurable_conditions(pass_conditions, reproduction_id)
+            _unmeasurable_conditions_for_map(pass_conditions, native_map)
             if reproduction_id and settings.runner_align_pass_conditions
             else []
         )
@@ -430,11 +460,14 @@ def preflight_experiment(
                 "selected reproduction cannot emit every pass-condition metric: "
                 + ", ".join(unmeasurable)
             )
-        native_map = EXPERIMENT_METRIC_MAP.get(reproduction_id or "", {})
         blocking.extend(preview_report.get("blocking_reasons") or [])
         if reproduction_id and not native_map:
             blocking.append(
                 f"selected reproduction {reproduction_id!r} has no native-to-canonical metric map"
+            )
+        elif reproduction_id and not (preview_report.get("metric_aliases") or {}):
+            warnings.append(
+                f"selected reproduction {reproduction_id!r} used local metric map fallback"
             )
         cand_families = preview_report.get("selected_method_families") or []
         recommendation = {
@@ -470,6 +503,7 @@ def preflight_experiment(
             metric_contract={
                 "reproduction_id": reproduction_id,
                 "native_to_canonical": native_map,
+                "source": "handoffs.preview",
                 "preview": preview_report,
             },
             design_run_payload=proposal,
@@ -521,7 +555,10 @@ def preflight_experiment(
     proposal = dict(proposal)
     proposal["experiment_id"] = reproduction_id
     unmeasurable = (
-        _unmeasurable_conditions(pass_conditions, reproduction_id)
+        _unmeasurable_conditions_for_map(
+            pass_conditions,
+            metric_contract.get("native_to_canonical") or {},
+        )
         if settings.runner_align_pass_conditions
         else []
     )

@@ -408,6 +408,36 @@ def test_preflight_uses_card_control_plane_for_preview(db_session, monkeypatch):
     assert fake.payload["control_plane_uri"] == "http://configured-runner"
 
 
+def test_preflight_uses_repro_declared_metric_aliases(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid)
+    exp = _experiment(db_session, gid, [ac.id])
+    report = {
+        "schema": "co_scientist.run_request.v1",
+        "runnable": True,
+        "blocking_reasons": [],
+        "warnings": [],
+        "proposal": {"objective": "Measure contrast"},
+        "selected_reproduction_id": "new-repro-v1",
+        "selected_paper_id": "paper-new",
+        "selected_method_families": ["acoustic_contrast_control"],
+        "method_family_supported": True,
+        "metric_aliases": {"native_contrast": "acoustic_contrast_db"},
+    }
+    fake = _PreviewReproClient(report)
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+
+    result = svc.preflight_experiment(db_session, exp.id, gid)
+
+    assert result.runnable is True
+    assert result.blocking_reasons == []
+    assert result.unmeasurable_conditions == []
+    assert result.metric_contract["native_to_canonical"] == {
+        "native_contrast": "acoustic_contrast_db"
+    }
+    assert "local metric map fallback" not in " ".join(result.warnings)
+
+
 def test_preflight_reports_no_runnable_reproduction(db_session, monkeypatch):
     gid = _make_goal(db_session)
     ac = _approach(db_session, gid)
