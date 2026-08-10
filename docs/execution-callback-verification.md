@@ -78,7 +78,9 @@ the current counts for approaches, hypotheses, experiments, and callback health.
 
 Use `--method selective_fixed_filter_anc` to constrain the rerun to the SFANC
 method family. Set `AUTORUN_ARCHIVE_SUCCESS=1` to archive the selected
-verification experiment after success.
+verification experiment after success. `AUTORUN_MAX_WORKER_JOBS` defaults to
+`100` so the script can tolerate older compatible jobs already sitting in the
+repro queue ahead of the submitted run.
 
 ## Autonomous Goal Rerun Verification
 
@@ -118,6 +120,49 @@ The script created `coscientist.db.bak.autorun.20260810_005345` before mutating
 state. The backup command reported an existing SQLite integrity warning
 (`NULL value in device_concept_cards.confidence`) but continued, matching the
 project backup script's warning-only behavior.
+
+## PAL Goal Autonomous Rerun Verification
+
+Date: 2026-08-10
+
+The archived goal `b7dd1b32-8a82-4b72-9d51-bef2fb7d5044` ("Personal Sound Zone
+via Parametric Array Loudspeaker") was reactivated and run with a
+`parametric_array_modeling` method filter. The goal was pinned to
+`parametric_array_modeling` before execution.
+
+Command:
+
+```bash
+AUTORUN_TOP_K=10 \
+AUTORUN_MAX_FAMILIES=10 \
+scripts/autonomous-goal-rerun.sh \
+  --execute \
+  --method parametric_array_modeling \
+  b7dd1b32-8a82-4b72-9d51-bef2fb7d5044
+```
+
+During the first attempt, PAL preflight exposed missing repro metric-alias/spec
+configuration for `modeling-a-phased-array-of-parametric-ar-v1`. Repro was fixed
+to use the experiment venv, set `working_dir`, declare `metrics.json`, and expose
+PAL metric aliases. After restarting repro, preflight became runnable.
+
+Final result:
+
+- Verification experiment: `50a73994-e598-415c-bb4f-ff2545020617`
+- RunRequest: `run-d05d65e546c6`
+- Repro state: `completed`
+- Repro validation status: `passed`
+- Repro events include `callback_delivered`
+- Co-scientist ResultBundle: `rb-run-d05d65e546c6-att-b8144753aac7`
+- Co-scientist aggregation: `passed`
+  - total runs: `1`
+  - passed runs: `1`
+  - missing runs: `0`
+- PAL callback health after queue drain: `100% PASS`
+
+The repro queue contained older PAL sweep jobs from a previous partial run, so
+additional worker iterations were needed to drain compatible work before the
+target run executed.
 
 ## Smoke Script Verification
 

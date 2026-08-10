@@ -22,10 +22,11 @@
 #   AUTORUN_MAX_EXPERIMENTS  default: 10
 #   AUTORUN_SYNTHESIZE       default: 0
 #   AUTORUN_ARCHIVE_SUCCESS  default: 0
+#   AUTORUN_SUBMISSION_MODE  default: single_run
 set -euo pipefail
 
 usage() {
-  sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 EXECUTE=0
@@ -70,8 +71,9 @@ export AUTORUN_MAX_HYPOTHESES="${AUTORUN_MAX_HYPOTHESES:-20}"
 export AUTORUN_MAX_EXPERIMENTS="${AUTORUN_MAX_EXPERIMENTS:-10}"
 export AUTORUN_SYNTHESIZE="${AUTORUN_SYNTHESIZE:-0}"
 export AUTORUN_ARCHIVE_SUCCESS="${AUTORUN_ARCHIVE_SUCCESS:-0}"
+export AUTORUN_SUBMISSION_MODE="${AUTORUN_SUBMISSION_MODE:-single_run}"
 export AUTORUN_RUNNER_ID="${AUTORUN_RUNNER_ID:-cosci-autonomous-$(date +%Y%m%d%H%M%S)}"
-export AUTORUN_MAX_WORKER_JOBS="${AUTORUN_MAX_WORKER_JOBS:-8}"
+export AUTORUN_MAX_WORKER_JOBS="${AUTORUN_MAX_WORKER_JOBS:-100}"
 export AUTORUN_WORKER_TIMEOUT="${AUTORUN_WORKER_TIMEOUT:-900}"
 export AUTORUN_CALLBACK_TIMEOUT="${AUTORUN_CALLBACK_TIMEOUT:-120}"
 
@@ -107,6 +109,7 @@ MAX_HYPOTHESES = int(os.environ["AUTORUN_MAX_HYPOTHESES"])
 MAX_EXPERIMENTS = int(os.environ["AUTORUN_MAX_EXPERIMENTS"])
 SYNTHESIZE = os.environ["AUTORUN_SYNTHESIZE"] == "1"
 ARCHIVE_SUCCESS = os.environ["AUTORUN_ARCHIVE_SUCCESS"] == "1"
+SUBMISSION_MODE = os.environ["AUTORUN_SUBMISSION_MODE"]
 MAX_WORKER_JOBS = int(os.environ["AUTORUN_MAX_WORKER_JOBS"])
 WORKER_TIMEOUT = float(os.environ["AUTORUN_WORKER_TIMEOUT"])
 CALLBACK_TIMEOUT = float(os.environ["AUTORUN_CALLBACK_TIMEOUT"])
@@ -311,11 +314,15 @@ def choose_runnable_experiment() -> tuple[dict[str, Any], dict[str, Any]]:
     candidates = candidate_experiments()
     if not candidates:
         candidates = [duplicate_best_current_experiment()]
-    for exp in candidates:
+
+    def try_candidate(exp: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
         cs(
             f"/goals/{GOAL_ID}/experiments/{exp['id']}",
             method="PATCH",
-            body={"experiment_control_plane": CONTROL_PLANE_URI},
+            body={
+                "experiment_control_plane": CONTROL_PLANE_URI,
+                "submission_mode": SUBMISSION_MODE,
+            },
         )
         preflight = cs(
             f"/goals/{GOAL_ID}/experiments/{exp['id']}/preflight",
@@ -327,6 +334,17 @@ def choose_runnable_experiment() -> tuple[dict[str, Any], dict[str, Any]]:
             print("preflight_warnings=" + json.dumps(preflight["warnings"]))
         if preflight.get("runnable"):
             return exp, preflight
+        return None
+
+    for exp in candidates:
+        found = try_candidate(exp)
+        if found is not None:
+            return found
+
+    log("no existing non-submitted candidate was runnable; duplicating best current experiment")
+    found = try_candidate(duplicate_best_current_experiment())
+    if found is not None:
+        return found
     fail("no runnable experiment candidate found")
 
 
@@ -334,6 +352,11 @@ def submit_and_execute(exp: dict[str, Any]) -> tuple[str, str]:
     exp_id = exp["id"]
     status = exp["status"]
     if status == "generated":
+        cs(
+            f"/goals/{GOAL_ID}/experiments/{exp_id}",
+            method="PATCH",
+            body={"submission_mode": SUBMISSION_MODE},
+        )
         transition_experiment(exp_id, "reviewed")
         status = "reviewed"
     if status == "reviewed":

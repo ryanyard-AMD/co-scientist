@@ -596,6 +596,8 @@ With `--execute` it creates a SQLite backup, derives/refreshes the goal taxonomy
 (using deterministic fallback if the LLM is unavailable), runs scout, generates
 approaches/hypotheses/experiments, selects the first runnable experiment, submits
 it to repro, runs worker iterations, and asserts callback ingestion.
+`AUTORUN_MAX_WORKER_JOBS` defaults to `100` to tolerate older compatible jobs in
+the repro queue ahead of the submitted run.
 
 ### 9. Run on the real simulator directly (compatibility path)
 
