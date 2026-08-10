@@ -575,6 +575,16 @@ callback delivery to `POST <CS_PUBLIC_BASE_URL><CS_API_PREFIX>/result-bundles` (
 scores, device evidence, and roadmap refreshes. If callback delivery fails downstream, the same
 endpoint remains the manual recovery path for posting the ResultBundle.
 
+For a repeatable operational check of this whole return leg, run:
+
+```bash
+scripts/verify-callback-handoff.sh <GOAL_ID> <SOURCE_EXPERIMENT_ID>
+```
+
+The script duplicates the source experiment, submits the duplicate to repro, runs
+one-worker iterations until the submitted RunRequest completes, and asserts that
+the ResultBundle arrives back through the automatic callback path.
+
 ### 9. Run on the real simulator directly (compatibility path)
 
 An approved experiment can be executed against the [repro](../experiment) runner, which drives

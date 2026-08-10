@@ -5,6 +5,72 @@ Date: 2026-08-09
 This records a live verification of the co-scientist -> repro -> co-scientist
 return leg after callback dispatch was added to repro.
 
+## Repeatable Smoke Command
+
+Use the smoke script to repeat the callback handoff check against any reviewed or
+approved source experiment:
+
+```bash
+scripts/verify-callback-handoff.sh <GOAL_ID> <SOURCE_EXPERIMENT_ID>
+```
+
+For the SFANC callback path used during this verification:
+
+```bash
+scripts/verify-callback-handoff.sh \
+  a741ab57-5f05-45c4-9297-07cc07aabc64 \
+  a538fad1-e186-47b9-8ffe-99492233a305
+```
+
+Prerequisites:
+
+- co-scientist API running at `CS_API_BASE` (default
+  `http://localhost:8001/co-scientist`);
+- repro API running at `REPRO_API_BASE` (default `http://localhost:8003`);
+- callback URL reachable from repro, normally via
+  `CS_PUBLIC_BASE_URL=http://localhost:8001`;
+- experiment runner repo at `EXPERIMENT_REPO` (default `/home/ryard/experiment`);
+- `exp-runner` available at `EXP_RUNNER` (default
+  `/home/ryard/experiment/.venv/bin/exp-runner`);
+- retrieval service available if repro preflight needs method recommendation.
+
+The script duplicates the source experiment, sets the duplicate's
+`experiment_control_plane`, runs preflight, reviews/approves/submits it, runs
+worker iterations until the new RunRequest reaches a terminal state, and asserts:
+
+- repro completed the run;
+- repro recorded `callback_delivered`;
+- co-scientist ingested a ResultBundle for the new experiment;
+- co-scientist aggregation is `passed`;
+- `cs eval callback-health` passes for the goal.
+
+By default the duplicate remains in the database as an audit record. Set
+`SMOKE_ARCHIVE_ON_SUCCESS=1` to archive it after a successful smoke run.
+
+## Smoke Script Verification
+
+Date: 2026-08-10
+
+The smoke script was run against the canonical SFANC experiment:
+
+```bash
+scripts/verify-callback-handoff.sh \
+  a741ab57-5f05-45c4-9297-07cc07aabc64 \
+  a538fad1-e186-47b9-8ffe-99492233a305
+```
+
+Result:
+
+- Verification duplicate: `0fcad538-27ee-437a-90a8-bd2c96f9fbea`
+- RunRequest: `run-f8f7c5515385`
+- Repro state: `completed`
+- Co-scientist ResultBundle count: `1`
+- Co-scientist aggregation: `passed`
+- Callback-health rate: `1.0`
+
+The ResultBundle was received through the automatic callback path; no manual
+ResultBundle POST was performed.
+
 ## Setup
 
 - Goal: `a741ab57-5f05-45c4-9297-07cc07aabc64`
