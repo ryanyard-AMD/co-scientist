@@ -585,6 +585,18 @@ The script duplicates the source experiment, submits the duplicate to repro, run
 one-worker iterations until the submitted RunRequest completes, and asserts that
 the ResultBundle arrives back through the automatic callback path.
 
+For a broader goal-level autonomous rerun wrapper, use:
+
+```bash
+scripts/autonomous-goal-rerun.sh [--execute] [--method METHOD] <GOAL_ID>
+```
+
+Without `--execute` it only checks services and prints the current plan summary.
+With `--execute` it creates a SQLite backup, derives/refreshes the goal taxonomy
+(using deterministic fallback if the LLM is unavailable), runs scout, generates
+approaches/hypotheses/experiments, selects the first runnable experiment, submits
+it to repro, runs worker iterations, and asserts callback ingestion.
+
 ### 9. Run on the real simulator directly (compatibility path)
 
 An approved experiment can be executed against the [repro](../experiment) runner, which drives

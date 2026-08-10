@@ -47,6 +47,78 @@ worker iterations until the new RunRequest reaches a terminal state, and asserts
 By default the duplicate remains in the database as an audit record. Set
 `SMOKE_ARCHIVE_ON_SUCCESS=1` to archive it after a successful smoke run.
 
+## Autonomous Goal Rerun Command
+
+For a broader goal-level pipeline, use:
+
+```bash
+scripts/autonomous-goal-rerun.sh [--execute] [--method METHOD] <GOAL_ID>
+```
+
+Default mode is plan-only. It checks the co-scientist and repro APIs and prints
+the current counts for approaches, hypotheses, experiments, and callback health.
+
+`--execute` mutates state. It:
+
+1. creates a SQLite backup with the online-backup API;
+2. derives/persists the goal taxonomy, using deterministic fallback if the LLM is
+   unavailable;
+3. runs scout retrieval;
+4. generates deterministic approach cards from evidence and reviews generated
+   cards;
+5. scores approaches;
+6. generates and reviews hypotheses;
+7. generates experiments;
+8. picks the first non-submitted experiment whose preflight is runnable, or
+   duplicates the best current experiment if generation produced only duplicates;
+9. approves/submits it to repro;
+10. runs local `exp-runner worker` iterations;
+11. asserts repro completion, `callback_delivered`, co-scientist ResultBundle
+    ingestion, passed aggregation, and callback-health success.
+
+Use `--method selective_fixed_filter_anc` to constrain the rerun to the SFANC
+method family. Set `AUTORUN_ARCHIVE_SUCCESS=1` to archive the selected
+verification experiment after success.
+
+## Autonomous Goal Rerun Verification
+
+Date: 2026-08-10
+
+The autonomous goal rerun script was run with the SFANC method filter and
+archive-on-success:
+
+```bash
+AUTORUN_TOP_K=5 \
+AUTORUN_MAX_FAMILIES=8 \
+AUTORUN_ARCHIVE_SUCCESS=1 \
+scripts/autonomous-goal-rerun.sh \
+  --execute \
+  --method selective_fixed_filter_anc \
+  a741ab57-5f05-45c4-9297-07cc07aabc64
+```
+
+Result:
+
+- Taxonomy derivation completed with `8` families using the deterministic fallback
+  path as needed.
+- Scout run: `71d33777-4b63-452e-908d-43158cd0eddd`
+- Evidence records: `90`
+- Selected verification experiment: `8137a832-628a-49e1-bdbd-0a0f83858065`
+- RunRequest: `run-4d6ddf9700fe`
+- Repro state: `completed`
+- Co-scientist ResultBundle: `rb-run-4d6ddf9700fe-att-891a5c9a910d`
+- Co-scientist aggregation: `passed`
+  - total runs: `1`
+  - passed runs: `1`
+  - missing runs: `0`
+- Callback health after the run: `100% PASS`
+- The verification experiment was archived after success.
+
+The script created `coscientist.db.bak.autorun.20260810_005345` before mutating
+state. The backup command reported an existing SQLite integrity warning
+(`NULL value in device_concept_cards.confidence`) but continued, matching the
+project backup script's warning-only behavior.
+
 ## Smoke Script Verification
 
 Date: 2026-08-10
