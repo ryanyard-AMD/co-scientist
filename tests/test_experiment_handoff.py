@@ -98,6 +98,32 @@ def test_update_handoff_config(db_session):
     assert updated.execution_handoff.runner_pool_preference == "cpu-pool"
 
 
+def test_update_submission_mode_syncs_expected_run_count(db_session):
+    goal = _goal(db_session)
+    ac = _scored_approach(db_session, goal.id)
+    card = svc.create(
+        db_session,
+        goal.id,
+        _data([ac.id], submission_mode=SubmissionModeEnum.sweep_batch),
+    )
+    assert card.execution_handoff.expected_run_count == 2
+
+    single = svc.update(
+        db_session,
+        card.id,
+        ExperimentCardUpdate(submission_mode=SubmissionModeEnum.single_run),
+    )
+    assert single.execution_handoff.submission_mode == SubmissionModeEnum.single_run
+    assert single.execution_handoff.expected_run_count == 1
+
+    sweep = svc.update(
+        db_session,
+        card.id,
+        ExperimentCardUpdate(submission_mode=SubmissionModeEnum.sweep_batch),
+    )
+    assert sweep.execution_handoff.expected_run_count == 2
+
+
 def test_execution_status_transition_valid(db_session):
     goal = _goal(db_session)
     ac = _scored_approach(db_session, goal.id)

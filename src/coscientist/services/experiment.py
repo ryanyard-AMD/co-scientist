@@ -151,6 +151,13 @@ def _get_or_404(db: Session, experiment_id: str, goal_id: str | None = None) -> 
     return card
 
 
+def _sync_expected_run_count(card: ExperimentCard) -> None:
+    if card.submission_mode == SubmissionModeEnum.single_run.value:
+        card.expected_run_count = 1
+    else:
+        card.expected_run_count = max(1, card.parameter_sweep_count or 0)
+
+
 def create(db: Session, goal_id: str, data: ExperimentCardCreate) -> ExperimentCardResponse:
     goal = goal_svc.get(db, goal_id)
     for aid in data.approach_ids:
@@ -271,12 +278,15 @@ def update(
         card.requires_human_approval = data.requires_human_approval
     if data.submission_mode is not None:
         card.submission_mode = data.submission_mode.value
+        _sync_expected_run_count(card)
     if data.required_capabilities is not None:
         card.required_capabilities = json.dumps(data.required_capabilities)
     if data.runner_pool_preference is not None:
         card.runner_pool_preference = data.runner_pool_preference
     if data.experiment_control_plane is not None:
         card.experiment_control_plane = data.experiment_control_plane
+    if data.independent_variables is not None and data.submission_mode is None:
+        _sync_expected_run_count(card)
     card.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(card)
