@@ -164,6 +164,48 @@ The repro queue contained older PAL sweep jobs from a previous partial run, so
 additional worker iterations were needed to drain compatible work before the
 target run executed.
 
+## Spherical Array + PAL Goal Autonomous Rerun Verification
+
+Date: 2026-08-11
+
+The active goal `60bcd9fa-05c7-4731-b49e-41cfcc35cdde` ("PSZ via Spherical
+Array + Parametric Loudspeaker") was run with the same autonomous pipeline and a
+`parametric_array_modeling` method filter:
+
+```bash
+AUTORUN_TOP_K=10 \
+AUTORUN_MAX_FAMILIES=10 \
+scripts/autonomous-goal-rerun.sh \
+  --execute \
+  --method parametric_array_modeling \
+  60bcd9fa-05c7-4731-b49e-41cfcc35cdde
+```
+
+During the first run, co-scientist correctly received a PAL ResultBundle but the
+aggregation stayed `partial` because the generated card retained a 216-run sweep
+expected count while the operational verification submitted one run. The
+co-scientist update path was fixed so changing `submission_mode` to `single_run`
+also synchronizes `expected_run_count` to `1`.
+
+Final result after the fix:
+
+- Verification experiment: `e7eeabfe-4d04-4c37-8cd4-e9dd49b61ca0`
+- Submission mode: `single_run`
+- Expected run count: `1`
+- RunRequest: `run-0da5d9b2d62f`
+- Repro state: `completed`
+- Repro validation status: `passed`
+- Repro events include `callback_delivered`
+- Co-scientist ResultBundle: `rb-run-0da5d9b2d62f-att-3451bc84530c`
+- Co-scientist aggregation: `passed`
+  - total runs: `1`
+  - passed runs: `1`
+  - missing runs: `0`
+- Goal callback health: `100% PASS`
+
+The script created `coscientist.db.bak.autorun.20260811_010037` before the final
+successful execution.
+
 ## Smoke Script Verification
 
 Date: 2026-08-10
