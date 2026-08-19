@@ -206,6 +206,48 @@ Final result after the fix:
 The script created `coscientist.db.bak.autorun.20260811_010037` before the final
 successful execution.
 
+## Distributed Microphones + Loudspeakers Goal Autonomous Rerun Verification
+
+Date: 2026-08-19
+
+The active goal `031e99a1-3b19-4b7e-8465-621b0a03a40c` ("Personal Sound Zone via
+Distributed Microphones and Loudspeakers") was run with the autonomous pipeline
+and a `sound_field_estimation` method filter:
+
+```bash
+AUTORUN_TOP_K=10 \
+AUTORUN_MAX_FAMILIES=10 \
+scripts/autonomous-goal-rerun.sh \
+  --execute \
+  --method sound_field_estimation \
+  031e99a1-3b19-4b7e-8465-621b0a03a40c
+```
+
+During the first attempt, preflight selected
+`physics-informed-ml-sound-field-estimation-fig4-v1` but blocked because that
+reproduction had no native→canonical metric aliases and the PIML Fig. 4 spec
+still used a relative interpreter path. Repro was fixed to use the experiment
+venv, set `working_dir`, declare `metrics.json`, and expose PIML metric aliases.
+
+Final result after the fix:
+
+- Verification experiment: `ec57e841-b734-4449-9f83-0b4594b44f26`
+- Submission mode: `single_run`
+- Expected run count: `1`
+- RunRequest: `run-1cbec2a464e1`
+- Repro state: `completed`
+- Repro validation status: `passed`
+- Repro events include `callback_delivered`
+- Co-scientist ResultBundle: `rb-run-1cbec2a464e1-att-184fa4b84d43`
+- Co-scientist aggregation: `passed`
+  - total runs: `1`
+  - passed runs: `1`
+  - missing runs: `0`
+- Goal callback health: `100% PASS`
+
+The script created `coscientist.db.bak.autorun.20260819_010301` before the final
+successful execution.
+
 ## Smoke Script Verification
 
 Date: 2026-08-10
