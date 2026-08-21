@@ -857,6 +857,7 @@ def run_experiment(
     goal_id: str,
     *,
     timeout: float | None = None,
+    require_family_match: bool = False,
 ) -> RunnerResult:
     governance_svc.assert_execution_boundary("run experiments")
     goal_svc.raise_if_restricted(db, goal_id)
@@ -885,6 +886,16 @@ def run_experiment(
             )
             candidate = _select_candidate(rec)
             experiment_id_repro = candidate["experiment_ids"][0]
+            cand_families = candidate.get("method_families", [])
+            if require_family_match and card_family and card_family not in cand_families:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"recommend-method selected reproduction {experiment_id_repro!r} "
+                        f"with families {cand_families!r}, which does not support "
+                        f"comparison child method_family {card_family!r}."
+                    ),
+                )
             candidate_ws = _workspace_for_paper(workspaces, candidate["paper_id"])
 
             proposal["experiment_id"] = experiment_id_repro
@@ -1109,7 +1120,13 @@ def run_comparison(
 
         child = experiment_svc.create_comparison_child(db, parent, approach_resp, goal)
         try:
-            child_result = run_experiment(db, child.id, goal_id, timeout=timeout)
+            child_result = run_experiment(
+                db,
+                child.id,
+                goal_id,
+                timeout=timeout,
+                require_family_match=True,
+            )
         except HTTPException as exc:
             runs.append(
                 ApproachRunSummary(

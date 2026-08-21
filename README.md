@@ -675,7 +675,9 @@ asks a head-to-head question that repro — strictly single-method — cannot an
 which fans the card out into per-approach single-method **child cards**
 (`experiment_svc.create_comparison_child`: system-materialized, auto-approved, linked to the parent
 via `batch_expansion.comparison_parent_id`), runs each child through the **same** step-8 runner
-above, then aggregates. Verdict on the parent: ≥2 children that produced metrics → `completed` with
+above, with an additional guard that the selected repro reproduction must declare the child card's
+`method_family`; mismatches are recorded as child errors rather than running an unrelated long job.
+Then it aggregates. Verdict on the parent: ≥2 children that produced metrics → `completed` with
 a per-metric winner where values differ (direction from the parent's pass conditions:
 `_min`→higher-better, `_max`→lower-better); exact equal values are recorded as tied and do not
 create a fake win. Overall ties leave `recommended_approach_id = null`; exactly 1 child with metrics

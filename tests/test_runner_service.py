@@ -474,6 +474,21 @@ def test_run_records_divergence_when_family_differs(db_session, monkeypatch):
     assert batch["recommendation"]["diverged_from_card_family"] is True
 
 
+def test_run_requires_family_match_when_requested(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    ac = _approach(db_session, gid, method_family="crosstalk_cancellation")
+    exp = _experiment(db_session, gid, [ac.id])
+    fake = _FakeReproClient(metrics={"oAC_best_dB": 18.5, "nsde_achieved_dB": -25.0})
+    monkeypatch.setattr(svc, "ReproClient", lambda: fake)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.run_experiment(db_session, exp.id, gid, require_family_match=True)
+
+    assert exc.value.status_code == 422
+    assert "does not support comparison child method_family" in exc.value.detail
+    assert fake.submitted_proposal is None
+
+
 def test_run_translation_keyed_by_experiment_id(db_session, monkeypatch):
     # A reproduction with no native→canonical map entry yields no translatable
     # metrics even though the run emitted numeric keys → refuse, don't fabricate.
@@ -685,7 +700,7 @@ def _fake_run_experiment(monkeypatch, metrics_by_approach, decision_by_approach=
         "inconclusive": ExperimentStatusEnum.inconclusive,
     }
 
-    def _run(db, experiment_id, goal_id, *, timeout=None):
+    def _run(db, experiment_id, goal_id, *, timeout=None, require_family_match=False):
         child = experiment_svc.get(db, experiment_id)
         aid = child.approach_ids[0]
         if aid not in metrics_by_approach:
