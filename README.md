@@ -676,9 +676,10 @@ which fans the card out into per-approach single-method **child cards**
 (`experiment_svc.create_comparison_child`: system-materialized, auto-approved, linked to the parent
 via `batch_expansion.comparison_parent_id`), runs each child through the **same** step-8 runner
 above, then aggregates. Verdict on the parent: ≥2 children that produced metrics → `completed` with
-a per-metric winner (direction from the parent's pass conditions: `_min`→higher-better,
-`_max`→lower-better) and a `recommended_approach_id`; exactly 1 → `inconclusive`; 0 → parent left
-`approved` (re-runnable) with a 502. A re-run supersedes the prior children and creates fresh ones.
+a per-metric winner where values differ (direction from the parent's pass conditions:
+`_min`→higher-better, `_max`→lower-better); exact equal values are recorded as tied and do not
+create a fake win. Overall ties leave `recommended_approach_id = null`; exactly 1 child with metrics
+→ `inconclusive`; 0 → parent left `approved` (re-runnable) with a 502. A re-run supersedes the prior children and creates fresh ones.
 The comparison summary (child ids, per-approach measured metrics, per-metric winners, recommended
 approach) rides the parent's `batch_expansion.comparison` JSON — no new table. A direct
 single-method run of a multi-approach card is still refused as a child-only guard; a hand-built

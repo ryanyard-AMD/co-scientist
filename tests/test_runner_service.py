@@ -819,6 +819,27 @@ def test_run_comparison_tie_has_no_winner(db_session, monkeypatch):
     assert "clear winner" in result.rationale.lower() or "tie" in result.rationale.lower()
 
 
+def test_run_comparison_equal_metric_values_has_no_winner(db_session, monkeypatch):
+    gid = _make_goal(db_session)
+    a1 = _approach(db_session, gid, method_family="acoustic_contrast_control")
+    a2 = _approach(db_session, gid, method_family="pressure_matching")
+    exp = _experiment(
+        db_session, gid, [a1.id, a2.id],
+        pass_conditions={"acoustic_contrast_db_min": 20.0},
+    )
+    _fake_run_experiment(monkeypatch, {
+        a1.id: {"acoustic_contrast_db": 23.0},
+        a2.id: {"acoustic_contrast_db": 23.0},
+    })
+
+    result = svc.run_comparison(db_session, exp.id, gid)
+
+    assert result.status == "completed"
+    assert result.recommended_approach_id is None
+    assert result.metric_comparisons[0].best_approach_id is None
+    assert "tied" in result.rationale.lower()
+
+
 def test_result_bundle_error_rolls_back_to_approved(db_session, monkeypatch):
     # If bundle ingestion raises after the card is moved to 'running', the runner
     # rolls it back to 'approved' so it stays re-runnable.

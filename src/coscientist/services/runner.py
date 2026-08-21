@@ -1030,10 +1030,13 @@ def _compare_metrics(
         if len(values) < 2:
             continue
         if direction == "higher_better":
-            best = max(values, key=values.get)
+            best_value = max(values.values())
         else:
-            best = min(values, key=values.get)
-        wins[best] = wins.get(best, 0) + 1
+            best_value = min(values.values())
+        leaders = [approach_id for approach_id, value in values.items() if value == best_value]
+        best = leaders[0] if len(leaders) == 1 else None
+        if best is not None:
+            wins[best] = wins.get(best, 0) + 1
         comparisons.append(
             MetricComparison(
                 metric=metric, direction=direction, values=values, best_approach_id=best
@@ -1041,6 +1044,8 @@ def _compare_metrics(
         )
 
     if not wins:
+        if comparisons:
+            return comparisons, None, "No clear winner: all comparable metric values were tied."
         return comparisons, None, "No shared, directional metric was measured by ≥2 approaches."
 
     top = max(wins.values())
