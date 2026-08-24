@@ -1904,6 +1904,15 @@ def _parse_overrides(pairs: list[str]) -> dict:
     return out
 
 
+def _parse_vector_option(raw: Optional[str], *, name: str) -> Optional[list[float]]:
+    if raw is None:
+        return None
+    value = _coerce_override_value(raw)
+    if not isinstance(value, list) or len(value) != 3:
+        raise typer.BadParameter(f"{name} expects three comma-separated numbers")
+    return [float(v) for v in value]
+
+
 @device_app.command("simulate")
 def device_simulate(
     device_id: str = typer.Argument(...),
@@ -1978,6 +1987,144 @@ def device_simulate(
         raise typer.Exit(code=1)
     except HTTPException as exc:
         console.print(f"[red]Simulation failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
+@device_app.command("reproduce")
+def device_reproduce(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    target: str = typer.Option(
+        "spherical_wave", "--target",
+        help="Target field: spherical_wave, point_source, or plane_wave",
+    ),
+    target_origin: Optional[str] = typer.Option(
+        None, "--target-origin",
+        help="Local-frame source point for spherical targets, e.g. 0,-1,0",
+    ),
+    target_direction: Optional[str] = typer.Option(
+        None, "--target-direction",
+        help="Local-frame propagation direction for plane waves, e.g. 0,1,0",
+    ),
+    regularization: float = typer.Option(1e-3, "--regularization", help="PM Tikhonov lambda"),
+    control_grid_n: int = typer.Option(4, "--control-grid-n", help="Control grid points per axis"),
+    eval_grid_n: int = typer.Option(5, "--eval-grid-n", help="Evaluation grid points per axis"),
+    set_: Optional[List[str]] = typer.Option(
+        None, "--set",
+        help="Refine a resolved geometry knob before reproduction, e.g. --set n_elements=16",
+    ),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
+    roadmap: bool = typer.Option(
+        False, "--roadmap",
+        help="Regenerate the goal's research roadmap from the reproduction-quality result",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
+):
+    """Predict pressure-matching sound-field reproduction quality for a device concept."""
+    db = _get_session()
+    try:
+        overrides = _parse_overrides(set_ or [])
+        result = device_svc.reproduce(
+            db,
+            device_id,
+            goal_id,
+            timeout=timeout,
+            overrides=overrides,
+            target_kind=target,
+            target_origin=_parse_vector_option(target_origin, name="--target-origin"),
+            target_direction=_parse_vector_option(target_direction, name="--target-direction"),
+            regularization=regularization,
+            control_grid_n=control_grid_n,
+            eval_grid_n=eval_grid_n,
+        )
+        if json_out:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+
+        g = result.resolved_geometry
+        geo = Table(title="Resolved reproduction geometry", show_header=False)
+        geo.add_column("field", style="bold")
+        geo.add_column("value")
+        geo.add_row("layout", str(g.get("layout", "")))
+        geo.add_row("elements", str(g.get("n_elements", "")))
+        geo.add_row("listener (m)", str(g.get("listener_m", g.get("listener", ""))))
+        geo.add_row("target", f"{result.target.get('kind', target)}")
+        geo.add_row("control/eval points", f"{g.get('control_points', '')} / {g.get('evaluation_points', '')}")
+        if result.overrides:
+            geo.add_row(
+                "[yellow]overrides[/yellow]",
+                ", ".join(f"{k}={v}" for k, v in result.overrides.items()),
+            )
+        console.print(geo)
+
+        console.print(
+            f"\n[bold]Normalized reproduction error:[/bold] "
+            f"{result.normalized_reproduction_error:.4f}"
+        )
+        console.print(
+            f"[bold]Spatial correlation:[/bold] {result.spatial_correlation:.4f}  "
+            f"[bold]Mean SPL error:[/bold] {result.mean_spl_error_db:.2f} dB  "
+            f"[bold]Contrast:[/bold] {result.acoustic_contrast_db:.2f} dB"
+        )
+        if result.previous_normalized_reproduction_error is not None:
+            delta = (
+                result.normalized_reproduction_error
+                - result.previous_normalized_reproduction_error
+            )
+            arrow = "▼" if delta < 0 else ("▲" if delta > 0 else "=")
+            colour = "green" if delta < 0 else ("red" if delta > 0 else "dim")
+            console.print(
+                f"[{colour}]{arrow} {delta:+.4f}[/{colour}] vs previous "
+                f"({result.previous_normalized_reproduction_error:.4f})"
+            )
+
+        band = Table(title="Per-band reproduction quality")
+        band.add_column("Freq", justify="right")
+        band.add_column("NRE", justify="right")
+        band.add_column("Corr", justify="right")
+        band.add_column("Mean SPL err", justify="right")
+        band.add_column("Contrast", justify="right")
+        for b in result.per_band:
+            band.add_row(
+                f"{b.freq_hz/1000:.1f} kHz",
+                f"{b.normalized_reproduction_error:.4f}",
+                f"{b.spatial_correlation:.4f}",
+                f"{b.mean_spl_error_db:.2f} dB",
+                f"{b.acoustic_contrast_db:.2f} dB",
+            )
+        console.print(band)
+
+        if result.approximations:
+            console.print("\n[dim]Model approximations:[/dim]")
+            for a in result.approximations:
+                console.print(f"  [dim]- {a}[/dim]")
+
+        if roadmap:
+            console.print("\n[bold]Regenerating roadmap from the reproduction result…[/bold]")
+            rm = roadmap_svc.generate(db, goal_id)
+            if rm.total == 0:
+                console.print(
+                    "[yellow]No roadmap items generated — ensure the goal has at least "
+                    "one approach.[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[green]Roadmap run {rm.generation_run_id[:8]}… — {rm.total} items[/green]"
+                )
+                rt = Table(title="Research Roadmap (top items)")
+                rt.add_column("Rank", justify="right")
+                rt.add_column("Lane", style="cyan")
+                rt.add_column("Title")
+                for item in rm.items[:5]:
+                    rt.add_row(str(item.priority_rank), item.lane.value, item.title)
+                console.print(rt)
+    except ValueError as exc:
+        console.print(f"[red]Invalid reproduction request:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except HTTPException as exc:
+        console.print(f"[red]Reproduction simulation failed[/red] ({exc.status_code}): {exc.detail}")
         raise typer.Exit(code=1)
     finally:
         db.close()

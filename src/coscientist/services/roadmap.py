@@ -190,13 +190,27 @@ def _sim_summary(raw: str | None) -> dict | None:
     if not sim or sim.get("acoustic_contrast_db") is None:
         return None
     geo = sim.get("resolved_geometry", {}) or {}
-    return {
+    summary = {
         "predicted_contrast_db": sim.get("acoustic_contrast_db"),
         "target_contrast_db": sim.get("target_contrast_db"),
         "meets_target": sim.get("meets_target"),
         "layout": geo.get("layout"),
         "n_elements": geo.get("n_elements"),
     }
+    if sim.get("mode") == "sound_field_reproduction":
+        summary.update(
+            {
+                "mode": "sound_field_reproduction",
+                "solver": sim.get("solver"),
+                "target": sim.get("target"),
+                "normalized_reproduction_error": sim.get("normalized_reproduction_error"),
+                "spatial_correlation": sim.get("spatial_correlation"),
+                "mean_spl_error_db": sim.get("mean_spl_error_db"),
+                "max_spl_error_db": sim.get("max_spl_error_db"),
+                "array_effort": sim.get("array_effort"),
+            }
+        )
+    return summary
 
 
 def _build_context(db: Session, goal_id: str) -> dict:

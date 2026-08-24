@@ -30,10 +30,12 @@ from coscientist.schemas.device import (
     DeviceConceptStatusEnum,
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
+    DeviceReproductionResult,
     DeviceSimulationResult,
     ExpectedPerformance,
     FormFactor,
     HardwareSpec,
+    ReproductionPerBand,
     SimulationPerBand,
     UseCase,
 )
@@ -517,6 +519,119 @@ def simulate(
         repro_endpoint=f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
         overrides=overrides or {},
         previous_contrast_db=previous_contrast_db,
+    )
+
+
+def reproduce(
+    db: Session,
+    device_id: str,
+    goal_id: str,
+    *,
+    timeout: float | None = None,
+    overrides: dict | None = None,
+    target_kind: str = "spherical_wave",
+    target_origin: list[float] | None = None,
+    target_direction: list[float] | None = None,
+    solver: str = "pressure_matching",
+    regularization: float = 1e-3,
+    control_grid_n: int = 4,
+    eval_grid_n: int = 5,
+) -> DeviceReproductionResult:
+    """Predict sound-field reproduction quality for a device concept.
+
+    This uses the same resolved geometry as `simulate`, but asks repro to solve
+    pressure matching against a target pressure field and return reproduction
+    fidelity metrics instead of only an acoustic-contrast optimum.
+    """
+    governance_svc.assert_execution_boundary("simulate sound-field reproduction")
+    goal_svc.raise_if_restricted(db, goal_id)
+
+    card = _get_or_404(db, device_id, goal_id)
+
+    previous_nre: float | None = None
+    if card.simulation:
+        try:
+            previous_nre = json.loads(card.simulation).get("normalized_reproduction_error")
+        except (ValueError, TypeError):
+            previous_nre = None
+
+    request = _apply_overrides(_resolve_geometry(card), overrides)
+    request.update(
+        {
+            "solver": solver,
+            "target_kind": target_kind,
+            "regularization": regularization,
+            "control_grid_n": control_grid_n,
+            "eval_grid_n": eval_grid_n,
+        }
+    )
+    if target_origin is not None:
+        request["target_origin"] = target_origin
+    if target_direction is not None:
+        request["target_direction"] = target_direction
+
+    client = ReproClient(timeout=timeout or settings.repro_run_timeout)
+    try:
+        result = client.reproduce_device(request)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim/reproduce rejected the request ({exc.response.status_code}): "
+            f"{exc.response.text[:300]}",
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim unreachable at {settings.repro_url}: {exc}",
+        )
+    finally:
+        client.close()
+
+    simulated_at = datetime.now(timezone.utc)
+    endpoint = f"{settings.repro_url.rstrip('/')}/api/v1/device-sim/reproduce"
+    persisted = {
+        "mode": result.get("mode", "sound_field_reproduction"),
+        "simulated_at": simulated_at.isoformat(),
+        "solver": result.get("solver", solver),
+        "target": result.get("target", {}),
+        "normalized_reproduction_error": float(result.get("normalized_reproduction_error", 0.0)),
+        "spatial_correlation": float(result.get("spatial_correlation", 0.0)),
+        "mean_spl_error_db": float(result.get("mean_spl_error_db", 0.0)),
+        "max_spl_error_db": float(result.get("max_spl_error_db", 0.0)),
+        "array_effort": float(result.get("array_effort", 0.0)),
+        "acoustic_contrast_db": float(result.get("acoustic_contrast_db", 0.0)),
+        "per_band": result.get("per_band", []),
+        "resolved_geometry": result.get("resolved_geometry", request),
+        "model_flags": result.get("model_flags", {}),
+        "approximations": result.get("approximations", []),
+        "repro_endpoint": endpoint,
+        "overrides": overrides or {},
+        "previous_normalized_reproduction_error": previous_nre,
+    }
+    card.simulation = json.dumps(persisted)
+    card.updated_at = simulated_at
+    db.commit()
+    db.refresh(card)
+
+    return DeviceReproductionResult(
+        device_id=device_id,
+        simulated_at=simulated_at,
+        mode=persisted["mode"],
+        solver=persisted["solver"],
+        target=persisted["target"],
+        normalized_reproduction_error=persisted["normalized_reproduction_error"],
+        spatial_correlation=persisted["spatial_correlation"],
+        mean_spl_error_db=persisted["mean_spl_error_db"],
+        max_spl_error_db=persisted["max_spl_error_db"],
+        array_effort=persisted["array_effort"],
+        acoustic_contrast_db=persisted["acoustic_contrast_db"],
+        per_band=[ReproductionPerBand(**b) for b in persisted["per_band"]],
+        resolved_geometry=persisted["resolved_geometry"],
+        model_flags=persisted["model_flags"],
+        approximations=persisted["approximations"],
+        repro_endpoint=endpoint,
+        overrides=overrides or {},
+        previous_normalized_reproduction_error=previous_nre,
     )
 
 

@@ -133,6 +133,16 @@ class SimulationPerBand(BaseModel):
     contrast_db: float
 
 
+class ReproductionPerBand(BaseModel):
+    freq_hz: float
+    normalized_reproduction_error: float
+    spatial_correlation: float
+    mean_spl_error_db: float
+    max_spl_error_db: float
+    array_effort: float
+    acoustic_contrast_db: float
+
+
 class DeviceSimulationResult(BaseModel):
     device_id: str
     simulated_at: datetime
@@ -146,6 +156,27 @@ class DeviceSimulationResult(BaseModel):
     repro_endpoint: str
     overrides: dict = Field(default_factory=dict)
     previous_contrast_db: float | None = None
+
+
+class DeviceReproductionResult(BaseModel):
+    device_id: str
+    simulated_at: datetime
+    mode: str = "sound_field_reproduction"
+    solver: str
+    target: dict = Field(default_factory=dict)
+    normalized_reproduction_error: float
+    spatial_correlation: float
+    mean_spl_error_db: float
+    max_spl_error_db: float
+    array_effort: float
+    acoustic_contrast_db: float
+    per_band: list[ReproductionPerBand] = Field(default_factory=list)
+    resolved_geometry: dict = Field(default_factory=dict)
+    model_flags: dict = Field(default_factory=dict)
+    approximations: list[str] = Field(default_factory=list)
+    repro_endpoint: str
+    overrides: dict = Field(default_factory=dict)
+    previous_normalized_reproduction_error: float | None = None
 
 
 class DeviceOptimizeCandidate(BaseModel):

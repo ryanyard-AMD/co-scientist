@@ -148,6 +148,18 @@ class ReproClient:
         resp.raise_for_status()
         return resp.json()
 
+    def reproduce_device(self, request: dict) -> dict:
+        """POST /api/v1/device-sim/reproduce — predict sound-field reproduction
+        quality for a device geometry.
+
+        ``request`` is a resolved DeviceGeometryRequest plus target-field and
+        pressure-matching parameters. Returns broadband and per-band reproduction
+        quality metrics.
+        """
+        resp = self._client.post("/api/v1/device-sim/reproduce", json=request)
+        resp.raise_for_status()
+        return resp.json()
+
     def optimize_device(
         self, base: dict, search_space: dict, *, max_candidates: int = 24
     ) -> dict:

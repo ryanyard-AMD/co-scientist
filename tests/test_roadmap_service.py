@@ -457,6 +457,36 @@ def test_sim_summary_extracts_prediction():
     }
 
 
+def test_sim_summary_extracts_reproduction_quality():
+    summary = svc._sim_summary(json.dumps({
+        "mode": "sound_field_reproduction",
+        "solver": "pressure_matching",
+        "target": {"kind": "plane_wave"},
+        "normalized_reproduction_error": 0.2175,
+        "spatial_correlation": 0.9412,
+        "mean_spl_error_db": 1.88,
+        "max_spl_error_db": 4.73,
+        "array_effort": 2.41,
+        "acoustic_contrast_db": 18.6,
+        "resolved_geometry": {"layout": "cap", "n_elements": 16},
+    }))
+    assert summary == {
+        "predicted_contrast_db": 18.6,
+        "target_contrast_db": None,
+        "meets_target": None,
+        "layout": "cap",
+        "n_elements": 16,
+        "mode": "sound_field_reproduction",
+        "solver": "pressure_matching",
+        "target": {"kind": "plane_wave"},
+        "normalized_reproduction_error": 0.2175,
+        "spatial_correlation": 0.9412,
+        "mean_spl_error_db": 1.88,
+        "max_spl_error_db": 4.73,
+        "array_effort": 2.41,
+    }
+
+
 def test_build_context_includes_device_simulation(db_session):
     goal = _create_goal(db_session)
     _seed_device(db_session, goal.id, simulation=json.dumps({

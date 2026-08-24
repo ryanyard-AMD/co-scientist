@@ -391,6 +391,33 @@ _OPT_RESPONSE = {
 }
 
 
+_REPRODUCE_RESPONSE = {
+    "mode": "sound_field_reproduction",
+    "solver": "pressure_matching",
+    "target": {"kind": "plane_wave", "origin": [0.0, -1.0, 0.0], "direction": [0.0, 1.0, 0.0]},
+    "normalized_reproduction_error": 0.2175,
+    "spatial_correlation": 0.9412,
+    "mean_spl_error_db": 1.88,
+    "max_spl_error_db": 4.73,
+    "array_effort": 2.41,
+    "acoustic_contrast_db": 18.6,
+    "per_band": [
+        {
+            "freq_hz": 2000.0,
+            "normalized_reproduction_error": 0.2,
+            "spatial_correlation": 0.95,
+            "mean_spl_error_db": 1.5,
+            "max_spl_error_db": 3.9,
+            "array_effort": 2.1,
+            "acoustic_contrast_db": 20.0,
+        }
+    ],
+    "model_flags": {"t60_s": 0.0, "pal_model": "point_source", "n_elements": 16, "layout": "ula"},
+    "resolved_geometry": {"layout": "ula", "n_elements": 16, "control_points": 27, "evaluation_points": 27},
+    "approximations": ["frequency-domain pressure matching with Tikhonov regularization"],
+}
+
+
 class _FakeReproClient:
     """Captures the geometry handed to the repro device-sim endpoint."""
 
@@ -398,8 +425,10 @@ class _FakeReproClient:
     last_base: dict | None = None
     last_search_space: dict | None = None
     last_max_candidates: int | None = None
+    last_reproduction_request: dict | None = None
     response: dict = _SIM_RESPONSE
     opt_response: dict = _OPT_RESPONSE
+    reproduce_response: dict = _REPRODUCE_RESPONSE
 
     def __init__(self, *args, **kwargs):
         pass
@@ -407,6 +436,10 @@ class _FakeReproClient:
     def simulate_device(self, geometry):
         type(self).last_geometry = geometry
         return self.response
+
+    def reproduce_device(self, request):
+        type(self).last_reproduction_request = request
+        return self.reproduce_response
 
     def optimize_device(self, base, search_space, *, max_candidates=24):
         type(self).last_base = base
@@ -525,6 +558,72 @@ def test_simulate_reports_previous_contrast_delta(mock_agent, db_session):
     # the re-run sees the prior prediction so the CLI can show the delta
     assert second.previous_contrast_db == 43.46
     assert second.acoustic_contrast_db == 30.0
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_populates_card_with_quality_metrics(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    result = svc.reproduce(
+        db_session,
+        device_id,
+        goal.id,
+        target_kind="plane_wave",
+        regularization=0.01,
+        control_grid_n=3,
+        eval_grid_n=3,
+        overrides={"n_elements": 16, "t60": 0.0},
+    )
+
+    assert result.device_id == device_id
+    assert result.mode == "sound_field_reproduction"
+    assert result.normalized_reproduction_error == 0.2175
+    assert result.spatial_correlation == 0.9412
+    assert result.per_band[0].acoustic_contrast_db == 20.0
+
+    req = _FakeReproClient.last_reproduction_request
+    assert req["layout"] == "ula"
+    assert req["n_elements"] == 16
+    assert req["t60"] == 0.0
+    assert req["target_kind"] == "plane_wave"
+    assert req["regularization"] == 0.01
+    assert req["control_grid_n"] == 3
+    assert req["eval_grid_n"] == 3
+
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.simulation["mode"] == "sound_field_reproduction"
+    assert card.simulation["normalized_reproduction_error"] == 0.2175
+    assert card.simulation["spatial_correlation"] == 0.9412
+    assert card.simulation["overrides"] == {"n_elements": 16, "t60": 0.0}
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_reports_previous_reproduction_error(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    first = svc.reproduce(db_session, device_id, goal.id)
+    assert first.previous_normalized_reproduction_error is None
+
+    _FakeReproClient.reproduce_response = {
+        **_REPRODUCE_RESPONSE,
+        "normalized_reproduction_error": 0.12,
+    }
+    try:
+        second = svc.reproduce(db_session, device_id, goal.id)
+    finally:
+        _FakeReproClient.reproduce_response = _REPRODUCE_RESPONSE
+    assert second.previous_normalized_reproduction_error == 0.2175
+    assert second.normalized_reproduction_error == 0.12
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_honors_execution_boundary(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with patch("coscientist.services.governance.settings.enforce_execution_boundary", True):
+        with pytest.raises(Exception) as exc_info:
+            svc.reproduce(db_session, device_id, goal.id)
+    assert exc_info.value.status_code == 403
 
 
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)

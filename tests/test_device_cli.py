@@ -8,6 +8,8 @@ from coscientist.cli.app import _parse_sweep, app
 from coscientist.schemas.device import (
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
+    DeviceReproductionResult,
+    ReproductionPerBand,
     SimulationPerBand,
 )
 
@@ -64,6 +66,36 @@ def _fake_result():
     )
 
 
+def _fake_reproduction_result():
+    return DeviceReproductionResult(
+        device_id="dev-1",
+        simulated_at=datetime.now(timezone.utc),
+        solver="pressure_matching",
+        target={"kind": "plane_wave"},
+        normalized_reproduction_error=0.2175,
+        spatial_correlation=0.9412,
+        mean_spl_error_db=1.88,
+        max_spl_error_db=4.73,
+        array_effort=2.41,
+        acoustic_contrast_db=18.6,
+        per_band=[
+            ReproductionPerBand(
+                freq_hz=2000.0,
+                normalized_reproduction_error=0.2,
+                spatial_correlation=0.95,
+                mean_spl_error_db=1.5,
+                max_spl_error_db=3.9,
+                array_effort=2.1,
+                acoustic_contrast_db=20.0,
+            )
+        ],
+        resolved_geometry={"layout": "ula", "n_elements": 16, "control_points": 27, "evaluation_points": 27},
+        model_flags={"pal_model": "point_source"},
+        repro_endpoint="http://localhost:8003/api/v1/device-sim/reproduce",
+        previous_normalized_reproduction_error=0.3,
+    )
+
+
 def test_device_optimize_renders_ranked_table():
     with patch("coscientist.services.device.optimize", return_value=_fake_result()) as m:
         result = runner.invoke(
@@ -76,6 +108,27 @@ def test_device_optimize_renders_ranked_table():
     # search space forwarded to the service
     _, _, _, search_space = m.call_args.args
     assert search_space == {"n_elements": [8, 16]}
+
+
+def test_device_reproduce_renders_quality_metrics():
+    with patch("coscientist.services.device.reproduce", return_value=_fake_reproduction_result()) as m:
+        result = runner.invoke(
+            app,
+            [
+                "device", "reproduce", "dev-1", "goal-1",
+                "--target", "plane_wave",
+                "--target-direction", "0,1,0",
+                "--set", "n_elements=16",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert "Normalized reproduction error" in result.output
+    assert "0.2175" in result.output
+    assert "Spatial correlation" in result.output
+    assert "▼ -0.0825" in result.output
+    assert m.call_args.kwargs["target_kind"] == "plane_wave"
+    assert m.call_args.kwargs["target_direction"] == [0.0, 1.0, 0.0]
+    assert m.call_args.kwargs["overrides"] == {"n_elements": 16}
 
 
 def test_device_optimize_requires_sweep():
