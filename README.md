@@ -248,6 +248,7 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - **Structured evidence gaps** (CS-ROADMAP-003): `GET /roadmap/evidence-gaps` (and `cs roadmap gaps`) returns, per promising approach, the claim fields lacking evidence links and the weak/low-confidence rubric dimensions — the "what must be tested" view that is also fed into the roadmap agent's context
 - Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed
 - Idempotent generation: each `POST /generate` creates a fresh `generation_run_id` batch; prior items remain in DB with their original status for audit
+- Generation cleanup: `cs roadmap supersede-old <GOAL_ID>` marks open items from older generation runs as `superseded`, keeping only the newest generation open while preserving the old recommendations for `--status superseded` review
 - Full traceability: each item links back to `source_approach_ids`, `source_experiment_id`, and/or `source_device_id`
 - **Simulation-aware prototype planning**: each device concept's persisted `simulation` (predicted acoustic contrast, reproduction-quality metrics, layout, element count — see `cs device simulate`/`reproduce`/`optimize`) is summarised into the agent context, so concepts that already look ready get `device_prototype` items while those that fall short (or are unsimulated) get geometry-refinement, reproduction-quality, or run-a-simulation items instead
 
@@ -889,6 +890,7 @@ cs roadmap generate <GOAL_ID>
 cs roadmap list <GOAL_ID> [--lane conservative|exploratory|device_prototype] [--status open|completed|superseded]
 cs roadmap show <ITEM_ID> <GOAL_ID>
 cs roadmap complete <ITEM_ID> <GOAL_ID>
+cs roadmap supersede-old <GOAL_ID> [--keep-generation <GENERATION_RUN_ID>]
 cs roadmap gaps <GOAL_ID>                # per-approach evidence gaps (CS-ROADMAP-003)
 ```
 
@@ -1052,6 +1054,7 @@ All endpoints are prefixed with `/co-scientist`.
 | POST | `/goals/{id}/roadmap/generate` | Generate ranked roadmap items via agent |
 | GET | `/goals/{id}/roadmap` | List roadmap items (filter by lane, status) |
 | GET | `/goals/{id}/roadmap/evidence-gaps` | Per-approach evidence gaps (CS-ROADMAP-003) |
+| POST | `/goals/{id}/roadmap/supersede-old` | Mark open items from older roadmap generations as superseded |
 | GET | `/goals/{id}/roadmap/{rid}` | Get roadmap item details |
 | POST | `/goals/{id}/roadmap/{rid}/transition` | Transition item status (open → completed \| superseded) |
 

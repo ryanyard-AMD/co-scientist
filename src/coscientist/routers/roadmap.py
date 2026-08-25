@@ -9,6 +9,8 @@ from coscientist.schemas.roadmap import (
     RoadmapGenerateRequest,
     RoadmapLaneEnum,
     RoadmapStatusEnum,
+    RoadmapSupersedeRequest,
+    RoadmapSupersedeResponse,
     RoadmapTransitionRequest,
 )
 from coscientist.services import roadmap as roadmap_svc
@@ -40,6 +42,19 @@ def list_roadmap(
 @router.get("/evidence-gaps", response_model=EvidenceGapResponse)
 def evidence_gaps(goal_id: str, db: Session = Depends(get_db)):
     return roadmap_svc.identify_evidence_gaps(db, goal_id)
+
+
+@router.post("/supersede-old", response_model=RoadmapSupersedeResponse)
+def supersede_old_roadmap_items(
+    goal_id: str,
+    request: RoadmapSupersedeRequest,
+    db: Session = Depends(get_db),
+):
+    return roadmap_svc.supersede_older_generations(
+        db,
+        goal_id,
+        keep_generation_run_id=request.keep_generation_run_id,
+    )
 
 
 @router.get("/{item_id}", response_model=ResearchRoadmapItemResponse)

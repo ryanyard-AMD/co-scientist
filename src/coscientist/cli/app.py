@@ -2538,6 +2538,33 @@ def roadmap_list(
         db.close()
 
 
+@roadmap_app.command("supersede-old")
+def roadmap_supersede_old(
+    goal_id: str = typer.Argument(...),
+    keep_generation: Optional[str] = typer.Option(
+        None,
+        "--keep-generation",
+        help="Generation run ID to keep open. Defaults to the newest open generation.",
+    ),
+):
+    """Mark open roadmap items from older generations as superseded."""
+    db = _get_session()
+    try:
+        result = roadmap_svc.supersede_older_generations(
+            db,
+            goal_id,
+            keep_generation_run_id=keep_generation,
+        )
+        kept = result.kept_generation_run_id
+        kept_text = kept[:8] + "…" if kept else "none"
+        console.print(
+            f"[green]Superseded {result.superseded_count} roadmap item(s); "
+            f"kept generation {kept_text} open.[/green]"
+        )
+    finally:
+        db.close()
+
+
 @roadmap_app.command("show")
 def roadmap_show(
     item_id: str = typer.Argument(...),

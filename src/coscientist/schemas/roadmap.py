@@ -48,6 +48,10 @@ class RoadmapTransitionRequest(BaseModel):
     status: RoadmapStatusEnum
 
 
+class RoadmapSupersedeRequest(BaseModel):
+    keep_generation_run_id: str | None = None
+
+
 # --- Response schemas ---
 
 class ResearchRoadmapItemResponse(BaseModel):
@@ -80,6 +84,13 @@ class ResearchRoadmapListResponse(BaseModel):
     items: list[ResearchRoadmapItemResponse]
     total: int
     generation_run_id: str | None = None
+
+
+class RoadmapSupersedeResponse(BaseModel):
+    goal_id: str
+    kept_generation_run_id: str | None
+    superseded_count: int
+    items: list[ResearchRoadmapItemResponse]
 
 
 class ApproachEvidenceGap(BaseModel):

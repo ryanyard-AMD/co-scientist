@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -93,8 +93,10 @@ def _seed_roadmap_item(
     source_experiment_id=None,
     priority_score=0.8,
     priority_rank=1,
+    generation_run_id=None,
+    created_at=None,
 ):
-    now = datetime.now(timezone.utc)
+    now = created_at or datetime.now(timezone.utc)
     item = ResearchRoadmapItem(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
@@ -110,7 +112,7 @@ def _seed_roadmap_item(
         source_approach_ids=json.dumps([]),
         source_experiment_id=source_experiment_id,
         source_device_id=None,
-        generation_run_id=str(uuid.uuid4()),
+        generation_run_id=generation_run_id or str(uuid.uuid4()),
         model_used="test-model",
         created_at=now,
         updated_at=now,
@@ -302,6 +304,83 @@ def test_transition_superseded_is_terminal(db_session):
     with pytest.raises(HTTPException) as exc_info:
         svc.transition_item(db_session, item.id, goal.id, RoadmapStatusEnum.completed)
     assert exc_info.value.status_code == 422
+
+
+def test_supersede_older_generations_keeps_latest_open_generation(db_session):
+    goal = _create_goal(db_session)
+    now = datetime.now(timezone.utc)
+    old_gen = "old-generation"
+    new_gen = "new-generation"
+    old_a = _seed_roadmap_item(
+        db_session, goal.id, status="open", generation_run_id=old_gen, created_at=now
+    )
+    old_b = _seed_roadmap_item(
+        db_session, goal.id, status="open", generation_run_id=old_gen, created_at=now
+    )
+    new_item = _seed_roadmap_item(
+        db_session,
+        goal.id,
+        status="open",
+        generation_run_id=new_gen,
+        created_at=now + timedelta(minutes=1),
+    )
+    completed = _seed_roadmap_item(
+        db_session, goal.id, status="completed", generation_run_id=old_gen, created_at=now
+    )
+
+    result = svc.supersede_older_generations(db_session, goal.id)
+
+    assert result.kept_generation_run_id == new_gen
+    assert result.superseded_count == 2
+    db_session.refresh(old_a)
+    db_session.refresh(old_b)
+    db_session.refresh(new_item)
+    db_session.refresh(completed)
+    assert old_a.status == "superseded"
+    assert old_b.status == "superseded"
+    assert new_item.status == "open"
+    assert completed.status == "completed"
+
+
+def test_supersede_older_generations_honors_explicit_keep(db_session):
+    goal = _create_goal(db_session)
+    now = datetime.now(timezone.utc)
+    keep = "manual-keep"
+    other = "other-generation"
+    keep_item = _seed_roadmap_item(
+        db_session, goal.id, status="open", generation_run_id=keep, created_at=now
+    )
+    other_item = _seed_roadmap_item(
+        db_session,
+        goal.id,
+        status="open",
+        generation_run_id=other,
+        created_at=now + timedelta(minutes=1),
+    )
+
+    result = svc.supersede_older_generations(
+        db_session, goal.id, keep_generation_run_id=keep
+    )
+
+    assert result.kept_generation_run_id == keep
+    assert result.superseded_count == 1
+    db_session.refresh(keep_item)
+    db_session.refresh(other_item)
+    assert keep_item.status == "open"
+    assert other_item.status == "superseded"
+
+
+def test_supersede_older_generations_unknown_generation_404(db_session):
+    from fastapi import HTTPException
+
+    goal = _create_goal(db_session)
+    _seed_roadmap_item(db_session, goal.id)
+
+    with pytest.raises(HTTPException) as exc:
+        svc.supersede_older_generations(
+            db_session, goal.id, keep_generation_run_id="missing-generation"
+        )
+    assert exc.value.status_code == 404
 
 
 # --- retire_for_experiment ---

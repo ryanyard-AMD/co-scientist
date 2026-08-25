@@ -24,6 +24,7 @@ from coscientist.schemas.roadmap import (
     RoadmapExecutionOutcomeEnum,
     RoadmapLaneEnum,
     RoadmapStatusEnum,
+    RoadmapSupersedeResponse,
 )
 from coscientist.services import evaluation as evaluation_svc
 from coscientist.services import goal as goal_svc
@@ -409,6 +410,78 @@ def transition_item(
     db.commit()
     db.refresh(item)
     return _to_response(item)
+
+
+def supersede_older_generations(
+    db: Session,
+    goal_id: str,
+    keep_generation_run_id: str | None = None,
+) -> RoadmapSupersedeResponse:
+    """Mark open roadmap items from older generations as superseded.
+
+    If no generation is specified, the newest open generation for the goal is kept.
+    Completed and already-superseded items are never changed.
+    """
+    goal_svc.get(db, goal_id)
+
+    if keep_generation_run_id is None:
+        keep_generation_run_id = db.scalar(
+            select(ResearchRoadmapItem.generation_run_id)
+            .where(
+                ResearchRoadmapItem.workspace_id == goal_id,
+                ResearchRoadmapItem.status == RoadmapStatusEnum.open.value,
+            )
+            .order_by(ResearchRoadmapItem.created_at.desc())
+            .limit(1)
+        )
+    else:
+        exists = db.scalar(
+            select(ResearchRoadmapItem.id)
+            .where(
+                ResearchRoadmapItem.workspace_id == goal_id,
+                ResearchRoadmapItem.generation_run_id == keep_generation_run_id,
+            )
+            .limit(1)
+        )
+        if exists is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Roadmap generation {keep_generation_run_id!r} not found "
+                    f"for goal {goal_id!r}"
+                ),
+            )
+
+    if keep_generation_run_id is None:
+        return RoadmapSupersedeResponse(
+            goal_id=goal_id,
+            kept_generation_run_id=None,
+            superseded_count=0,
+            items=[],
+        )
+
+    items = list(
+        db.scalars(
+            select(ResearchRoadmapItem).where(
+                ResearchRoadmapItem.workspace_id == goal_id,
+                ResearchRoadmapItem.status == RoadmapStatusEnum.open.value,
+                ResearchRoadmapItem.generation_run_id != keep_generation_run_id,
+            )
+        )
+    )
+    now = datetime.now(timezone.utc)
+    for item in items:
+        item.status = RoadmapStatusEnum.superseded.value
+        item.updated_at = now
+    db.commit()
+    for item in items:
+        db.refresh(item)
+    return RoadmapSupersedeResponse(
+        goal_id=goal_id,
+        kept_generation_run_id=keep_generation_run_id,
+        superseded_count=len(items),
+        items=[_to_response(i) for i in items],
+    )
 
 
 def identify_evidence_gaps(db: Session, goal_id: str) -> EvidenceGapResponse:

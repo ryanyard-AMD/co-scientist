@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -61,8 +61,16 @@ def _seed_approach(db, workspace_id):
     return approach
 
 
-def _seed_roadmap_item(db, workspace_id, status="open", lane="conservative", source_experiment_id=None):
-    now = datetime.now(timezone.utc)
+def _seed_roadmap_item(
+    db,
+    workspace_id,
+    status="open",
+    lane="conservative",
+    source_experiment_id=None,
+    generation_run_id=None,
+    created_at=None,
+):
+    now = created_at or datetime.now(timezone.utc)
     item = ResearchRoadmapItem(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
@@ -78,7 +86,7 @@ def _seed_roadmap_item(db, workspace_id, status="open", lane="conservative", sou
         source_approach_ids=json.dumps([]),
         source_experiment_id=source_experiment_id,
         source_device_id=None,
-        generation_run_id=str(uuid.uuid4()),
+        generation_run_id=generation_run_id or str(uuid.uuid4()),
         model_used="test-model",
         created_at=now,
         updated_at=now,
@@ -184,6 +192,40 @@ def test_transition_invalid_returns_422(client, db_session):
         json={"status": "open"},
     )
     assert resp.status_code == 422
+
+
+def test_supersede_old_generations_returns_200(client, db_session):
+    goal = _create_goal(client)
+    now = datetime.now(timezone.utc)
+    old_item = _seed_roadmap_item(
+        db_session,
+        goal["id"],
+        status="open",
+        generation_run_id="old-generation",
+        created_at=now,
+    )
+    latest_item = _seed_roadmap_item(
+        db_session,
+        goal["id"],
+        status="open",
+        generation_run_id="latest-generation",
+        created_at=now + timedelta(minutes=1),
+    )
+    db_session.commit()
+
+    resp = client.post(
+        f"/co-scientist/goals/{goal['id']}/roadmap/supersede-old",
+        json={},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kept_generation_run_id"] == "latest-generation"
+    assert body["superseded_count"] == 1
+    db_session.refresh(old_item)
+    db_session.refresh(latest_item)
+    assert old_item.status == "superseded"
+    assert latest_item.status == "open"
 
 
 # --- Auto-retire integration ---
