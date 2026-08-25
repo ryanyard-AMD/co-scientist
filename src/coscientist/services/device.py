@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.repro import ReproClient
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.models.approach import ApproachCard
 from coscientist.models.device import DeviceConceptCard
 from coscientist.models.experiment import ExperimentCard
@@ -190,7 +191,7 @@ def _run_device_agent(
         "Consider form factor compatibility, hardware overlap, and combined control stacks."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

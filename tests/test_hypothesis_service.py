@@ -567,7 +567,7 @@ def test_hypothesis_agent_writes_governance_row(db_session, monkeypatch):
     fake_client = MagicMock()
     fake_client.messages.create.return_value = fake_message
 
-    with patch.object(svc.anthropic, "Anthropic", return_value=fake_client):
+    with patch.object(svc, "anthropic_client", return_value=fake_client):
         result = svc.generate_hypotheses(db_session, goal.id, HypothesisGenerateRequest())
 
     assert result.hypotheses_created >= 1

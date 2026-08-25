@@ -3,12 +3,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.models.approach import ApproachCard
 from coscientist.models.device import DeviceConceptCard
 from coscientist.models.experiment import ExperimentCard
@@ -134,7 +134,7 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
         "experiments and device prototype steps."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
@@ -175,156 +175,6 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
             status_code=502,
             detail=f"Roadmap agent returned unparseable response: {exc}",
         )
-
-
-def _fallback_roadmap_items(context: dict) -> list[AgentRoadmapItem]:
-    """Deterministic roadmap fallback used when the LLM is unavailable.
-
-    This is intentionally conservative: it turns explicit evidence gaps and
-    device simulation state into actionable next steps without inventing domain
-    claims beyond what is already stored in the workspace.
-    """
-    items: list[AgentRoadmapItem] = []
-
-    for device in context.get("device_concepts", []):
-        sim = device.get("simulation")
-        risks = device.get("unresolved_risks") or []
-        approach_ids = device.get("approach_ids") or []
-        name = device.get("name") or "device concept"
-        if sim is None:
-            items.append(
-                AgentRoadmapItem(
-                    title=f"Simulate {name[:40]}",
-                    description=(
-                        "Run a device simulation so prototype planning can use "
-                        "predicted performance instead of an unsimulated concept."
-                    ),
-                    lane=RoadmapLaneEnum.conservative,
-                    priority_score=0.82,
-                    rationale="Device concept has no persisted simulation summary.",
-                    estimated_cost="low",
-                    estimated_information_gain="high",
-                    source_approach_ids=approach_ids,
-                    source_experiment_id=None,
-                    source_device_id=device.get("id"),
-                )
-            )
-            continue
-
-        if sim.get("mode") == "sound_field_reproduction":
-            nre = sim.get("normalized_reproduction_error")
-            corr = sim.get("spatial_correlation")
-            description = (
-                f"Current reproduction simulation reports NRE={nre} and "
-                f"spatial_correlation={corr}. Extend the sweep across reverberation, "
-                "listener offsets, and measured/estimated ATF uncertainty before "
-                "hardware prototyping."
-            )
-            items.append(
-                AgentRoadmapItem(
-                    title=f"Stress-test {name[:32]} reproduction",
-                    description=description,
-                    lane=RoadmapLaneEnum.conservative,
-                    priority_score=0.9,
-                    rationale=(
-                        "A reproduction-quality result exists, but robustness "
-                        "conditions remain the highest-value next uncertainty."
-                    ),
-                    estimated_cost="low",
-                    estimated_information_gain="high",
-                    source_approach_ids=approach_ids,
-                    source_experiment_id=None,
-                    source_device_id=device.get("id"),
-                )
-            )
-        elif sim.get("meets_target"):
-            items.append(
-                AgentRoadmapItem(
-                    title=f"Prototype {name[:38]}",
-                    description=(
-                        "The persisted contrast simulation meets the target; move to "
-                        "a bounded prototype or measurement step to validate the model."
-                    ),
-                    lane=RoadmapLaneEnum.device_prototype,
-                    priority_score=0.78,
-                    rationale="Simulation meets target contrast, so measurement can reduce hardware risk.",
-                    estimated_cost="medium",
-                    estimated_information_gain="high",
-                    source_approach_ids=approach_ids,
-                    source_experiment_id=None,
-                    source_device_id=device.get("id"),
-                )
-            )
-        else:
-            items.append(
-                AgentRoadmapItem(
-                    title=f"Refine {name[:40]} geometry",
-                    description=(
-                        "The persisted contrast simulation does not meet target; "
-                        "sweep geometry and PAL fidelity knobs before prototyping."
-                    ),
-                    lane=RoadmapLaneEnum.conservative,
-                    priority_score=0.8,
-                    rationale="Simulation falls short or lacks a target pass, so geometry refinement is lower cost than hardware.",
-                    estimated_cost="low",
-                    estimated_information_gain="high",
-                    source_approach_ids=approach_ids,
-                    source_experiment_id=None,
-                    source_device_id=device.get("id"),
-                )
-            )
-
-        if risks:
-            items.append(
-                AgentRoadmapItem(
-                    title=f"Reduce {name[:36]} risks",
-                    description=(
-                        "Address the top unresolved device risks with a focused "
-                        f"experiment: {risks[0]}"
-                    ),
-                    lane=RoadmapLaneEnum.exploratory,
-                    priority_score=0.72,
-                    rationale="The device card still has unresolved risks after simulation.",
-                    estimated_cost="medium",
-                    estimated_information_gain="high",
-                    source_approach_ids=approach_ids,
-                    source_experiment_id=None,
-                    source_device_id=device.get("id"),
-                )
-            )
-
-    for gap in context.get("evidence_gaps", []):
-        weak = gap.get("weak_dimensions") or []
-        missing = gap.get("missing_claim_fields") or []
-        focus = ", ".join((weak or missing)[:3]) or "evidence"
-        items.append(
-            AgentRoadmapItem(
-                title=f"Close {gap.get('approach_name', 'approach')[:38]} gaps",
-                description=(
-                    f"Run a low-cost validation targeting weak or missing evidence: {focus}."
-                ),
-                lane=RoadmapLaneEnum.conservative,
-                priority_score=0.68,
-                rationale="Promising approach still has unresolved evidence gaps.",
-                estimated_cost="low",
-                estimated_information_gain="medium",
-                source_approach_ids=[gap["approach_id"]],
-                source_experiment_id=None,
-                source_device_id=None,
-            )
-        )
-
-    deduped: list[AgentRoadmapItem] = []
-    seen: set[tuple[str, str | None]] = set()
-    for item in sorted(items, key=lambda i: i.priority_score, reverse=True):
-        key = (item.title, item.source_device_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-        if len(deduped) >= 15:
-            break
-    return deduped
 
 
 def _sim_summary(raw: str | None) -> dict | None:
@@ -457,27 +307,7 @@ def generate(db: Session, goal_id: str) -> ResearchRoadmapListResponse:
     if not context["approaches"]:
         return ResearchRoadmapListResponse(items=[], total=0, generation_run_id=None)
 
-    fallback_reason: str | None = None
-    if settings.anthropic_api_key:
-        try:
-            agent_items = _run_roadmap_agent(db, goal_id, goal, context)
-        except anthropic.APIError as exc:
-            fallback_reason = f"{type(exc).__name__}: {exc}"
-            agent_items = _fallback_roadmap_items(context)
-    else:
-        fallback_reason = "ANTHROPIC_API_KEY not configured"
-        agent_items = _fallback_roadmap_items(context)
-
-    if fallback_reason is not None:
-        governance_svc.log_agent_call(
-            db=db,
-            workspace_id=goal_id,
-            service="roadmap",
-            action="generate_roadmap",
-            model_used=settings.validation_model,
-            response_summary="used deterministic roadmap fallback",
-            error=fallback_reason,
-        )
+    agent_items = _run_roadmap_agent(db, goal_id, goal, context)
 
     generation_run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)

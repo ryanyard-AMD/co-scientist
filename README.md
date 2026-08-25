@@ -244,7 +244,6 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - **ResearchRoadmapItem** with 3-state lifecycle: `open` → `completed` | `superseded`
 - Three research lanes: `conservative` (low-risk near-term validation), `exploratory` (higher-risk higher-upside novel combinations), `device_prototype` (hardware and integration steps)
 - Agent assigns `priority_score` (0–1) by weighing estimated information gain, device relevance, and cost; items returned ranked highest-first within a generation run
-- If the Anthropic key is missing or the API rejects the call, roadmap generation logs the failure and uses a deterministic fallback from evidence gaps and device simulation summaries rather than blocking the workflow
 - Agent explicitly identifies evidence gaps per approach and surfaces "run scout for X method family" items
 - **Structured evidence gaps** (CS-ROADMAP-003): `GET /roadmap/evidence-gaps` (and `cs roadmap gaps`) returns, per promising approach, the claim fields lacking evidence links and the weak/low-confidence rubric dimensions — the "what must be tested" view that is also fed into the roadmap agent's context
 - Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed
@@ -1135,7 +1134,10 @@ Environment variables (prefix `CS_`):
 | `CS_EXPERIMENT_SWEEP_COST_MEDIUM` | `500` | Sweep cardinality at or below this → low cost/medium runtime |
 | `CS_EXPERIMENT_SWEEP_COST_HIGH` | `2000` | Sweep cardinality at or below this → medium cost/medium runtime |
 | `CS_VALIDATION_MODEL` | `claude-sonnet-4-6` | Claude model used for experiment validation agent |
-| `CS_ANTHROPIC_API_KEY` | | Anthropic API key for the validation agent |
+| `CS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` | | Anthropic API key. When using the AMD Anthropic-compatible gateway, this can be `dummy`; gateway auth comes from custom headers |
+| `CS_ANTHROPIC_BASE_URL` / `ANTHROPIC_BASE_URL` | | Optional Anthropic-compatible endpoint, e.g. `https://llm-api.amd.com/Anthropic` |
+| `CS_ANTHROPIC_CUSTOM_HEADERS` / `ANTHROPIC_CUSTOM_HEADERS` | | Optional newline-separated headers, e.g. `Ocp-Apim-Subscription-Key: <key>` |
+| `CS_LLM_GATEWAY_KEY` / `LLM_GATEWAY_KEY` | | Optional AMD gateway key; used as `Ocp-Apim-Subscription-Key` when custom headers do not set it |
 | `CS_REPRO_URL` | `http://localhost:8003` | Base URL of the repro experiment runner |
 | `CS_REPRO_API_KEY` | | API key for the repro runner (sent as `x-api-key` when set) |
 | `CS_RUNNER_RECOMMEND_TOP_K` | `10` | Retrieval breadth for repro's recommend-method when the runner resolves a reproduction |

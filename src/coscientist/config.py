@@ -1,3 +1,4 @@
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,7 +51,22 @@ class Settings(BaseSettings):
     experiment_sweep_cost_medium: int = 500
     experiment_sweep_cost_high: int = 2000
     validation_model: str = "claude-sonnet-4-6"
-    anthropic_api_key: str | None = None
+    anthropic_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+    )
+    anthropic_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CS_ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"),
+    )
+    anthropic_custom_headers: str = Field(
+        default="",
+        validation_alias=AliasChoices("CS_ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_CUSTOM_HEADERS"),
+    )
+    llm_gateway_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("CS_LLM_GATEWAY_KEY", "LLM_GATEWAY_KEY"),
+    )
     repro_url: str = "http://localhost:8003"
     repro_api_key: str | None = None
     repro_poll_interval: float = 2.0
@@ -83,6 +99,24 @@ class Settings(BaseSettings):
     # does NOT drive an approach score update — evidence is provisional until the
     # batch completes. Set true to update scores from partial evidence.
     score_update_on_partial: bool = False
+
+    @property
+    def anthropic_default_headers(self) -> dict[str, str]:
+        """Parse gateway headers in the same shape as the retrieval project.
+
+        The Anthropic SDK still requires an api_key value, but AMD gateway auth is
+        supplied through `Ocp-Apim-Subscription-Key` in default headers.
+        """
+        headers: dict[str, str] = {}
+        for line in (self.anthropic_custom_headers or "").splitlines():
+            line = line.strip()
+            if not line or ":" not in line:
+                continue
+            name, value = line.split(":", 1)
+            headers[name.strip()] = value.strip()
+        if self.llm_gateway_key and "Ocp-Apim-Subscription-Key" not in headers:
+            headers["Ocp-Apim-Subscription-Key"] = self.llm_gateway_key
+        return headers
 
 
 settings = Settings()

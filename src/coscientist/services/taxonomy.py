@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from coscientist.clients.retrieval import RetrievalClient
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.domain import REPRO_ANCHOR_FAMILIES, canonicalize_family
 from coscientist.models.approach import ApproachCard
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
@@ -210,7 +211,7 @@ def _induce_taxonomy(
         + "\n\nInduce the method-family taxonomy present in the corpus above."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

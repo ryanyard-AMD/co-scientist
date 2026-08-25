@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.models.approach import ApproachCard
 from coscientist.models.hypothesis import HypothesisCard
 from coscientist.models.ontology import OntologyRelationship, OntologyTerm
@@ -602,7 +603,7 @@ def _run_hypothesis_agent(
         "Synthesize these approaches into one testable research hypothesis."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

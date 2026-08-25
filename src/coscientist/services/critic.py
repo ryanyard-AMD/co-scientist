@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.models.approach import ApproachCard
 from coscientist.models.critic import ApproachCritique
 from coscientist.models.evidence import EvidenceRecord
@@ -178,7 +179,7 @@ def _run_critic_agent(
         + "\n\nCritique the approach card above."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

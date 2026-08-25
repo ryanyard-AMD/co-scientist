@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.models.approach import ApproachCard
 from coscientist.models.critic import ApproachCritique
 from coscientist.models.evidence import EvidenceRecord
@@ -856,7 +857,7 @@ def _run_revise_agent(
         + "\n\nRevise the approach card above to resolve every critic issue."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

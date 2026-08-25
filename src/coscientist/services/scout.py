@@ -18,6 +18,7 @@ from coscientist.clients.retrieval import (
     RetrievalClient,
 )
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.domain import (
     METHOD_FAMILIES,
     RELATED_METHODS,
@@ -485,7 +486,7 @@ def _run_synthesis_agent(
         + "\n\nSynthesize the evidence above for this method family."
     )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,

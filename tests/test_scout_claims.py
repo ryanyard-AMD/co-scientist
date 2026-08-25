@@ -106,7 +106,7 @@ def test_claims_disabled_ingests_nothing(db_session, monkeypatch):
 
 
 def _fake_anthropic_capture(captured):
-    """Return a fake anthropic.Anthropic whose messages.create records the prompt."""
+    """Return a fake client whose messages.create records the prompt."""
     tool_use = SimpleNamespace(type="tool_use", input={
         "synthesis_text": "ok",
         "cited_evidence_ids": [],
@@ -130,7 +130,7 @@ def _fake_anthropic_capture(captured):
         def __init__(self, **kwargs):
             self.messages = _Messages()
 
-    return _Client
+    return _Client()
 
 
 def test_synthesis_prompt_includes_claims_block(db_session, monkeypatch):
@@ -159,7 +159,7 @@ def test_synthesis_prompt_includes_claims_block(db_session, monkeypatch):
     )
 
     captured: dict = {}
-    with patch.object(scout_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(scout_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         scout_svc._run_synthesis_agent(
             db_session, goal.id, "acoustic_contrast_control",
             [chunk_rec, finding_rec, limit_rec],

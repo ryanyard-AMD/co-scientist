@@ -557,15 +557,16 @@ def test_run_validation_agent_sends_correct_context(db_session):
     mock_message.usage.input_tokens = 100
     mock_message.usage.output_tokens = 50
 
-    with mock_patch("coscientist.services.validation.anthropic.Anthropic") as MockAnthropic:
-        MockAnthropic.return_value.messages.create.return_value = mock_message
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = mock_message
+    with mock_patch("coscientist.services.validation.anthropic_client", return_value=fake_client):
         goal_resp = goal_svc.get(db_session, goal.id)
         submission = ExperimentResultSubmission(
             measured_metrics={"acoustic_contrast": 18.5, "latency": 8.2},
         )
         output = _run_validation_agent(db_session, goal.id, exp_card, goal_resp, approach_card, submission)
 
-        call_kwargs = MockAnthropic.return_value.messages.create.call_args.kwargs
+        call_kwargs = fake_client.messages.create.call_args.kwargs
         user_content = call_kwargs["messages"][0]["content"]
         assert "Pass Conditions" in user_content
         assert "acoustic_contrast" in user_content
@@ -714,14 +715,15 @@ def test_run_validation_agent_includes_unmeasurable_block(db_session):
     mock_message.usage.input_tokens = 100
     mock_message.usage.output_tokens = 50
 
-    with mock_patch("coscientist.services.validation.anthropic.Anthropic") as MockAnthropic:
-        MockAnthropic.return_value.messages.create.return_value = mock_message
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = mock_message
+    with mock_patch("coscientist.services.validation.anthropic_client", return_value=fake_client):
         goal_resp = goal_svc.get(db_session, goal.id)
         submission = ExperimentResultSubmission(
             measured_metrics={"acoustic_contrast_db": 23.05},
             unmeasurable_conditions=["dark_zone_attenuation"],
         )
         _run_validation_agent(db_session, goal.id, exp_card, goal_resp, approach_card, submission)
-        user_content = MockAnthropic.return_value.messages.create.call_args.kwargs["messages"][0]["content"]
+        user_content = fake_client.messages.create.call_args.kwargs["messages"][0]["content"]
         assert "Unmeasurable Conditions" in user_content
         assert "dark_zone_attenuation" in user_content

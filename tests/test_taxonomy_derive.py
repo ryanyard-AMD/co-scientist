@@ -231,7 +231,7 @@ def test_derive_dry_run_does_not_persist_goal_pins(db_session):
 
 
 def _fake_anthropic_capture(captured):
-    """Fake anthropic.Anthropic whose messages.create records the system prompt."""
+    """Fake client whose messages.create records the system prompt."""
     tool_use = SimpleNamespace(type="tool_use", input={
         "families": [{"canonical_name": "acoustic_contrast_control",
                       "keywords": ["acoustic contrast"]}],
@@ -250,7 +250,7 @@ def _fake_anthropic_capture(captured):
         def __init__(self, **kwargs):
             self.messages = _Messages()
 
-    return _Client
+    return _Client()
 
 
 class _MethodNodeClient(MockRetrievalClient):
@@ -267,7 +267,7 @@ def test_method_node_hints_injected_into_prompt(db_session, monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
     goal = _create_goal(db_session)
     captured: dict = {}
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=_MethodNodeClient()
         )
@@ -282,7 +282,7 @@ def test_no_method_hints_when_entities_empty(db_session, monkeypatch):
     goal = _create_goal(db_session)
     captured: dict = {}
     # Default mock's get_paper_entities returns {} → no method nodes to ground on.
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=MockRetrievalClient()
         )
@@ -354,7 +354,7 @@ def test_topic_clusters_gated_off_by_default(db_session, monkeypatch):
             return [{"terms": ["a", "b"]}]
 
     captured: dict = {}
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=_ClusterClient()
         )
@@ -372,7 +372,7 @@ def test_topic_clusters_injected_when_enabled(db_session, monkeypatch):
             return [{"terms": ["contrast", "bright zone", "dark zone"]}]
 
     captured: dict = {}
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=_ClusterClient()
         )
@@ -391,7 +391,7 @@ def test_cluster_failure_degrades_gracefully(db_session, monkeypatch):
             raise RuntimeError("cluster endpoint timed out")
 
     captured: dict = {}
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         result = taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=_BoomClient()
         )
@@ -445,7 +445,7 @@ def test_induction_prompt_includes_anchor_vocabulary(db_session, monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
     goal = _create_goal(db_session)
     captured: dict = {}
-    with patch.object(taxonomy_svc.anthropic, "Anthropic", _fake_anthropic_capture(captured)):
+    with patch.object(taxonomy_svc, "anthropic_client", return_value=_fake_anthropic_capture(captured)):
         taxonomy_svc.derive_taxonomy(
             db_session, goal.id, dry_run=True, retrieval_client=MockRetrievalClient()
         )

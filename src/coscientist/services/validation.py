@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from coscientist.config import settings
+from coscientist.llm import anthropic_client
 from coscientist.domain import canonicalize_metric
 from coscientist.models.approach import ApproachCard
 from coscientist.models.experiment import ExperimentCard
@@ -250,7 +251,7 @@ def _run_validation_agent(
     if submission.notes:
         user_message += f"\n\n## Experimenter Notes\n{submission.notes}"
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic_client()
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
