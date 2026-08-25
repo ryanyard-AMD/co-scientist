@@ -244,6 +244,7 @@ Synthesises the full state of a research goal — approaches, experiments, valid
 - **ResearchRoadmapItem** with 3-state lifecycle: `open` → `completed` | `superseded`
 - Three research lanes: `conservative` (low-risk near-term validation), `exploratory` (higher-risk higher-upside novel combinations), `device_prototype` (hardware and integration steps)
 - Agent assigns `priority_score` (0–1) by weighing estimated information gain, device relevance, and cost; items returned ranked highest-first within a generation run
+- If the Anthropic key is missing or the API rejects the call, roadmap generation logs the failure and uses a deterministic fallback from evidence gaps and device simulation summaries rather than blocking the workflow
 - Agent explicitly identifies evidence gaps per approach and surfaces "run scout for X method family" items
 - **Structured evidence gaps** (CS-ROADMAP-003): `GET /roadmap/evidence-gaps` (and `cs roadmap gaps`) returns, per promising approach, the claim fields lacking evidence links and the weak/low-confidence rubric dimensions — the "what must be tested" view that is also fed into the roadmap agent's context
 - Auto-retire: when an experiment transitions to `completed` or `failed`, all `open` roadmap items linked via `source_experiment_id` are automatically retired to `completed` — no manual cleanup needed

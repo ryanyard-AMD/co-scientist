@@ -3,17 +3,21 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import anthropic
+import httpx
 import pytest
 
 from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
 from coscientist.models.device import DeviceConceptCard
+from coscientist.models.governance import AgentActionLog
 from coscientist.models.roadmap import ResearchRoadmapItem
 from coscientist.schemas.roadmap import (
     AgentRoadmapItem,
     RoadmapLaneEnum,
     RoadmapStatusEnum,
 )
+from coscientist.config import settings
 from coscientist.services import goal as goal_svc
 from coscientist.services import roadmap as svc
 
@@ -203,6 +207,68 @@ def test_run_agent_truncated_response_raises_clear_error(db_session):
             svc.generate(db_session, goal.id)
     assert exc_info.value.status_code == 502
     assert "truncated" in exc_info.value.detail.lower()
+
+
+def _api_error(message="roadmap upstream unavailable"):
+    return anthropic.APIError(
+        message,
+        request=httpx.Request("POST", "https://api.anthropic.test/v1/messages"),
+        body=None,
+    )
+
+
+def test_generate_uses_deterministic_fallback_without_api_key(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", None)
+    goal = _create_goal(db_session)
+    _seed_approach(db_session, goal.id, approach_id="approach-1")
+
+    with patch("coscientist.services.roadmap._run_roadmap_agent") as agent:
+        result = svc.generate(db_session, goal.id)
+
+    agent.assert_not_called()
+    assert result.total >= 1
+    assert any("gap" in item.title.lower() for item in result.items)
+    log = db_session.query(AgentActionLog).filter_by(
+        workspace_id=goal.id,
+        service="roadmap",
+        action="generate_roadmap",
+    ).one()
+    assert log.response_summary == "used deterministic roadmap fallback"
+    assert "ANTHROPIC_API_KEY not configured" in log.error
+
+
+def test_generate_uses_deterministic_fallback_on_api_error(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "anthropic_api_key", "bad-key")
+    goal = _create_goal(db_session)
+    _seed_approach(db_session, goal.id, approach_id="approach-1")
+    _seed_device(
+        db_session,
+        goal.id,
+        simulation=json.dumps({
+            "mode": "sound_field_reproduction",
+            "normalized_reproduction_error": 0.0138,
+            "spatial_correlation": 0.9999,
+            "mean_spl_error_db": 0.08,
+            "max_spl_error_db": 0.26,
+            "array_effort": 110.3,
+            "acoustic_contrast_db": -4.39,
+            "resolved_geometry": {"layout": "cap", "n_elements": 32},
+        }),
+    )
+
+    with patch("coscientist.services.roadmap._run_roadmap_agent", side_effect=_api_error()) as agent:
+        result = svc.generate(db_session, goal.id)
+
+    assert agent.called
+    assert result.total >= 1
+    assert any(item.source_device_id is not None for item in result.items)
+    log = db_session.query(AgentActionLog).filter_by(
+        workspace_id=goal.id,
+        service="roadmap",
+        action="generate_roadmap",
+    ).one()
+    assert log.response_summary == "used deterministic roadmap fallback"
+    assert "APIError" in log.error
 
 
 # --- get_roadmap ---
