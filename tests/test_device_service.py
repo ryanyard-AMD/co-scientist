@@ -426,9 +426,11 @@ class _FakeReproClient:
     last_search_space: dict | None = None
     last_max_candidates: int | None = None
     last_reproduction_request: dict | None = None
+    last_reproduction_requests: list[dict] = []
     response: dict = _SIM_RESPONSE
     opt_response: dict = _OPT_RESPONSE
     reproduce_response: dict = _REPRODUCE_RESPONSE
+    reproduce_response_by_n_elements: dict[int, dict] | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -439,6 +441,10 @@ class _FakeReproClient:
 
     def reproduce_device(self, request):
         type(self).last_reproduction_request = request
+        type(self).last_reproduction_requests.append(request)
+        by_elements = type(self).reproduce_response_by_n_elements
+        if by_elements is not None and request.get("n_elements") in by_elements:
+            return by_elements[request["n_elements"]]
         return self.reproduce_response
 
     def optimize_device(self, base, search_space, *, max_candidates=24):
@@ -624,6 +630,67 @@ def test_reproduce_honors_execution_boundary(mock_agent, db_session):
         with pytest.raises(Exception) as exc_info:
             svc.reproduce(db_session, device_id, goal.id)
     assert exc_info.value.status_code == 403
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_sweep_ranks_lowest_error_and_persists(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    low_quality = {
+        **_REPRODUCE_RESPONSE,
+        "normalized_reproduction_error": 0.31,
+        "spatial_correlation": 0.88,
+        "mean_spl_error_db": 3.2,
+        "acoustic_contrast_db": 2.0,
+    }
+    high_quality = {
+        **_REPRODUCE_RESPONSE,
+        "normalized_reproduction_error": 0.11,
+        "spatial_correlation": 0.98,
+        "mean_spl_error_db": 1.1,
+        "acoustic_contrast_db": 6.0,
+    }
+    _FakeReproClient.reproduce_response_by_n_elements = {
+        8: low_quality,
+        16: high_quality,
+    }
+    _FakeReproClient.last_reproduction_requests = []
+    try:
+        result = svc.reproduce_sweep(
+            db_session,
+            device_id,
+            goal.id,
+            {"n_elements": [8, 16]},
+            max_candidates=2,
+        )
+    finally:
+        _FakeReproClient.reproduce_response_by_n_elements = None
+
+    assert result.normalized_reproduction_error == 0.11
+    assert result.best_overrides == {"n_elements": 16}
+    assert result.candidates[0].normalized_reproduction_error == 0.11
+    assert result.candidates[1].normalized_reproduction_error == 0.31
+    assert [r["n_elements"] for r in _FakeReproClient.last_reproduction_requests] == [8, 16]
+
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.simulation["normalized_reproduction_error"] == 0.11
+    assert card.simulation["overrides"] == {"n_elements": 16}
+    assert card.simulation["reproduction_sweep"]["swept_keys"] == ["n_elements"]
+    assert card.simulation["reproduction_sweep"]["n_candidates"] == 2
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_sweep_rejects_oversized_search(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="max_candidates"):
+        svc.reproduce_sweep(
+            db_session,
+            device_id,
+            goal.id,
+            {"n_elements": [8, 16], "t60": [0.0, 0.4]},
+            max_candidates=3,
+        )
 
 
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)

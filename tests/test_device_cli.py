@@ -4,11 +4,13 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from coscientist.cli.app import _parse_sweep, app
+from coscientist.cli.app import _parse_reproduction_sweep, _parse_sweep, app
 from coscientist.schemas.device import (
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
     DeviceReproductionResult,
+    DeviceReproductionSweepCandidate,
+    DeviceReproductionSweepResult,
     ReproductionPerBand,
     SimulationPerBand,
 )
@@ -37,6 +39,17 @@ def test_parse_sweep_coerces_values():
 def test_parse_sweep_requires_equals():
     with pytest.raises(Exception):
         _parse_sweep(["n_elements"])
+
+
+def test_parse_reproduction_sweep_supports_vector_candidates():
+    out = _parse_reproduction_sweep([
+        "n_elements=8,16",
+        "listener=0,0.5,0:0,1.0,0",
+        "t60=0,0.4",
+    ])
+    assert out["n_elements"] == [8, 16]
+    assert out["listener"] == [[0.0, 0.5, 0.0], [0.0, 1.0, 0.0]]
+    assert out["t60"] == [0, 0.4]
 
 
 def _fake_result():
@@ -96,6 +109,48 @@ def _fake_reproduction_result():
     )
 
 
+def _fake_reproduction_sweep_result():
+    return DeviceReproductionSweepResult(
+        device_id="dev-1",
+        simulated_at=datetime.now(timezone.utc),
+        solver="pressure_matching",
+        target={"kind": "spherical_wave"},
+        best_overrides={"n_elements": 16, "listener": [0.0, 1.0, 0.0]},
+        normalized_reproduction_error=0.11,
+        spatial_correlation=0.98,
+        mean_spl_error_db=1.2,
+        max_spl_error_db=3.4,
+        array_effort=7.8,
+        acoustic_contrast_db=5.6,
+        swept_keys=["n_elements", "listener"],
+        n_candidates=2,
+        candidates=[
+            DeviceReproductionSweepCandidate(
+                overrides={"n_elements": 16, "listener": [0.0, 1.0, 0.0]},
+                normalized_reproduction_error=0.11,
+                spatial_correlation=0.98,
+                mean_spl_error_db=1.2,
+                max_spl_error_db=3.4,
+                array_effort=7.8,
+                acoustic_contrast_db=5.6,
+            ),
+            DeviceReproductionSweepCandidate(
+                overrides={"n_elements": 8, "listener": [0.0, 0.5, 0.0]},
+                normalized_reproduction_error=0.22,
+                spatial_correlation=0.94,
+                mean_spl_error_db=2.3,
+                max_spl_error_db=5.6,
+                array_effort=3.2,
+                acoustic_contrast_db=2.1,
+            ),
+        ],
+        resolved_geometry={"layout": "cap", "n_elements": 16},
+        model_flags={"pal_model": "berktay"},
+        repro_endpoint="http://localhost:8003/api/v1/device-sim/reproduce",
+        previous_normalized_reproduction_error=0.2,
+    )
+
+
 def test_device_optimize_renders_ranked_table():
     with patch("coscientist.services.device.optimize", return_value=_fake_result()) as m:
         result = runner.invoke(
@@ -129,6 +184,31 @@ def test_device_reproduce_renders_quality_metrics():
     assert m.call_args.kwargs["target_kind"] == "plane_wave"
     assert m.call_args.kwargs["target_direction"] == [0.0, 1.0, 0.0]
     assert m.call_args.kwargs["overrides"] == {"n_elements": 16}
+
+
+def test_device_reproduce_sweep_renders_ranked_candidates():
+    with patch(
+        "coscientist.services.device.reproduce_sweep",
+        return_value=_fake_reproduction_sweep_result(),
+    ) as m:
+        result = runner.invoke(
+            app,
+            [
+                "device", "reproduce-sweep", "dev-1", "goal-1",
+                "--sweep", "n_elements=8,16",
+                "--sweep", "listener=0,0.5,0:0,1.0,0",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert "Ranked reproduction candidates" in result.output
+    assert "0.1100" in result.output
+    assert "Best reproduction error" in result.output
+    assert "▼ -0.0900" in result.output
+    _, _, _, search_space = m.call_args.args
+    assert search_space == {
+        "n_elements": [8, 16],
+        "listener": [[0.0, 0.5, 0.0], [0.0, 1.0, 0.0]],
+    }
 
 
 def test_device_optimize_requires_sweep():

@@ -179,6 +179,39 @@ class DeviceReproductionResult(BaseModel):
     previous_normalized_reproduction_error: float | None = None
 
 
+class DeviceReproductionSweepCandidate(BaseModel):
+    overrides: dict = Field(default_factory=dict)
+    normalized_reproduction_error: float
+    spatial_correlation: float
+    mean_spl_error_db: float
+    max_spl_error_db: float
+    array_effort: float
+    acoustic_contrast_db: float
+    per_band: list[ReproductionPerBand] = Field(default_factory=list)
+
+
+class DeviceReproductionSweepResult(BaseModel):
+    device_id: str
+    simulated_at: datetime
+    mode: str = "sound_field_reproduction"
+    solver: str
+    target: dict = Field(default_factory=dict)
+    best_overrides: dict = Field(default_factory=dict)
+    normalized_reproduction_error: float
+    spatial_correlation: float
+    mean_spl_error_db: float
+    max_spl_error_db: float
+    array_effort: float
+    acoustic_contrast_db: float
+    swept_keys: list[str] = Field(default_factory=list)
+    n_candidates: int = 0
+    candidates: list[DeviceReproductionSweepCandidate] = Field(default_factory=list)
+    resolved_geometry: dict = Field(default_factory=dict)
+    model_flags: dict = Field(default_factory=dict)
+    repro_endpoint: str
+    previous_normalized_reproduction_error: float | None = None
+
+
 class DeviceOptimizeCandidate(BaseModel):
     overrides: dict = Field(default_factory=dict)
     acoustic_contrast_db: float

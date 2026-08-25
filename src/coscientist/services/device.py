@@ -3,6 +3,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from itertools import product
 
 import anthropic
 import httpx
@@ -31,6 +32,8 @@ from coscientist.schemas.device import (
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
     DeviceReproductionResult,
+    DeviceReproductionSweepCandidate,
+    DeviceReproductionSweepResult,
     DeviceSimulationResult,
     ExpectedPerformance,
     FormFactor,
@@ -631,6 +634,187 @@ def reproduce(
         approximations=persisted["approximations"],
         repro_endpoint=endpoint,
         overrides=overrides or {},
+        previous_normalized_reproduction_error=previous_nre,
+    )
+
+
+def reproduce_sweep(
+    db: Session,
+    device_id: str,
+    goal_id: str,
+    search_space: dict,
+    *,
+    max_candidates: int = 24,
+    timeout: float | None = None,
+    target_kind: str = "spherical_wave",
+    target_origin: list[float] | None = None,
+    target_direction: list[float] | None = None,
+    solver: str = "pressure_matching",
+    regularization: float = 1e-3,
+    control_grid_n: int = 4,
+    eval_grid_n: int = 5,
+) -> DeviceReproductionSweepResult:
+    """Sweep geometry knobs for pressure-matching reproduction quality.
+
+    Candidates are ranked by lowest normalized reproduction error, because this
+    path optimizes target-field fidelity rather than bright/dark contrast.
+    """
+    governance_svc.assert_execution_boundary("sweep sound-field reproduction")
+    goal_svc.raise_if_restricted(db, goal_id)
+
+    if not search_space:
+        raise ValueError("search_space is empty; give at least one knob to sweep")
+    unknown = set(search_space) - ALLOWED_OVERRIDE_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown geometry override(s): {sorted(unknown)}; "
+            f"allowed: {sorted(ALLOWED_OVERRIDE_KEYS)}"
+        )
+
+    keys = list(search_space.keys())
+    value_lists: list[list] = []
+    for key in keys:
+        values = search_space[key]
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"search_space[{key!r}] must be a non-empty list")
+        value_lists.append(values)
+
+    combos = list(product(*value_lists))
+    if len(combos) > max_candidates:
+        raise ValueError(
+            f"search space has {len(combos)} candidates > max_candidates={max_candidates}; "
+            "narrow the sweep or raise max_candidates"
+        )
+
+    card = _get_or_404(db, device_id, goal_id)
+    previous_nre: float | None = None
+    if card.simulation:
+        try:
+            previous_nre = json.loads(card.simulation).get("normalized_reproduction_error")
+        except (ValueError, TypeError):
+            previous_nre = None
+
+    base = _resolve_geometry(card)
+    endpoint = f"{settings.repro_url.rstrip('/')}/api/v1/device-sim/reproduce"
+    candidate_rows: list[dict] = []
+
+    client = ReproClient(timeout=timeout or settings.repro_run_timeout)
+    try:
+        for combo in combos:
+            overrides = dict(zip(keys, combo))
+            request = _apply_overrides(dict(base), overrides)
+            request.update(
+                {
+                    "solver": solver,
+                    "target_kind": target_kind,
+                    "regularization": regularization,
+                    "control_grid_n": control_grid_n,
+                    "eval_grid_n": eval_grid_n,
+                }
+            )
+            if target_origin is not None:
+                request["target_origin"] = target_origin
+            if target_direction is not None:
+                request["target_direction"] = target_direction
+
+            result = client.reproduce_device(request)
+            candidate_rows.append(
+                {
+                    "overrides": overrides,
+                    "normalized_reproduction_error": float(
+                        result.get("normalized_reproduction_error", 0.0)
+                    ),
+                    "spatial_correlation": float(result.get("spatial_correlation", 0.0)),
+                    "mean_spl_error_db": float(result.get("mean_spl_error_db", 0.0)),
+                    "max_spl_error_db": float(result.get("max_spl_error_db", 0.0)),
+                    "array_effort": float(result.get("array_effort", 0.0)),
+                    "acoustic_contrast_db": float(result.get("acoustic_contrast_db", 0.0)),
+                    "per_band": result.get("per_band", []),
+                    "resolved_geometry": result.get("resolved_geometry", request),
+                    "model_flags": result.get("model_flags", {}),
+                    "approximations": result.get("approximations", []),
+                    "target": result.get("target", {}),
+                    "solver": result.get("solver", solver),
+                }
+            )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim/reproduce rejected the request ({exc.response.status_code}): "
+            f"{exc.response.text[:300]}",
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"repro device-sim unreachable at {settings.repro_url}: {exc}",
+        )
+    finally:
+        client.close()
+
+    candidate_rows.sort(key=lambda c: c["normalized_reproduction_error"])
+    best = candidate_rows[0]
+    simulated_at = datetime.now(timezone.utc)
+    persisted = {
+        "mode": "sound_field_reproduction",
+        "simulated_at": simulated_at.isoformat(),
+        "solver": best["solver"],
+        "target": best["target"],
+        "normalized_reproduction_error": best["normalized_reproduction_error"],
+        "spatial_correlation": best["spatial_correlation"],
+        "mean_spl_error_db": best["mean_spl_error_db"],
+        "max_spl_error_db": best["max_spl_error_db"],
+        "array_effort": best["array_effort"],
+        "acoustic_contrast_db": best["acoustic_contrast_db"],
+        "per_band": best["per_band"],
+        "resolved_geometry": best["resolved_geometry"],
+        "model_flags": best["model_flags"],
+        "approximations": best["approximations"],
+        "repro_endpoint": endpoint,
+        "overrides": best["overrides"],
+        "previous_normalized_reproduction_error": previous_nre,
+        "reproduction_sweep": {
+            "swept_keys": keys,
+            "n_candidates": len(candidate_rows),
+            "best_overrides": best["overrides"],
+            "candidates": candidate_rows,
+        },
+    }
+    card.simulation = json.dumps(persisted)
+    card.updated_at = simulated_at
+    db.commit()
+    db.refresh(card)
+
+    return DeviceReproductionSweepResult(
+        device_id=device_id,
+        simulated_at=simulated_at,
+        mode="sound_field_reproduction",
+        solver=best["solver"],
+        target=best["target"],
+        best_overrides=best["overrides"],
+        normalized_reproduction_error=best["normalized_reproduction_error"],
+        spatial_correlation=best["spatial_correlation"],
+        mean_spl_error_db=best["mean_spl_error_db"],
+        max_spl_error_db=best["max_spl_error_db"],
+        array_effort=best["array_effort"],
+        acoustic_contrast_db=best["acoustic_contrast_db"],
+        swept_keys=keys,
+        n_candidates=len(candidate_rows),
+        candidates=[
+            DeviceReproductionSweepCandidate(
+                overrides=c["overrides"],
+                normalized_reproduction_error=c["normalized_reproduction_error"],
+                spatial_correlation=c["spatial_correlation"],
+                mean_spl_error_db=c["mean_spl_error_db"],
+                max_spl_error_db=c["max_spl_error_db"],
+                array_effort=c["array_effort"],
+                acoustic_contrast_db=c["acoustic_contrast_db"],
+                per_band=[ReproductionPerBand(**b) for b in c["per_band"]],
+            )
+            for c in candidate_rows
+        ],
+        resolved_geometry=best["resolved_geometry"],
+        model_flags=best["model_flags"],
+        repro_endpoint=endpoint,
         previous_normalized_reproduction_error=previous_nre,
     )
 

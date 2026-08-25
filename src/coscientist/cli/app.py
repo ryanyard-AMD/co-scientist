@@ -2159,6 +2159,168 @@ def _parse_sweep(pairs: list[str]) -> dict:
     return out
 
 
+def _coerce_reproduction_sweep_value(raw: str):
+    s = raw.strip()
+    if "," in s:
+        parts = [p for p in s.split(",") if p.strip() != ""]
+        if len(parts) == 3:
+            return [float(p) for p in parts]
+    return _coerce_scalar(s)
+
+
+def _parse_reproduction_sweep(pairs: list[str]) -> dict:
+    """Parse reproduction sweeps.
+
+    Scalar candidates use commas (`n_elements=8,16,32`). Vector candidates use
+    colon-delimited vectors (`listener=0,0.5,0:0,1.0,0`) so commas remain
+    available inside each vector.
+    """
+    out: dict = {}
+    for p in pairs:
+        if "=" not in p:
+            raise typer.BadParameter(f"--sweep expects key=v1,v2,..., got {p!r}")
+        k, v = p.split("=", 1)
+        raw_vals = v.split(":") if ":" in v else v.split(",")
+        vals = [
+            _coerce_reproduction_sweep_value(x)
+            for x in raw_vals
+            if x.strip() != ""
+        ]
+        if not vals:
+            raise typer.BadParameter(f"--sweep {k!r} has no values")
+        out[k.strip()] = vals
+    return out
+
+
+@device_app.command("reproduce-sweep")
+def device_reproduce_sweep(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    sweep: Optional[List[str]] = typer.Option(
+        None, "--sweep",
+        help="Knob to sweep. Use scalar lists like n_elements=8,16 or vector lists like listener=0,0.5,0:0,1,0",
+    ),
+    target: str = typer.Option(
+        "spherical_wave", "--target",
+        help="Target field: spherical_wave, point_source, or plane_wave",
+    ),
+    target_origin: Optional[str] = typer.Option(
+        None, "--target-origin",
+        help="Local-frame source point for spherical targets, e.g. 0,-1,0",
+    ),
+    target_direction: Optional[str] = typer.Option(
+        None, "--target-direction",
+        help="Local-frame propagation direction for plane waves, e.g. 0,1,0",
+    ),
+    regularization: float = typer.Option(1e-3, "--regularization", help="PM Tikhonov lambda"),
+    control_grid_n: int = typer.Option(4, "--control-grid-n", help="Control grid points per axis"),
+    eval_grid_n: int = typer.Option(5, "--eval-grid-n", help="Evaluation grid points per axis"),
+    max_candidates: int = typer.Option(24, "--max-candidates", help="Cap on combinations"),
+    timeout: Optional[float] = typer.Option(None, "--timeout", help="repro call timeout (s)"),
+    roadmap: bool = typer.Option(
+        False, "--roadmap",
+        help="Regenerate the goal's research roadmap from the best reproduction result",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the raw result as JSON"),
+):
+    """Sweep geometry knobs and rank by lowest reproduction error."""
+    db = _get_session()
+    try:
+        search_space = _parse_reproduction_sweep(sweep or [])
+        if not search_space:
+            console.print("[red]Provide at least one --sweep key=v1,v2,...[/red]")
+            raise typer.Exit(code=1)
+        result = device_svc.reproduce_sweep(
+            db,
+            device_id,
+            goal_id,
+            search_space,
+            max_candidates=max_candidates,
+            timeout=timeout,
+            target_kind=target,
+            target_origin=_parse_vector_option(target_origin, name="--target-origin"),
+            target_direction=_parse_vector_option(target_direction, name="--target-direction"),
+            regularization=regularization,
+            control_grid_n=control_grid_n,
+            eval_grid_n=eval_grid_n,
+        )
+        if json_out:
+            console.print_json(result.model_dump_json(indent=2))
+            return
+
+        console.print(
+            f"[bold]Swept[/bold] {', '.join(result.swept_keys)} "
+            f"→ {result.n_candidates} candidates"
+        )
+
+        cand = Table(title="Ranked reproduction candidates (lowest NRE first)")
+        cand.add_column("Overrides")
+        cand.add_column("NRE", justify="right")
+        cand.add_column("Corr", justify="right")
+        cand.add_column("Mean SPL err", justify="right")
+        cand.add_column("Contrast", justify="right")
+        for i, c in enumerate(result.candidates):
+            ov = ", ".join(f"{k}={v}" for k, v in c.overrides.items())
+            style = "bold green" if i == 0 else ""
+            cand.add_row(
+                ov or "(base)",
+                f"{c.normalized_reproduction_error:.4f}",
+                f"{c.spatial_correlation:.4f}",
+                f"{c.mean_spl_error_db:.2f} dB",
+                f"{c.acoustic_contrast_db:.2f} dB",
+                style=style,
+            )
+        console.print(cand)
+
+        console.print(
+            f"\n[bold]Best reproduction error:[/bold] "
+            f"{result.normalized_reproduction_error:.4f}"
+        )
+        console.print(
+            f"[bold]Best geometry:[/bold] "
+            + ", ".join(f"{k}={v}" for k, v in result.best_overrides.items())
+        )
+        if result.previous_normalized_reproduction_error is not None:
+            delta = (
+                result.normalized_reproduction_error
+                - result.previous_normalized_reproduction_error
+            )
+            arrow = "▼" if delta < 0 else ("▲" if delta > 0 else "=")
+            colour = "green" if delta < 0 else ("red" if delta > 0 else "dim")
+            console.print(
+                f"[{colour}]{arrow} {delta:+.4f}[/{colour}] vs previous "
+                f"({result.previous_normalized_reproduction_error:.4f})"
+            )
+
+        if roadmap:
+            console.print("\n[bold]Regenerating roadmap from the best reproduction result…[/bold]")
+            rm = roadmap_svc.generate(db, goal_id)
+            if rm.total == 0:
+                console.print(
+                    "[yellow]No roadmap items generated — ensure the goal has at least "
+                    "one approach.[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[green]Roadmap run {rm.generation_run_id[:8]}… — {rm.total} items[/green]"
+                )
+                rt = Table(title="Research Roadmap (top items)")
+                rt.add_column("Rank", justify="right")
+                rt.add_column("Lane", style="cyan")
+                rt.add_column("Title")
+                for item in rm.items[:5]:
+                    rt.add_row(str(item.priority_rank), item.lane.value, item.title)
+                console.print(rt)
+    except ValueError as exc:
+        console.print(f"[red]Invalid reproduction sweep:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except HTTPException as exc:
+        console.print(f"[red]Reproduction sweep failed[/red] ({exc.status_code}): {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
 @device_app.command("optimize")
 def device_optimize(
     device_id: str = typer.Argument(...),
