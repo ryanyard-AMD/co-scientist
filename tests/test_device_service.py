@@ -464,6 +464,29 @@ def _make_device(db):
     return goal, gen.items[0].id
 
 
+def test_infer_layout_detects_distributed_ring_language():
+    assert svc._infer_layout("8 PAL modules at equal azimuthal spacing around a ring") == "ring"
+    assert svc._infer_layout("distributed modular array around listening area") == "ring"
+
+
+def test_resolve_geometry_includes_ring_radius_for_ring_card():
+    card = type("Card", (), {})()
+    card.hardware = json.dumps({
+        "speakers": {
+            "estimated_count": 8,
+            "geometry": "8 PAL modules on tabletop periphery ring",
+        }
+    })
+    card.form_factor = json.dumps({"listener_distance_cm": "50-300"})
+
+    geo = svc._resolve_geometry(card)
+
+    assert geo["layout"] == "ring"
+    assert geo["n_elements"] == 8
+    assert geo["ring_radius"] == 0.30
+    assert geo["listener"] == [0.0, 0.5, 0.0]
+
+
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
 @patch("coscientist.services.device.ReproClient", _FakeReproClient)
 def test_simulate_populates_card(mock_agent, db_session):
@@ -677,6 +700,23 @@ def test_reproduce_sweep_ranks_lowest_error_and_persists(mock_agent, db_session)
     assert card.simulation["overrides"] == {"n_elements": 16}
     assert card.simulation["reproduction_sweep"]["swept_keys"] == ["n_elements"]
     assert card.simulation["reproduction_sweep"]["n_candidates"] == 2
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_reproduce_sweep_accepts_ring_radius(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    _FakeReproClient.last_reproduction_requests = []
+    svc.reproduce_sweep(
+        db_session,
+        device_id,
+        goal.id,
+        {"layout": ["ring"], "ring_radius": [0.3]},
+        max_candidates=1,
+    )
+
+    assert _FakeReproClient.last_reproduction_requests[0]["layout"] == "ring"
+    assert _FakeReproClient.last_reproduction_requests[0]["ring_radius"] == 0.3
 
 
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)

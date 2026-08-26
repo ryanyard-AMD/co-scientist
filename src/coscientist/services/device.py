@@ -361,6 +361,8 @@ def _first_number(text: str, default: float) -> float:
 def _infer_layout(geometry_text: str) -> str:
     """Map the card's free-text speaker geometry to a simulator layout keyword."""
     g = (geometry_text or "").lower()
+    if any(w in g for w in ("ring", "periphery", "azimuth", "distributed", "surround")):
+        return "ring"
     if any(w in g for w in ("cap", "curv", "spher", "dome", "hemis")):
         return "cap"
     if any(w in g for w in ("line", "linear", "ula", "row", "1d")):
@@ -374,7 +376,7 @@ def _infer_layout(geometry_text: str) -> str:
 # DeviceGeometryRequest fields). Anything outside this set is rejected so a typo
 # can't silently no-op.
 ALLOWED_OVERRIDE_KEYS = frozenset({
-    "layout", "n_elements", "cap_radius", "cap_deg", "pitch",
+    "layout", "n_elements", "cap_radius", "cap_deg", "ring_radius", "pitch",
     "positions", "normals", "listener", "dark", "zone_half_extent",
     "freqs", "room_dims", "t60", "array_origin",
     "pal_model", "carrier", "aperture", "sidelobe_floor", "nearfield_length",
@@ -424,6 +426,7 @@ def _resolve_geometry(card: DeviceConceptCard) -> dict:
         "n_elements": n_elements,
         "cap_radius": 0.12,
         "cap_deg": 35.0,
+        "ring_radius": 0.30,
         "pitch": 0.03,
         "listener": [0.0, listener_y, 0.0],
         "dark": [0.40, listener_y, 0.0],   # adjacent listener, 40 cm off boresight
