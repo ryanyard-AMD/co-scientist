@@ -34,6 +34,7 @@ from coscientist.schemas.device import (
     DeviceGeometry,
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
+    GeometryClamp,
     DeviceReproductionResult,
     DeviceReproductionSweepCandidate,
     DeviceReproductionSweepResult,
@@ -149,6 +150,88 @@ def _build_approach_context(
     }
 
 
+# The geometry block is what actually gets simulated, so the agent has to be
+# taught the frame, the units, and what each knob physically buys — otherwise it
+# emits plausible-looking numbers that all resolve to the same device.
+_GEOMETRY_PROMPT = """GEOMETRY — the sim-ready block (required on every concept)
+----------------------------------------------------------
+Every other field on the card is prose for a human. "geometry" is the numeric spec
+that actually gets simulated, so it must be physically committed, not hedged.
+
+Coordinate frame: metres. The array face sits at the local origin and its boresight
+points along +y. x is lateral, z is vertical. A listener at [0, 0.6, 0] is 60 cm
+straight ahead of the array; a dark zone at [0.4, 0.6, 0] is a second person 40 cm
+to the side at the same distance.
+
+Emit only the keys your concept actually commits to — anything you omit keeps the
+simulator default. Do NOT emit "positions" or "normals"; choose a layout instead.
+
+  layout            "cap" | "planar" | "ula" | "ring" — the array topology.
+                    ula    one horizontal line of elements, all facing +y. Cheapest
+                           to build; steering in azimuth only.
+                    planar square grid in the x-z plane, all facing +y. Adds
+                           elevation control at the cost of element count.
+                    cap    elements on a spherical cap opening toward +y, each facing
+                           radially outward so they splay off boresight. Buys angular
+                           diversity inside a compact aperture.
+                    ring   modules on a horizontal ring centred on the listener, each
+                           aimed inward. Diversity comes from azimuthal separation
+                           rather than one aperture — the tabletop or room-periphery
+                           deployment. ring_radius and listener interact: the ring is
+                           built around the listener point.
+  n_elements        4-64. Degrees of freedom for the contrast solver, and the dominant
+                    cost, power and calibration driver of the real build.
+  pitch             element spacing in metres for ula/planar. Above half a wavelength
+                    at your top band edge (about 21 mm at 8 kHz) grating lobes appear;
+                    below about 8 mm the elements physically collide.
+  cap_radius        sphere radius in metres for "cap". Smaller radius = tighter
+                    curvature = wider angular splay for the same element count.
+  cap_deg           cap half-angle in degrees. 5 is effectively flat; 80 wraps the
+                    outer elements nearly sideways.
+  ring_radius       radius in metres of the ring of modules around the listener.
+  listener          [x, y, z] centre of the bright zone. y is the boresight distance
+                    and is the single most consequential number on the card — it must
+                    agree with form_factor.listener_distance_cm.
+  dark              [x, y, z] centre of the zone to keep quiet. Its offset from
+                    "listener" is the separation the device must achieve: 0.4 m is a
+                    neighbouring seat, 1.5 m is across a desk. Zones must not overlap.
+  zone_half_extent  half-width in metres of each cubic zone. 0.09 is roughly one head.
+                    Larger means holding contrast over a moving listener, which is a
+                    much harder problem — only widen it if the concept claims it.
+  freqs             1-8 audio frequencies in Hz to evaluate. PAL devices are weakest at
+                    the low end; include the lowest frequency your concept claims.
+  room_dims         [Lx, Ly, Lz] in metres of the enclosing room.
+  t60               reverberation time in seconds. 0 is the anechoic upper bound, 0.4 a
+                    small treated office, 0.8+ a hard-surfaced room where reflections
+                    wreck contrast. Pick the room the concept is actually for.
+  pal_model         true for a parametric-array (ultrasonic, self-demodulating)
+                    loudspeaker, false for conventional direct-radiating drivers. This
+                    changes the physics, not just a constant — set it false if your
+                    concept is a conventional multi-driver array.
+  carrier           PAL ultrasonic carrier in Hz, 20000-80000. 40000 is typical.
+  aperture          PAL element aperture radius in metres. A larger aperture narrows the
+                    demodulated beam (more contrast) but makes each element physically
+                    bigger, which constrains pitch.
+  sidelobe_floor    off-axis amplitude floor as a linear ratio. 0.056 (-25 dB) is what
+                    real PAL hardware measures; use a lower value only if the concept
+                    explicitly claims better off-axis suppression, and say so in
+                    design_intent.
+  nearfield_length  Berktay beam-formation length in metres — the distance over which
+                    the demodulated beam narrows. 0.4 is typical; raise it toward your
+                    listener distance for an explicitly near-field concept.
+  design_intent     one sentence naming the physical trade this geometry makes, e.g.
+                    "few elements on a wide cap to buy angular diversity without a
+                    large aperture".
+
+Make the concepts PHYSICALLY DIFFERENT from each other, not one array with the element
+count jiggled. Any two concepts must differ in at least two of: layout, aperture scale
+(pitch / cap_radius / ring_radius), listener distance, zone separation, and pal_model.
+If two approaches differ only in their control algorithm, that is ONE device concept —
+merge them and say so in the rationale. Every number must follow from the approaches and
+device constraints you were given; if you have no basis for a knob, omit it rather than
+inventing a value."""
+
+
 def _run_device_agent(
     db: Session,
     goal_id: str,
@@ -175,10 +258,12 @@ def _run_device_agent(
         '  "acoustic_architecture": {"control_stack": [str, ...], "calibration": [str, ...], "simulation_backing": [str, ...]}\n'
         '  "hardware": {"speakers": {"estimated_count": int, "geometry": str}, "microphones": {"calibration_count": str, "runtime_feedback": str}, "compute": {"prototype": str, "production_candidate": str}}\n'
         '  "expected_performance": {"bright_zone": str, "dark_zone": str, "latency": str, "robustness": str}\n'
+        '  "geometry": {...} — the sim-ready numeric spec, see GEOMETRY below\n'
         '  "unresolved_risks": [str, ...] — list of open technical risks\n'
         '  "next_steps": [str, ...] — list of recommended next experiments or prototyping steps\n\n'
         "Propose one device concept per distinct form factor you identify as viable. "
-        "Maturity is determined by the weakest validated approach: if any approach is theoretical, the device is theoretical."
+        "Maturity is determined by the weakest validated approach: if any approach is theoretical, the device is theoretical.\n\n"
+        + _GEOMETRY_PROMPT
     )
 
     approaches_text = json.dumps(approaches_context, indent=2)
@@ -199,7 +284,9 @@ def _run_device_agent(
     start = time.monotonic()
     message = client.messages.create(
         model=settings.validation_model,
-        max_tokens=8192,
+        # The geometry block adds ~18 keys per concept and overflow here is a hard
+        # 502 for the whole batch, not a partial result.
+        max_tokens=16384,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
@@ -315,6 +402,7 @@ def generate(
             acoustic_architecture=json.dumps(concept.acoustic_architecture.model_dump()),
             hardware=json.dumps(concept.hardware.model_dump()),
             expected_performance=json.dumps(concept.expected_performance.model_dump()),
+            geometry=json.dumps(_clamp_geometry(concept.geometry).model_dump()),
             approach_ids=json.dumps(approach_ids),
             experiment_ids=json.dumps(all_exp_ids),
             validation_result_ids=json.dumps(all_val_ids),
@@ -400,6 +488,157 @@ def _apply_overrides(geometry: dict, overrides: dict | None) -> dict:
 
 
 _DARK_OFFSET_X = 0.40  # adjacent listener, 40 cm off boresight
+
+_LAYOUTS = ("cap", "planar", "ula", "ring")
+
+# What repro's simulator can meaningfully handle. The agent is asked for
+# physically motivated numbers, not sim-safe ones, so a proposal is clamped into
+# this envelope when it is *persisted* and every adjustment is recorded on the
+# card. Explicit human overrides at simulate time are NOT clamped — that is the
+# deliberate escape hatch for probing outside the envelope.
+GEOMETRY_BOUNDS: dict[str, tuple[float, float, str]] = {
+    "n_elements": (4, 64, "under 4 elements there are too few DOF to steer; over 64 the image-source room build dominates runtime"),
+    "cap_radius": (0.03, 0.60, "a spherical cap under 3 cm cannot hold elements; over 60 cm stops being a device"),
+    "cap_deg": (5.0, 80.0, "under 5 deg the cap degenerates to planar; over 80 deg the outer elements face away from the listener"),
+    "ring_radius": (0.10, 2.00, "ring modules must sit outside the listener zone and inside the room"),
+    "pitch": (0.005, 0.10, "5 mm is physical element collision; 100 mm is deep grating-lobe territory"),
+    "zone_half_extent": (0.02, 0.40, "under 2 cm is sub-head; over 40 cm is not a personal zone"),
+    "t60": (0.0, 2.0, "0 is the anechoic bound; over 2 s the image-source truncation is no longer valid"),
+    "carrier": (20000.0, 80000.0, "usable PAL ultrasonic carrier band"),
+    "aperture": (0.002, 0.05, "PAL element aperture radius; sets the Berktay beamwidth"),
+    "sidelobe_floor": (0.001, 0.5, "off-axis amplitude floor; 0.056 (-25 dB) is what real PAL hardware measures"),
+    "nearfield_length": (0.0, 3.0, "Berktay beam-formation length; 0 disables the near-field taper"),
+}
+
+_FREQ_BOUNDS = (100.0, 20000.0)
+_ROOM_DIM_BOUNDS = (1.0, 20.0)
+_MAX_FREQS = 8
+
+
+def _clamp_scalar(key: str, value, clamps: list[GeometryClamp]):
+    lo, hi, reason = GEOMETRY_BOUNDS[key]
+    applied = max(lo, min(hi, value))
+    if isinstance(value, int):
+        applied = int(applied)
+    if applied != value:
+        clamps.append(GeometryClamp(
+            key=key, proposed=value, applied=applied, bound=f"{lo}..{hi}", reason=reason,
+        ))
+    return applied
+
+
+def _clean_vector(key: str, value, clamps: list[GeometryClamp], lo: float, hi: float):
+    """Three finite numbers or nothing — a malformed vector would 422 at repro."""
+    try:
+        vec = [float(v) for v in value]
+    except (TypeError, ValueError):
+        vec = []
+    if len(vec) != 3 or any(v != v or v in (float("inf"), float("-inf")) for v in vec):
+        clamps.append(GeometryClamp(
+            key=key, proposed=value, applied=None, bound="3 finite numbers",
+            reason="dropped; the simulator needs an [x, y, z] point in metres",
+        ))
+        return None
+    applied = [max(lo, min(hi, v)) for v in vec]
+    if applied != vec:
+        clamps.append(GeometryClamp(
+            key=key, proposed=vec, applied=applied, bound=f"each {lo}..{hi} m",
+            reason="point must sit inside the simulated room",
+        ))
+    return applied
+
+
+def _clamp_geometry(geo: DeviceGeometry) -> DeviceGeometry:
+    """Pull an agent-proposed geometry into the simulator envelope, recording every
+    adjustment on the block so an edit is visible rather than silent. Applied on
+    persistence only; re-clamping on read would let `clamped` drift out of sync
+    with the geometry actually simulated."""
+    values = geo.model_dump()
+    clamps: list[GeometryClamp] = []
+
+    for key in GEOMETRY_BOUNDS:
+        if values.get(key) is not None:
+            values[key] = _clamp_scalar(key, values[key], clamps)
+
+    layout = values.get("layout")
+    if layout is not None and layout not in _LAYOUTS:
+        applied = _infer_layout(str(layout))
+        clamps.append(GeometryClamp(
+            key="layout", proposed=layout, applied=applied,
+            bound="one of: " + " | ".join(_LAYOUTS),
+            reason="unrecognised topology mapped to the nearest simulator layout",
+        ))
+        values["layout"] = applied
+
+    for key in ("listener", "dark", "array_origin"):
+        if values.get(key) is not None:
+            values[key] = _clean_vector(key, values[key], clamps, -3.0, 3.0)
+    if values.get("listener") is not None:
+        # Boresight distance: inside the array's near field is meaningless.
+        y = max(0.1, min(3.0, values["listener"][1]))
+        if y != values["listener"][1]:
+            clamps.append(GeometryClamp(
+                key="listener", proposed=values["listener"], applied=[values["listener"][0], y, values["listener"][2]],
+                bound="boresight 0.1..3.0 m",
+                reason="listener must sit in front of the array and inside the room",
+            ))
+            values["listener"][1] = y
+
+    if values.get("freqs") is not None:
+        values["freqs"] = _clean_freqs(values["freqs"], clamps)
+    if values.get("room_dims") is not None:
+        values["room_dims"] = _clean_vector(
+            "room_dims", values["room_dims"], clamps, *_ROOM_DIM_BOUNDS
+        )
+
+    _separate_zones(values, clamps)
+
+    values["clamped"] = [c.model_dump() for c in clamps]
+    return DeviceGeometry(**values)
+
+
+def _clean_freqs(value, clamps: list[GeometryClamp]) -> list[float] | None:
+    numeric = []
+    for f in value if isinstance(value, (list, tuple)) else []:
+        try:
+            numeric.append(float(f))
+        except (TypeError, ValueError):
+            continue
+    applied = sorted({max(_FREQ_BOUNDS[0], min(_FREQ_BOUNDS[1], f)) for f in numeric})[:_MAX_FREQS]
+    if not applied:
+        clamps.append(GeometryClamp(
+            key="freqs", proposed=value, applied=None, bound="1..8 values in 100..20000 Hz",
+            reason="dropped; no usable audio frequencies",
+        ))
+        return None
+    if applied != [float(f) for f in numeric]:
+        clamps.append(GeometryClamp(
+            key="freqs", proposed=value, applied=applied,
+            bound=f"1..{_MAX_FREQS} values in {_FREQ_BOUNDS[0]}..{_FREQ_BOUNDS[1]} Hz",
+            reason="evaluation band normalised: in-band, deduped, sorted, truncated",
+        ))
+    return applied
+
+
+def _separate_zones(values: dict, clamps: list[GeometryClamp]) -> None:
+    """Overlapping bright and dark cubes make contrast physically undefined, so
+    push the dark zone out along the axis where it is already furthest away."""
+    listener, dark = values.get("listener"), values.get("dark")
+    half = values.get("zone_half_extent") or _default_geometry()["zone_half_extent"]
+    if listener is None or dark is None:
+        return
+    deltas = [d - l for l, d in zip(listener, dark)]
+    if max(abs(d) for d in deltas) >= 2 * half:
+        return
+    axis = max(range(3), key=lambda i: abs(deltas[i]))
+    sign = 1.0 if deltas[axis] >= 0 else -1.0
+    applied = list(dark)
+    applied[axis] = listener[axis] + sign * 2 * half
+    clamps.append(GeometryClamp(
+        key="dark", proposed=dark, applied=applied, bound=f">= {2 * half} m from listener",
+        reason="bright and dark zones overlapped; contrast is undefined for overlapping zones",
+    ))
+    values["dark"] = applied
 
 
 def _default_geometry() -> dict:

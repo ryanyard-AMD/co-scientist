@@ -582,6 +582,88 @@ def test_resolve_geometry_ignores_malformed_block():
     assert svc._resolve_geometry(card)["layout"] == "cap"
 
 
+def _clamp(**kwargs) -> dict:
+    geo = svc._clamp_geometry(DeviceGeometry(**kwargs))
+    return {c.key: c for c in geo.clamped}, geo
+
+
+def test_clamp_geometry_bounds_n_elements():
+    clamps, geo = _clamp(n_elements=200)
+    assert geo.n_elements == 64
+    assert clamps["n_elements"].proposed == 200
+    assert clamps["n_elements"].applied == 64
+    assert clamps["n_elements"].bound == "4..64"
+    assert clamps["n_elements"].reason
+
+
+def test_clamp_geometry_maps_unknown_layout():
+    clamps, geo = _clamp(layout="horseshoe around the desk periphery")
+    assert geo.layout == "ring"
+    assert clamps["layout"].proposed == "horseshoe around the desk periphery"
+
+
+def test_clamp_geometry_separates_overlapping_zones():
+    clamps, geo = _clamp(listener=[0.0, 1.0, 0.0], dark=[0.05, 1.0, 0.0], zone_half_extent=0.09)
+    assert geo.dark == [0.18, 1.0, 0.0]
+    assert "overlap" in clamps["dark"].reason
+
+
+def test_clamp_geometry_normalises_freqs():
+    clamps, geo = _clamp(freqs=[50.0, 4000.0, 4000.0, 99000.0, 2000.0])
+    assert geo.freqs == [100.0, 2000.0, 4000.0, 20000.0]
+    assert clamps["freqs"].applied == geo.freqs
+
+
+def test_clamp_geometry_drops_malformed_vector():
+    clamps, geo = _clamp(listener=[0.0, 1.0])
+    assert geo.listener is None
+    assert clamps["listener"].applied is None
+
+
+def test_clamp_geometry_noop_records_nothing():
+    geo = svc._clamp_geometry(DeviceGeometry(
+        layout="cap", n_elements=16, cap_deg=40.0,
+        listener=[0.0, 0.6, 0.0], dark=[0.5, 0.6, 0.0],
+        freqs=[2000.0, 4000.0], t60=0.4, design_intent="compact desktop cap",
+    ))
+    assert geo.clamped == []
+    assert geo.n_elements == 16
+    assert geo.design_intent == "compact desktop cap"
+
+
+MOCK_CONCEPTS_WITH_GEOMETRY = [
+    MOCK_CONCEPTS[0].model_copy(update={
+        "geometry": DeviceGeometry(
+            layout="ring", n_elements=200, ring_radius=0.45,
+            listener=[0.0, 0.8, 0.0], dark=[0.9, 0.8, 0.0],
+            design_intent="periphery ring trading element count for azimuthal spread",
+        )
+    })
+]
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS_WITH_GEOMETRY)
+def test_generate_persists_clamped_geometry(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.geometry.layout == "ring"
+    assert card.geometry.ring_radius == 0.45
+    assert card.geometry.n_elements == 64  # the concept asked for 200
+    assert [c.key for c in card.geometry.clamped] == ["n_elements"]
+    assert card.geometry.design_intent.startswith("periphery ring")
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_does_not_clamp_overrides(mock_agent, db_session):
+    """Overrides are the deliberate escape hatch for probing outside the envelope."""
+    goal, device_id = _make_device(db_session)
+    svc.simulate(db_session, device_id, goal.id, overrides={"n_elements": 128, "t60": 3.0})
+    geo = _FakeReproClient.last_geometry
+    assert geo["n_elements"] == 128
+    assert geo["t60"] == 3.0
+
+
 def test_resolve_geometry_returns_fresh_dict():
     """_apply_overrides mutates in place, so a shared default dict would let one
     simulate corrupt every later resolution."""
