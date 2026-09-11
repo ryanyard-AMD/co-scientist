@@ -20,6 +20,7 @@ from coscientist.models.experiment import ExperimentCard
 from coscientist.models.score import RubricScore
 from coscientist.models.validation import ValidationResult
 from coscientist.schemas.device import (
+    GEOMETRY_SIM_KEYS,
     AgentDeviceConceptItem,
     AcousticArchitecture,
     DeviceConceptCardListResponse,
@@ -30,6 +31,7 @@ from coscientist.schemas.device import (
     DeviceConceptGenerateRequest,
     DeviceConceptGenerateResponse,
     DeviceConceptStatusEnum,
+    DeviceGeometry,
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
     DeviceReproductionResult,
@@ -63,6 +65,7 @@ def _to_response(card: DeviceConceptCard) -> DeviceConceptCardResponse:
     aa_raw = json.loads(card.acoustic_architecture) if card.acoustic_architecture else {}
     hw_raw = json.loads(card.hardware) if card.hardware else {}
     ep_raw = json.loads(card.expected_performance) if card.expected_performance else {}
+    geo_raw = json.loads(card.geometry) if card.geometry else {}
 
     return DeviceConceptCardResponse(
         id=card.id,
@@ -77,6 +80,7 @@ def _to_response(card: DeviceConceptCard) -> DeviceConceptCardResponse:
         acoustic_architecture=AcousticArchitecture(**aa_raw),
         hardware=HardwareSpec(**hw_raw),
         expected_performance=ExpectedPerformance(**ep_raw),
+        geometry=DeviceGeometry(**geo_raw),
         approach_ids=json.loads(card.approach_ids) if card.approach_ids else [],
         experiment_ids=json.loads(card.experiment_ids) if card.experiment_ids else [],
         validation_result_ids=json.loads(card.validation_result_ids) if card.validation_result_ids else [],
@@ -374,13 +378,9 @@ def _infer_layout(geometry_text: str) -> str:
 
 # Geometry knobs a user may override to refine a device (mirrors repro's
 # DeviceGeometryRequest fields). Anything outside this set is rejected so a typo
-# can't silently no-op.
-ALLOWED_OVERRIDE_KEYS = frozenset({
-    "layout", "n_elements", "cap_radius", "cap_deg", "ring_radius", "pitch",
-    "positions", "normals", "listener", "dark", "zone_half_extent",
-    "freqs", "room_dims", "t60", "array_origin",
-    "pal_model", "carrier", "aperture", "sidelobe_floor", "nearfield_length",
-})
+# can't silently no-op. Explicit element coordinates are override-only — the
+# agent picks a layout instead.
+ALLOWED_OVERRIDE_KEYS = GEOMETRY_SIM_KEYS | {"positions", "normals"}
 
 
 def _apply_overrides(geometry: dict, overrides: dict | None) -> dict:

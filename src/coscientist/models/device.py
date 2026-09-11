@@ -31,6 +31,11 @@ class DeviceConceptCard(Base):
     hardware: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     expected_performance: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
+    # Agent-authored sim-ready geometry block (metres, boresight +y), clamped
+    # into the simulator envelope on write. JSON dict; "{}" for legacy cards,
+    # which then resolve exactly as they did before this column existed.
+    geometry: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
     # Predicted performance from the device-geometry simulator (CS-EPIC-DEVICE
     # spec→model bridge). JSON dict; "{}" until `device simulate` is run.
     simulation: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

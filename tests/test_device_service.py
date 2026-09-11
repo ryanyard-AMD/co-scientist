@@ -9,10 +9,12 @@ from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.schemas.device import (
+    GEOMETRY_SIM_KEYS,
     AgentDeviceConceptItem,
     AcousticArchitecture,
     DeviceConceptGenerateRequest,
     DeviceConceptStatusEnum,
+    DeviceGeometry,
     ExpectedPerformance,
     FormFactor,
     HardwareSpec,
@@ -462,6 +464,31 @@ def _make_device(db):
     _create_validated_approach(db, goal.id)
     gen = svc.generate(db, goal.id, DeviceConceptGenerateRequest())
     return goal, gen.items[0].id
+
+
+def test_allowed_override_keys_match_repro_request():
+    """Pins the override allowlist against repro's DeviceGeometryRequest fields.
+    If repro adds or renames a knob, this fails rather than silently dropping it."""
+    assert svc.ALLOWED_OVERRIDE_KEYS == {
+        "layout", "n_elements", "cap_radius", "cap_deg", "ring_radius", "pitch",
+        "positions", "normals", "listener", "dark", "zone_half_extent",
+        "freqs", "room_dims", "t60", "array_origin",
+        "pal_model", "carrier", "aperture", "sidelobe_floor", "nearfield_length",
+    }
+    assert {"positions", "normals"}.isdisjoint(GEOMETRY_SIM_KEYS)
+
+
+def test_device_geometry_sim_fields_drops_unset():
+    geo = DeviceGeometry(n_elements=16, design_intent="wide cap, few elements")
+    assert geo.sim_fields() == {"n_elements": 16}
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_geometry_defaults_empty_on_generated_card(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    card = svc.get(db_session, device_id, goal.id)
+    assert card.geometry.layout is None
+    assert card.geometry.clamped == []
 
 
 def test_infer_layout_detects_distributed_ring_language():

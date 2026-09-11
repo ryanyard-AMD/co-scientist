@@ -59,6 +59,72 @@ class ExpectedPerformance(BaseModel):
     model_config = {"extra": "allow"}
 
 
+# --- Sim-ready geometry block ---
+
+# Geometry knobs the device agent may author, mirroring repro's
+# DeviceGeometryRequest. `positions`/`normals` are deliberately excluded: an LLM
+# authoring 32x3 float lists burns output tokens against the max_tokens
+# truncation guard and says nothing a layout doesn't. They stay reachable
+# through simulate-time overrides.
+GEOMETRY_SIM_KEYS = frozenset({
+    "layout", "n_elements", "cap_radius", "cap_deg", "ring_radius", "pitch",
+    "listener", "dark", "zone_half_extent",
+    "freqs", "room_dims", "t60", "array_origin",
+    "pal_model", "carrier", "aperture", "sidelobe_floor", "nearfield_length",
+})
+
+
+class GeometryClamp(BaseModel):
+    """One knob the simulator envelope moved, recorded so an edit is visible
+    rather than silent."""
+
+    key: str
+    proposed: object = None
+    applied: object = None
+    bound: str = ""
+    reason: str = ""
+
+
+class DeviceGeometry(BaseModel):
+    """Sim-ready geometry knobs (metres, boresight +y) proposed by the device
+    agent. Every knob is optional: None means 'fall through to the resolved
+    default', so a partial block is valid."""
+
+    layout: str | None = None
+    n_elements: int | None = None
+    cap_radius: float | None = None
+    cap_deg: float | None = None
+    ring_radius: float | None = None
+    pitch: float | None = None
+    listener: list[float] | None = None
+    dark: list[float] | None = None
+    zone_half_extent: float | None = None
+    freqs: list[float] | None = None
+    room_dims: list[float] | None = None
+    t60: float | None = None
+    array_origin: list[float] | None = None
+    pal_model: bool | None = None
+    carrier: float | None = None
+    aperture: float | None = None
+    sidelobe_floor: float | None = None
+    nearfield_length: float | None = None
+
+    design_intent: str = ""
+    clamped: list[GeometryClamp] = Field(default_factory=list)
+
+    # Unlike the prose sub-schemas above, extras are dropped: this block is a
+    # wire contract with repro, so an invented key must not reach the payload.
+    model_config = {"extra": "ignore"}
+
+    def sim_fields(self) -> dict:
+        """Only knobs repro understands, only the ones actually set."""
+        return {
+            k: v
+            for k, v in self.model_dump().items()
+            if k in GEOMETRY_SIM_KEYS and v is not None
+        }
+
+
 # --- Agent internal schema ---
 
 class AgentDeviceConceptItem(BaseModel):
@@ -71,6 +137,7 @@ class AgentDeviceConceptItem(BaseModel):
     acoustic_architecture: AcousticArchitecture = Field(default_factory=AcousticArchitecture)
     hardware: HardwareSpec = Field(default_factory=HardwareSpec)
     expected_performance: ExpectedPerformance = Field(default_factory=ExpectedPerformance)
+    geometry: DeviceGeometry = Field(default_factory=DeviceGeometry)
     unresolved_risks: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
 
@@ -100,6 +167,7 @@ class DeviceConceptCardResponse(BaseModel):
     acoustic_architecture: AcousticArchitecture
     hardware: HardwareSpec
     expected_performance: ExpectedPerformance
+    geometry: DeviceGeometry = Field(default_factory=DeviceGeometry)
     approach_ids: list[str]
     experiment_ids: list[str]
     validation_result_ids: list[str]
