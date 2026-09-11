@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from coscientist.database import get_db
@@ -13,6 +13,7 @@ from coscientist.schemas.device import (
     DeviceConceptTransitionRequest,
     DeviceEvidenceUpdateListResponse,
     DeviceExecutionEvidenceResponse,
+    DeviceGeometrySetRequest,
 )
 from coscientist.services import device as device_svc
 from coscientist.services import device_evidence as device_evidence_svc
@@ -90,6 +91,21 @@ def transition_device(
     db: Session = Depends(get_db),
 ):
     return device_svc.transition(db, device_id, goal_id, body.status)
+
+
+@router.put("/{device_id}/geometry", response_model=DeviceConceptCardResponse)
+def set_device_geometry(
+    goal_id: str,
+    device_id: str,
+    body: DeviceGeometrySetRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return device_svc.set_geometry(
+            db, device_id, goal_id, body.values, replace=body.replace
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/{device_id}/export", response_model=DeviceConceptExportResponse)

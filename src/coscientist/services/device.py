@@ -434,6 +434,49 @@ def get(db: Session, device_id: str, goal_id: str) -> DeviceConceptCardResponse:
     return _to_response(card)
 
 
+def set_geometry(
+    db: Session,
+    device_id: str,
+    goal_id: str,
+    values: dict,
+    *,
+    replace: bool = False,
+) -> DeviceConceptCardResponse:
+    """Persist a geometry block on a card so a hand-tuned refinement survives the next
+    simulate, instead of evaporating as a per-run override.
+
+    Values are clamped like an agent proposal — this is the persistence path, not the
+    escape hatch. Merges onto the existing block unless `replace` is set."""
+    goal_svc.raise_if_restricted(db, goal_id)
+    card = _get_or_404(db, device_id, goal_id)
+
+    unknown = set(values) - GEOMETRY_SIM_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown geometry knob(s): {sorted(unknown)}; "
+            f"allowed: {sorted(GEOMETRY_SIM_KEYS)}"
+        )
+
+    if replace:
+        block = dict(values)
+    else:
+        try:
+            existing = json.loads(card.geometry or "{}")
+        except (ValueError, TypeError):
+            existing = {}
+        # Only the knobs, never a stale `clamped` list — clamping is recomputed below.
+        block = DeviceGeometry(**existing).sim_fields() if existing else {}
+        design_intent = existing.get("design_intent", "") if existing else ""
+        block.update(values)
+        block.setdefault("design_intent", design_intent)
+
+    card.geometry = json.dumps(_clamp_geometry(DeviceGeometry(**block)).model_dump())
+    card.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(card)
+    return _to_response(card)
+
+
 # ---------------------------------------------------------------------------
 # CS-EPIC-DEVICE: geometry simulation (spec→model bridge)
 # ---------------------------------------------------------------------------

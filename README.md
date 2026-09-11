@@ -235,6 +235,7 @@ A DeviceConceptCard fixes the *architecture* but leaves the physical geometry as
 - **Structured geometry from the agent.** The Device Integrator Agent authors that block directly, so two concepts differ *physically* rather than only in prose — it is instructed that any two concepts must differ in at least two of layout, aperture scale, listener distance, zone separation, and `pal_model`. On persistence every knob is clamped into a documented simulator envelope (`GEOMETRY_BOUNDS`), and each adjustment is recorded as a `clamped` entry (`key`, `proposed`, `applied`, `bound`, `reason`) so an envelope edit is visible rather than silent. Per-run `--set` overrides are deliberately **not** clamped — asking for `n_elements=128` is probing outside the envelope on purpose. See [docs/device-geometry.md](docs/device-geometry.md) for the coordinate frame, every knob's physical meaning, and the bounds table.
 - **Persisted to the card** in a `simulation` JSON column (Alembic `0032`): contrast simulations store `acoustic_contrast_db`, `per_band`, `target_contrast_db` / `meets_target` (against the 15 dB PSZ bar), `resolved_geometry`, `model_flags`, and the model's stated `approximations`. Reproduction simulations set `mode: sound_field_reproduction` and store the reproduction-quality metrics listed above. Surfaced on `GET`/`cs device show`; re-running overwrites it.
 - **Honest about fidelity.** The model is real, not a lookup — contrast responds correctly to element count, layout, zone separation, and aperture. Two fidelity knobs keep it physically defensible: a realistic ~−25 dB off-axis `sidelobe_floor` (not the idealized −60 dB the raw Bessel envelope implies) and a `nearfield_length` beam-formation taper that widens the beam close to the array. Both are echoed in `model_flags`. It remains linear-superposition ACC over the demodulated fields, **not** a full KZK/Westervelt nonlinear solve, so predictions still sit somewhat above a reverberant device's realistic ceiling.
+- **Make a refinement stick** with `cs device set-geometry <device_id> <goal_id> --set cap_deg=55 --set n_elements=20` (`PUT .../geometry`). A `--set` on `simulate` evaporates after the run; this writes the knobs onto the card so the *next* simulate, compare, and export all use them — which is what lets the sim→refine loop converge instead of requiring the same flags to be re-typed. Merges onto the existing block by default (`--replace` starts from empty). Because this is a persistence path, values are clamped like an agent proposal and any adjustment is reported. This is also how a card generated before the `geometry` column gets off the prose path.
 - **Refine one knob** with `cs device simulate <device_id> <goal_id> --set n_elements=16 --set aperture=0.008` (repeatable) — overrides merge onto the resolved geometry, and the output shows the Δ versus the previous prediction. Unknown knobs are rejected so a typo can't silently no-op.
 - **Reproduce a target field** with `cs device reproduce <device_id> <goal_id> --target plane_wave --target-direction 0,1,0 --set n_elements=16` — the same override mechanism refines geometry before the pressure-matching solve. Add `--roadmap` to regenerate next-best actions from the persisted reproduction-quality result.
 - **Sweep reproduction robustness** with `cs device reproduce-sweep <device_id> <goal_id> --sweep n_elements=8,16,32 --sweep ring_radius=0.3,0.5 --sweep listener=0,0.5,0:0,1.0,0:0,2.0,0 --sweep t60=0,0.4` — co-scientist runs the reproduction-quality solve for each candidate, ranks by lowest normalized reproduction error, persists the best result, and keeps the candidate table under `simulation.reproduction_sweep` for audit. Vector sweep values use `:` between candidates so commas remain available inside each vector.
@@ -732,6 +733,9 @@ cs device simulate <DEVICE_ID> <GOAL_ID>
 cs device simulate <DEVICE_ID> <GOAL_ID> --set n_elements=16 --set aperture=0.008   # refine one knob
 cs device optimize <DEVICE_ID> <GOAL_ID> --sweep n_elements=8,12,16                 # sweep, pick best
 
+# Make a refinement stick — persisted on the card, so the next simulate uses it:
+cs device set-geometry <DEVICE_ID> <GOAL_ID> --set cap_deg=55 --set n_elements=20
+
 # Compare two or more concepts side by side:
 cs device compare <DEVICE_ID_1> <DEVICE_ID_2> --goal <GOAL_ID>
 
@@ -882,6 +886,7 @@ cs device simulate <DEVICE_ID> <GOAL_ID> [--set key=value ...] [--timeout SECS] 
 cs device reproduce <DEVICE_ID> <GOAL_ID> [--target spherical_wave|point_source|plane_wave] [--target-origin x,y,z] [--target-direction x,y,z] [--set key=value ...] [--roadmap] [--timeout SECS] [--json]
 cs device reproduce-sweep <DEVICE_ID> <GOAL_ID> --sweep key=v1,v2 [--sweep vector=0,0.5,0:0,1,0] [--max-candidates N] [--roadmap] [--timeout SECS] [--json]
 cs device optimize <DEVICE_ID> <GOAL_ID> --sweep key=v1,v2,v3 [--sweep ...] [--max-candidates N] [--roadmap] [--timeout SECS] [--json]
+cs device set-geometry <DEVICE_ID> <GOAL_ID> --set key=value [--set ...] [--replace]
 cs device review <DEVICE_ID> <GOAL_ID>
 cs device compare <DEVICE_ID>... --goal <GOAL_ID>
 cs device export <DEVICE_ID> <GOAL_ID> [--format markdown|json]
@@ -1047,6 +1052,7 @@ All endpoints are prefixed with `/co-scientist`.
 | GET | `/goals/{id}/devices/{did}` | Get device concept card details |
 | GET | `/goals/{id}/devices/{did}/execution-evidence` | Linked experiments, validation outcomes, confidence, and affected approach scores |
 | POST | `/goals/{id}/devices/{did}/transition` | Transition device concept status |
+| PUT | `/goals/{id}/devices/{did}/geometry` | Persist geometry knobs on the card (clamped into the simulator envelope) |
 | GET | `/goals/{id}/devices/{did}/export` | Export as markdown or JSON |
 | DELETE | `/goals/{id}/devices/{did}` | Delete a generated device concept |
 

@@ -1913,6 +1913,46 @@ def _parse_vector_option(raw: Optional[str], *, name: str) -> Optional[list[floa
     return [float(v) for v in value]
 
 
+@device_app.command("set-geometry")
+def device_set_geometry(
+    device_id: str = typer.Argument(...),
+    goal_id: str = typer.Argument(...),
+    set_: List[str] = typer.Option(
+        ..., "--set",
+        help="Persist a geometry knob, e.g. --set cap_deg=55 --set n_elements=20 "
+             "--set listener=0,0.6,0 (repeatable)",
+    ),
+    replace: bool = typer.Option(
+        False, "--replace",
+        help="Start from an empty block instead of merging onto the existing one",
+    ),
+):
+    """Persist geometry knobs on a card so a refinement survives the next simulate.
+
+    Unlike `simulate --set`, these values are written to the card and clamped into the
+    simulator envelope; any adjustment is reported."""
+    db = _get_session()
+    try:
+        values = _parse_overrides(set_)
+        card = device_svc.set_geometry(db, device_id, goal_id, values, replace=replace)
+        geo = Table(title=f"Geometry — {card.name}", show_header=False)
+        geo.add_column("knob", style="bold")
+        geo.add_column("value")
+        for k, v in sorted(card.geometry.sim_fields().items()):
+            geo.add_row(k, str(v))
+        for c in card.geometry.clamped:
+            geo.add_row(f"[yellow]clamped {c.key}[/yellow]", f"{c.proposed} → {c.applied} ({c.reason})")
+        console.print(geo)
+    except ValueError as exc:
+        console.print(f"[red]Invalid geometry:[/red] {exc}")
+        raise typer.Exit(code=1)
+    except HTTPException as exc:
+        console.print(f"[red]Error {exc.status_code}:[/red] {exc.detail}")
+        raise typer.Exit(code=1)
+    finally:
+        db.close()
+
+
 @device_app.command("simulate")
 def device_simulate(
     device_id: str = typer.Argument(...),

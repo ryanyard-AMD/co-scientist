@@ -6,13 +6,21 @@ from typer.testing import CliRunner
 
 from coscientist.cli.app import _parse_reproduction_sweep, _parse_sweep, app
 from coscientist.schemas.device import (
+    AcousticArchitecture,
+    DeviceConceptCardResponse,
+    DeviceGeometry,
     DeviceOptimizeCandidate,
     DeviceOptimizeResult,
     DeviceReproductionResult,
     DeviceReproductionSweepCandidate,
     DeviceReproductionSweepResult,
+    ExpectedPerformance,
+    FormFactor,
+    GeometryClamp,
+    HardwareSpec,
     ReproductionPerBand,
     SimulationPerBand,
+    UseCase,
 )
 
 runner = CliRunner()
@@ -260,3 +268,72 @@ def test_device_optimize_skips_roadmap_by_default():
         )
     assert result.exit_code == 0, result.output
     rg.assert_not_called()
+
+
+def _fake_card(geometry):
+    now = datetime.now(timezone.utc)
+    return DeviceConceptCardResponse(
+        id="dev-1",
+        workspace_id="goal-1",
+        name="Periphery Ring",
+        description=None,
+        status="generated",
+        maturity="simulated",
+        confidence=0.5,
+        form_factor=FormFactor(type="tabletop"),
+        use_case=UseCase(primary="private_desktop_audio"),
+        acoustic_architecture=AcousticArchitecture(),
+        hardware=HardwareSpec(),
+        expected_performance=ExpectedPerformance(),
+        geometry=geometry,
+        approach_ids=[],
+        experiment_ids=[],
+        validation_result_ids=[],
+        unresolved_risks=[],
+        next_steps=[],
+        rationale=None,
+        model_used=None,
+        generation_run_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_device_set_geometry_renders_persisted_knobs():
+    card = _fake_card(DeviceGeometry(layout="ring", n_elements=20, ring_radius=0.5))
+    with patch("coscientist.services.device.set_geometry", return_value=card) as m:
+        result = runner.invoke(
+            app,
+            ["device", "set-geometry", "dev-1", "goal-1",
+             "--set", "layout=ring", "--set", "n_elements=20", "--set", "ring_radius=0.5"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "ring_radius" in result.output
+    assert m.call_args.args[3] == {"layout": "ring", "n_elements": 20, "ring_radius": 0.5}
+    assert m.call_args.kwargs["replace"] is False
+
+
+def test_device_set_geometry_surfaces_clamps():
+    card = _fake_card(
+        DeviceGeometry(
+            n_elements=64,
+            clamped=[GeometryClamp(key="n_elements", proposed=200, applied=64,
+                                   bound="4..64", reason="too few DOF / runtime")],
+        )
+    )
+    with patch("coscientist.services.device.set_geometry", return_value=card):
+        result = runner.invoke(
+            app, ["device", "set-geometry", "dev-1", "goal-1", "--set", "n_elements=200", "--replace"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "clamped n_elements" in result.output
+
+
+def test_device_set_geometry_reports_unknown_knob():
+    with patch("coscientist.services.device.set_geometry",
+               side_effect=ValueError("unknown geometry knob(s): ['n_elemnets']")):
+        result = runner.invoke(
+            app, ["device", "set-geometry", "dev-1", "goal-1", "--set", "n_elemnets=20"]
+        )
+    assert result.exit_code == 1
+    assert "unknown geometry knob" in result.output

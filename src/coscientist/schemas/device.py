@@ -152,6 +152,15 @@ class DeviceConceptTransitionRequest(BaseModel):
     status: DeviceConceptStatusEnum
 
 
+class DeviceGeometrySetRequest(BaseModel):
+    """Hand-tune a card's geometry so the refinement survives the next simulate.
+    Values are raw knob names; unknown keys are rejected rather than ignored."""
+
+    values: dict
+    # Default merges onto the existing block, so a one-knob tweak doesn't wipe the rest.
+    replace: bool = False
+
+
 # --- Response schemas ---
 
 class DeviceConceptCardResponse(BaseModel):

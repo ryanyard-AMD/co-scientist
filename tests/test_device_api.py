@@ -252,3 +252,34 @@ def test_compare_single_id_returns_400(client):
     goal = _create_goal(client)
     resp = client.get(f"/co-scientist/goals/{goal['id']}/devices/compare?ids=single-id")
     assert resp.status_code == 400
+
+
+def test_set_geometry_returns_200(client, db_session):
+    with patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS):
+        goal = _create_goal(client)
+        _create_validated_approach(client, db_session, goal["id"])
+        gen = client.post(f"/co-scientist/goals/{goal['id']}/devices/generate", json={}).json()
+        device_id = gen["items"][0]["id"]
+        resp = client.put(
+            f"/co-scientist/goals/{goal['id']}/devices/{device_id}/geometry",
+            json={"values": {"layout": "ring", "n_elements": 200}},
+        )
+    assert resp.status_code == 200
+    geo = resp.json()["geometry"]
+    assert geo["layout"] == "ring"
+    assert geo["n_elements"] == 64  # clamped on persistence, and said so
+    assert [c["key"] for c in geo["clamped"]] == ["n_elements"]
+
+
+def test_set_geometry_unknown_knob_returns_400(client, db_session):
+    with patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS):
+        goal = _create_goal(client)
+        _create_validated_approach(client, db_session, goal["id"])
+        gen = client.post(f"/co-scientist/goals/{goal['id']}/devices/generate", json={}).json()
+        device_id = gen["items"][0]["id"]
+        resp = client.put(
+            f"/co-scientist/goals/{goal['id']}/devices/{device_id}/geometry",
+            json={"values": {"n_elemnets": 20}},
+        )
+    assert resp.status_code == 400
+    assert "unknown geometry knob" in resp.json()["detail"]

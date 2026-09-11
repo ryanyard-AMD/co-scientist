@@ -1107,3 +1107,62 @@ def test_simulate_echoes_card_clamps(db_session):
         gen = svc.generate(db_session, goal.id, DeviceConceptGenerateRequest())
     result = svc.simulate(db_session, gen.items[0].id, goal.id)
     assert [c.key for c in result.clamped] == ["n_elements"]
+
+
+# --- set_geometry: making a refinement stick ---
+
+
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_set_geometry_persists_and_survives_simulate(mock_agent, db_session):
+    """The point of the whole path: a hand-tune must reach the next simulate without
+    being re-typed as an override."""
+    goal, device_id = _make_device(db_session)
+    svc.set_geometry(db_session, device_id, goal.id, {"cap_deg": 55.0, "n_elements": 20})
+    svc.simulate(db_session, device_id, goal.id)
+    geo = _FakeReproClient.last_geometry
+    assert geo["cap_deg"] == 55.0
+    assert geo["n_elements"] == 20
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_set_geometry_clamps_and_records(mock_agent, db_session):
+    """Unlike simulate overrides, this is a persistence path, so the envelope applies."""
+    goal, device_id = _make_device(db_session)
+    card = svc.set_geometry(db_session, device_id, goal.id, {"n_elements": 200})
+    assert card.geometry.n_elements == 64
+    clamp = next(c for c in card.geometry.clamped if c.key == "n_elements")
+    assert clamp.proposed == 200
+    assert clamp.applied == 64
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_set_geometry_merges_by_default_and_replaces_when_asked(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    svc.set_geometry(db_session, device_id, goal.id, {"layout": "ring", "ring_radius": 0.5})
+    merged = svc.set_geometry(db_session, device_id, goal.id, {"n_elements": 20})
+    assert merged.geometry.layout == "ring"
+    assert merged.geometry.ring_radius == 0.5
+    assert merged.geometry.n_elements == 20
+
+    replaced = svc.set_geometry(
+        db_session, device_id, goal.id, {"n_elements": 20}, replace=True
+    )
+    assert replaced.geometry.layout is None
+    assert replaced.geometry.ring_radius is None
+    assert replaced.geometry.n_elements == 20
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_set_geometry_rejects_unknown_knob(mock_agent, db_session):
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="unknown geometry knob"):
+        svc.set_geometry(db_session, device_id, goal.id, {"n_elemnets": 20})
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_set_geometry_rejects_override_only_knobs(mock_agent, db_session):
+    """positions/normals stay simulate-time only — a card commits to a layout."""
+    goal, device_id = _make_device(db_session)
+    with pytest.raises(ValueError, match="positions"):
+        svc.set_geometry(db_session, device_id, goal.id, {"positions": [[0, 0, 0]]})

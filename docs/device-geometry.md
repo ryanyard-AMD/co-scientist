@@ -141,6 +141,31 @@ rather than raising `repro_client_timeout` — that is the clamp doing its job.
 - **`cs device simulate`** prints a yellow `clamped` row when the card carries clamp
   records, so an envelope edit is visible at the moment you are refining.
 
+## Upgrading a legacy card
+
+A card written before the `geometry` column carries `{}` and resolves entirely off the
+prose scrape — three knobs inferred, fifteen defaulted. `set-geometry` is how it stops
+being stuck there:
+
+```bash
+# See what it currently resolves to.
+cs device export <DEVICE_ID> <GOAL_ID> | sed -n '/## Resolved Geometry/,/^##/p'
+
+# Commit the card to a physical design instead of the defaults.
+cs device set-geometry <DEVICE_ID> <GOAL_ID> \
+    --set layout=ring --set ring_radius=0.5 --set n_elements=20 \
+    --set listener=0,1.2,0 --set dark=1.1,1.2,0 --set t60=0.6
+
+# No --set flags needed: the block is on the card now.
+cs device simulate <DEVICE_ID> <GOAL_ID>
+```
+
+Each `--set` is merged onto whatever is already there, so a one-knob tweak does not wipe
+the rest; `--replace` starts from an empty block. Values are clamped exactly as an agent
+proposal would be, and the CLI prints a yellow `clamped` row for anything the envelope
+moved. `positions`/`normals` are rejected here — a card commits to a `layout`, and
+explicit coordinates stay a simulate-time override.
+
 ## Caveat: `generate` is not idempotent
 
 Re-running `cs device generate` creates new cards; a hand-tuned geometry block on an
