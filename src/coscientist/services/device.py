@@ -399,11 +399,38 @@ def _apply_overrides(geometry: dict, overrides: dict | None) -> dict:
     return geometry
 
 
-def _resolve_geometry(card: DeviceConceptCard) -> dict:
-    """Resolve a DeviceConceptCard's TBD/range geometry knobs into a concrete
-    DeviceGeometryRequest for the simulator. Deterministic: same card → same
-    geometry, so re-running is reproducible. The resolved knobs are echoed back
-    in the result for transparency."""
+_DARK_OFFSET_X = 0.40  # adjacent listener, 40 cm off boresight
+
+
+def _default_geometry() -> dict:
+    """Layer 1: the simulator's own defaults. A function, not a module constant —
+    callers mutate the returned dict via _apply_overrides, so one simulate with
+    overrides would otherwise poison every later resolution in the process."""
+    return {
+        "layout": "cap",
+        "n_elements": 12,
+        "cap_radius": 0.12,
+        "cap_deg": 35.0,
+        "ring_radius": 0.30,
+        "pitch": 0.03,
+        "listener": [0.0, 1.0, 0.0],
+        "dark": [_DARK_OFFSET_X, 1.0, 0.0],
+        "zone_half_extent": 0.09,
+        "freqs": [2000.0, 4000.0, 6000.0, 8000.0],  # PAL effective audio band
+        "room_dims": [4.0, 4.0, 2.6],               # small desktop room
+        "t60": 0.4,
+        "pal_model": True,                          # PAL nonlinear demodulation
+        "carrier": 40000.0,
+        "aperture": 0.01,
+        "sidelobe_floor": 0.056,                    # -25 dB off-axis (realistic PAL)
+        "nearfield_length": 0.4,                    # beam-formation length z_form (m)
+    }
+
+
+def _legacy_geometry(card: DeviceConceptCard) -> dict:
+    """Layer 2: knobs inferred from the card's prose, for cards generated before
+    the structured geometry block existed. This is deliberately frozen — cards in
+    the live DB depend on resolving exactly as they always have."""
     hw = json.loads(card.hardware) if card.hardware else {}
     ff = json.loads(card.form_factor) if card.form_factor else {}
 
@@ -415,31 +442,45 @@ def _resolve_geometry(card: DeviceConceptCard) -> dict:
         n_elements = int(_first_number(str(count), 12))
     n_elements = max(4, min(32, n_elements))
 
-    layout = _infer_layout(str(speakers.get("geometry", "")))
-
     # Listener distance (cm range → boresight distance in metres), clamped sane.
     dist_cm = _first_number(ff.get("listener_distance_cm", ""), 100.0)
     listener_y = max(0.3, min(3.0, dist_cm / 100.0))
 
     return {
-        "layout": layout,
+        "layout": _infer_layout(str(speakers.get("geometry", ""))),
         "n_elements": n_elements,
-        "cap_radius": 0.12,
-        "cap_deg": 35.0,
-        "ring_radius": 0.30,
-        "pitch": 0.03,
         "listener": [0.0, listener_y, 0.0],
-        "dark": [0.40, listener_y, 0.0],   # adjacent listener, 40 cm off boresight
-        "zone_half_extent": 0.09,
-        "freqs": [2000.0, 4000.0, 6000.0, 8000.0],  # PAL effective audio band
-        "room_dims": [4.0, 4.0, 2.6],               # small desktop room
-        "t60": 0.4,
-        "pal_model": True,                          # PAL nonlinear demodulation
-        "carrier": 40000.0,
-        "aperture": 0.01,
-        "sidelobe_floor": 0.056,                    # -25 dB off-axis (realistic PAL)
-        "nearfield_length": 0.4,                    # beam-formation length z_form (m)
+        "dark": [_DARK_OFFSET_X, listener_y, 0.0],
     }
+
+
+def _card_geometry(card: DeviceConceptCard) -> dict:
+    """Layer 3: the card's own sim-ready geometry block, only the knobs it set."""
+    try:
+        raw = json.loads(getattr(card, "geometry", None) or "{}")
+    except (ValueError, TypeError):
+        return {}
+    if not raw:
+        return {}
+
+    fields = DeviceGeometry(**raw).sim_fields()
+    # Moving the listener without saying where the dark zone went would leave the
+    # legacy layer's dark zone pinned at the old boresight distance.
+    if "listener" in fields and "dark" not in fields:
+        lx, ly, lz = fields["listener"]
+        fields["dark"] = [lx + _DARK_OFFSET_X, ly, lz]
+    return fields
+
+
+def _resolve_geometry(card: DeviceConceptCard) -> dict:
+    """Resolve a DeviceConceptCard into a concrete DeviceGeometryRequest for the
+    simulator. Layered, later wins: simulator defaults → prose inference → the
+    card's geometry block. Caller overrides are the final layer, applied by
+    _apply_overrides at the call site. Deterministic: same card → same geometry."""
+    geometry = _default_geometry()
+    geometry.update(_legacy_geometry(card))
+    geometry.update(_card_geometry(card))
+    return geometry
 
 
 def simulate(

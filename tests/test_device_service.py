@@ -7,6 +7,7 @@ import pytest
 
 from conftest import GOAL_PAYLOAD
 from coscientist.models.approach import ApproachCard
+from coscientist.models.device import DeviceConceptCard
 from coscientist.models.evidence import EvidenceRecord
 from coscientist.schemas.device import (
     GEOMETRY_SIM_KEYS,
@@ -496,15 +497,24 @@ def test_infer_layout_detects_distributed_ring_language():
     assert svc._infer_layout("distributed modular array around listening area") == "ring"
 
 
-def test_resolve_geometry_includes_ring_radius_for_ring_card():
+def _stub_card(hardware=None, form_factor=None, geometry="{}"):
     card = type("Card", (), {})()
-    card.hardware = json.dumps({
-        "speakers": {
-            "estimated_count": 8,
-            "geometry": "8 PAL modules on tabletop periphery ring",
-        }
-    })
-    card.form_factor = json.dumps({"listener_distance_cm": "50-300"})
+    card.hardware = json.dumps(hardware or {})
+    card.form_factor = json.dumps(form_factor or {})
+    card.geometry = geometry
+    return card
+
+
+def test_resolve_geometry_includes_ring_radius_for_ring_card():
+    card = _stub_card(
+        hardware={
+            "speakers": {
+                "estimated_count": 8,
+                "geometry": "8 PAL modules on tabletop periphery ring",
+            }
+        },
+        form_factor={"listener_distance_cm": "50-300"},
+    )
 
     geo = svc._resolve_geometry(card)
 
@@ -512,6 +522,76 @@ def test_resolve_geometry_includes_ring_radius_for_ring_card():
     assert geo["n_elements"] == 8
     assert geo["ring_radius"] == 0.30
     assert geo["listener"] == [0.0, 0.5, 0.0]
+
+
+def test_resolve_geometry_legacy_card_unchanged():
+    """A card with no geometry block must resolve exactly as it did before the
+    column existed — every live card depends on this."""
+    card = _stub_card(
+        hardware={"speakers": {"estimated_count": 8, "geometry": "linear"}},
+        form_factor={"listener_distance_cm": "50-80"},
+    )
+
+    assert svc._resolve_geometry(card) == {
+        "layout": "ula",
+        "n_elements": 8,
+        "cap_radius": 0.12,
+        "cap_deg": 35.0,
+        "ring_radius": 0.30,
+        "pitch": 0.03,
+        "listener": [0.0, 0.5, 0.0],
+        "dark": [0.40, 0.5, 0.0],
+        "zone_half_extent": 0.09,
+        "freqs": [2000.0, 4000.0, 6000.0, 8000.0],
+        "room_dims": [4.0, 4.0, 2.6],
+        "t60": 0.4,
+        "pal_model": True,
+        "carrier": 40000.0,
+        "aperture": 0.01,
+        "sidelobe_floor": 0.056,
+        "nearfield_length": 0.4,
+    }
+
+
+def test_resolve_geometry_card_block_wins_over_prose():
+    card = _stub_card(
+        hardware={"speakers": {"estimated_count": 8, "geometry": "linear"}},
+        form_factor={"listener_distance_cm": "50-80"},
+        geometry=json.dumps({"layout": "cap", "n_elements": 24, "cap_deg": 55.0}),
+    )
+
+    geo = svc._resolve_geometry(card)
+
+    assert geo["layout"] == "cap"
+    assert geo["n_elements"] == 24
+    assert geo["cap_deg"] == 55.0
+    # Knobs the block didn't set still fall through to prose / defaults.
+    assert geo["listener"] == [0.0, 0.5, 0.0]
+    assert geo["pitch"] == 0.03
+
+
+def test_resolve_geometry_derives_dark_from_block_listener():
+    card = _stub_card(geometry=json.dumps({"listener": [0.0, 1.4, 0.0]}))
+    geo = svc._resolve_geometry(card)
+    assert geo["listener"] == [0.0, 1.4, 0.0]
+    assert geo["dark"] == [0.40, 1.4, 0.0]
+
+
+def test_resolve_geometry_ignores_malformed_block():
+    card = _stub_card(geometry="not json")
+    assert svc._resolve_geometry(card)["layout"] == "cap"
+
+
+def test_resolve_geometry_returns_fresh_dict():
+    """_apply_overrides mutates in place, so a shared default dict would let one
+    simulate corrupt every later resolution."""
+    card = _stub_card()
+    first = svc._resolve_geometry(card)
+    first["n_elements"] = 99
+    first["freqs"].append(12000.0)
+    second = svc._resolve_geometry(card)
+    assert second["n_elements"] == 12
+    assert second["freqs"] == [2000.0, 4000.0, 6000.0, 8000.0]
 
 
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
@@ -587,6 +667,24 @@ def test_simulate_applies_overrides(mock_agent, db_session):
     # recorded on the card for refine-loop transparency
     card = svc.get(db_session, device_id, goal.id)
     assert card.simulation["overrides"] == {"n_elements": 16, "aperture": 0.008}
+
+
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_applies_card_geometry_then_overrides(mock_agent, db_session):
+    """Override beats the card's block beats the prose."""
+    goal, device_id = _make_device(db_session)
+    card = db_session.get(DeviceConceptCard, device_id)
+    card.geometry = json.dumps({"layout": "cap", "n_elements": 24, "cap_deg": 55.0})
+    db_session.commit()
+
+    svc.simulate(db_session, device_id, goal.id, overrides={"n_elements": 16})
+
+    geo = _FakeReproClient.last_geometry
+    assert geo["n_elements"] == 16     # override
+    assert geo["cap_deg"] == 55.0      # card block
+    assert geo["layout"] == "cap"      # card block beats the card's "linear" prose
+    assert geo["listener"] == [0.0, 0.5, 0.0]  # prose, untouched by the block
 
 
 @patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
