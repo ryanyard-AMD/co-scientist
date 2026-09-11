@@ -224,6 +224,9 @@ class DeviceSimulationResult(BaseModel):
     repro_endpoint: str
     overrides: dict = Field(default_factory=dict)
     previous_contrast_db: float | None = None
+    # Envelope edits the card's stored geometry carries, echoed here so a refine
+    # loop sees them at the moment it matters rather than only on `device show`.
+    clamped: list[GeometryClamp] = Field(default_factory=list)
 
 
 class DeviceReproductionResult(BaseModel):

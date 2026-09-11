@@ -124,6 +124,23 @@ the escape hatch; repro will reject genuinely invalid values itself.
 If sweeps start timing out at the top of the `n_elements` range, lower the ceiling
 rather than raising `repro_client_timeout` — that is the clamp doing its job.
 
+## Where the geometry shows up
+
+- **`compare`** adds `layout`, `n_elements`, `listener_distance_m`, `zone_separation_m`,
+  `predicted_contrast_db` and `meets_target`. Each row is built by re-resolving the card
+  and re-applying the overrides the last simulate carried — **not** by reading
+  `simulation["resolved_geometry"]`, whose keys repro renames on the way out
+  (`listener_m`, `cap_radius_m`, `freqs_hz`). An unsimulated card shows `—`.
+- **`export_device`** gains a `## Resolved Geometry` section — every knob, the
+  `design_intent`, and a `> Clamped:` callout per record — and a
+  `## Predicted Performance` section once the card has been simulated. The JSON format
+  carries the same block under `resolved_geometry`. This is the buildable spec.
+- **The roadmap agent** sees `listener_m`, `zone_separation_m`, `t60_s` and `pal_model`
+  alongside the contrast number, so it can tell a 25 dB result at 40 cm separation in an
+  anechoic room from the same number at 1.1 m in a reverberant one.
+- **`cs device simulate`** prints a yellow `clamped` row when the card carries clamp
+  records, so an envelope edit is visible at the moment you are refining.
+
 ## Caveat: `generate` is not idempotent
 
 Re-running `cs device generate` creates new cards; a hand-tuned geometry block on an

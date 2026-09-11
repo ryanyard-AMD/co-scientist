@@ -1,4 +1,5 @@
 import json
+import math
 import time
 import uuid
 from datetime import datetime, timezone
@@ -178,6 +179,19 @@ def _run_roadmap_agent(db: Session, goal_id: str, goal, context: dict) -> list[A
         )
 
 
+def _zone_separation(listener, dark) -> float | None:
+    """How far apart the bright and dark zones are — the separation the device has to
+    achieve, which the roadmap agent needs to judge whether a contrast number is hard-won."""
+    if not (isinstance(listener, (list, tuple)) and isinstance(dark, (list, tuple))):
+        return None
+    if len(listener) != 3 or len(dark) != 3:
+        return None
+    try:
+        return round(math.dist([float(v) for v in listener], [float(v) for v in dark]), 3)
+    except (TypeError, ValueError):
+        return None
+
+
 def _sim_summary(raw: str | None) -> dict | None:
     """Compact predicted-performance summary of a device card's simulation for the
     roadmap agent: enough to judge prototype-readiness (does it meet the target?)
@@ -191,12 +205,20 @@ def _sim_summary(raw: str | None) -> dict | None:
     if not sim or sim.get("acoustic_contrast_db") is None:
         return None
     geo = sim.get("resolved_geometry", {}) or {}
+    flags = sim.get("model_flags", {}) or {}
+    # repro's response renames geometry keys relative to its request model.
+    listener = geo.get("listener_m", geo.get("listener"))
+    dark = geo.get("dark_m", geo.get("dark"))
     summary = {
         "predicted_contrast_db": sim.get("acoustic_contrast_db"),
         "target_contrast_db": sim.get("target_contrast_db"),
         "meets_target": sim.get("meets_target"),
         "layout": geo.get("layout"),
         "n_elements": geo.get("n_elements"),
+        "listener_m": listener,
+        "zone_separation_m": _zone_separation(listener, dark),
+        "t60_s": flags.get("t60_s", geo.get("t60")),
+        "pal_model": flags.get("pal_model", geo.get("pal_model")),
     }
     if sim.get("mode") == "sound_field_reproduction":
         summary.update(

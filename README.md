@@ -210,8 +210,8 @@ Closes the research-to-device loop by synthesising validated approach cards — 
 - Each card stores form factor, use case, acoustic architecture (control stack, calibration, simulation backing), hardware spec (speakers, microphones, compute), and expected performance as structured JSON
 - Full traceability: `approach_ids`, `experiment_ids`, `validation_result_ids` link back to all source artefacts
 - `unresolved_risks` and `next_steps` fields turn each concept into an actionable research roadmap
-- Side-by-side comparison across ≥2 concepts: form factor, maturity, confidence, approach count, validation passed/failed counts, risk count, next step count
-- Export as markdown (human-readable handoff with all sections) or JSON
+- Side-by-side comparison across ≥2 concepts: form factor, maturity, confidence, **layout, element count, listener distance, zone separation, predicted contrast and whether it meets the 15 dB target**, approach count, validation passed/failed counts, risk count, next step count. The geometry columns are re-resolved from the card *plus the overrides the last simulate carried*, so the table shows what was actually simulated; an unsimulated concept shows `—` rather than a stale number.
+- Export as markdown (human-readable handoff with all sections, including a **Resolved Geometry** section — every knob, the `design_intent`, and a callout per clamped value — and a **Predicted Performance** section once simulated) or JSON, which carries the same `resolved_geometry` block
 - Maturity inherited from weakest contributing approach
 
 #### Device updates from execution evidence (CS-DEVICE-007…010)
@@ -1042,7 +1042,7 @@ All endpoints are prefixed with `/co-scientist`.
 |--------|------|-------------|
 | POST | `/goals/{id}/devices/generate` | Generate device concepts via agent from validated approaches |
 | GET | `/goals/{id}/devices` | List device concept cards (filter by status) |
-| GET | `/goals/{id}/devices/compare?ids=id1,id2` | Side-by-side comparison of ≥2 concepts |
+| GET | `/goals/{id}/devices/compare?ids=id1,id2` | Side-by-side comparison of ≥2 concepts, including resolved geometry and predicted contrast |
 | GET | `/goals/{id}/devices/evidence-updates` | List device confidence/risk updates (filter by `device_id`) |
 | GET | `/goals/{id}/devices/{did}` | Get device concept card details |
 | GET | `/goals/{id}/devices/{did}/execution-evidence` | Linked experiments, validation outcomes, confidence, and affected approach scores |

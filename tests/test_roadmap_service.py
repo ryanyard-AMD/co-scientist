@@ -525,7 +525,14 @@ def test_sim_summary_extracts_prediction():
         "acoustic_contrast_db": 28.33,
         "target_contrast_db": 15.0,
         "meets_target": True,
-        "resolved_geometry": {"layout": "cap", "n_elements": 8, "cap_radius_m": 0.12},
+        "resolved_geometry": {
+            "layout": "cap",
+            "n_elements": 8,
+            "cap_radius_m": 0.12,
+            "listener_m": [0.0, 0.6, 0.0],
+            "dark_m": [0.4, 0.6, 0.0],
+        },
+        "model_flags": {"t60_s": 0.4, "pal_model": True},
     }))
     assert summary == {
         "predicted_contrast_db": 28.33,
@@ -533,6 +540,10 @@ def test_sim_summary_extracts_prediction():
         "meets_target": True,
         "layout": "cap",
         "n_elements": 8,
+        "listener_m": [0.0, 0.6, 0.0],
+        "zone_separation_m": 0.4,
+        "t60_s": 0.4,
+        "pal_model": True,
     }
 
 
@@ -555,6 +566,10 @@ def test_sim_summary_extracts_reproduction_quality():
         "meets_target": None,
         "layout": "cap",
         "n_elements": 16,
+        "listener_m": None,
+        "zone_separation_m": None,
+        "t60_s": None,
+        "pal_model": None,
         "mode": "sound_field_reproduction",
         "solver": "pressure_matching",
         "target": {"kind": "plane_wave"},

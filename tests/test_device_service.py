@@ -353,6 +353,19 @@ def test_export_json_is_valid(mock_agent, db_session):
     assert "unresolved_risks" in data
 
 
+@patch("coscientist.services.device._run_device_agent", return_value=MOCK_CONCEPTS)
+def test_export_json_includes_resolved_geometry(mock_agent, db_session):
+    """The buildable spec is the resolved geometry, not the subset the card pinned."""
+    goal = _create_goal(db_session)
+    _create_validated_approach(db_session, goal.id)
+    gen = svc.generate(db_session, goal.id, DeviceConceptGenerateRequest())
+    result = svc.export_device(db_session, gen.items[0].id, goal.id, "json")
+    geo = json.loads(result.content)["resolved_geometry"]
+    assert geo["layout"] == "ula"
+    assert geo["n_elements"] == 8
+    assert geo["carrier"] == 40000.0
+
+
 # --- device geometry simulation (spec→model bridge) ---
 
 _SIM_RESPONSE = {
@@ -1000,3 +1013,97 @@ def test_optimize_honors_execution_boundary(mock_agent, db_session):
         with pytest.raises(Exception) as exc_info:
             svc.optimize(db_session, device_id, goal.id, {"n_elements": [4, 8]})
     assert exc_info.value.status_code == 403
+
+
+# --- geometry surfaced downstream: compare and export ---
+
+
+def _two_devices(db):
+    """Two cards whose geometry blocks differ physically, so compare has something
+    real to show. Both go through generate so the blocks are clamped on the way in."""
+    goal = _create_goal(db)
+    _create_validated_approach(db, goal.id)
+    concepts = [
+        MOCK_CONCEPTS[0].model_copy(update={
+            "geometry": DeviceGeometry(layout="cap", n_elements=24, listener=[0.0, 0.5, 0.0]),
+        }),
+        MOCK_CONCEPTS[0].model_copy(update={
+            "name": "Periphery Ring",
+            "geometry": DeviceGeometry(
+                layout="ring", n_elements=12, ring_radius=0.6,
+                listener=[0.0, 1.4, 0.0], dark=[1.1, 1.4, 0.0],
+            ),
+        }),
+    ]
+    with patch("coscientist.services.device._run_device_agent", return_value=concepts):
+        gen = svc.generate(db, goal.id, DeviceConceptGenerateRequest())
+    return goal, [c.id for c in gen.items]
+
+
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_compare_surfaces_geometry_and_contrast(db_session):
+    goal, ids = _two_devices(db_session)
+    svc.simulate(db_session, ids[0], goal.id)
+    result = svc.compare(db_session, goal.id, ids)
+
+    for dim in ("layout", "n_elements", "listener_distance_m", "zone_separation_m",
+                "predicted_contrast_db", "meets_target"):
+        assert dim in result.dimensions
+
+    first, second = result.concepts
+    assert first.values["layout"] == "cap"
+    assert first.values["n_elements"] == "24"
+    assert first.values["listener_distance_m"] == "0.50"
+    assert first.values["zone_separation_m"] == "0.40"
+    assert first.values["predicted_contrast_db"] == "43.46"
+    assert first.values["meets_target"] == "True"
+
+    assert second.values["layout"] == "ring"
+    assert second.values["listener_distance_m"] == "1.40"
+    assert second.values["zone_separation_m"] == "1.10"
+    # never simulated, so the prediction columns are honest about having no number
+    assert second.values["predicted_contrast_db"] == "—"
+    assert second.values["meets_target"] == "—"
+
+
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_compare_reflects_last_simulate_overrides(db_session):
+    """compare must show what was actually simulated, not the card's base geometry."""
+    goal, ids = _two_devices(db_session)
+    svc.simulate(db_session, ids[0], goal.id, overrides={"n_elements": 48})
+    result = svc.compare(db_session, goal.id, ids)
+    assert result.concepts[0].values["n_elements"] == "48"
+
+
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_export_markdown_includes_geometry_section(db_session):
+    goal, ids = _two_devices(db_session)
+    svc.simulate(db_session, ids[0], goal.id)
+    content = svc.export_device(db_session, ids[0], goal.id, "markdown").content
+    assert "## Resolved Geometry" in content
+    assert "- **layout**: \"cap\"" in content
+    assert "- **n_elements**: 24" in content
+    assert "- **zone_separation_m**: 0.40" in content
+    assert "## Predicted Performance" in content
+    assert "43.46 dB" in content
+
+
+def test_export_markdown_records_clamps(db_session):
+    goal = _create_goal(db_session)
+    _create_validated_approach(db_session, goal.id)
+    with patch("coscientist.services.device._run_device_agent",
+               return_value=MOCK_CONCEPTS_WITH_GEOMETRY):
+        gen = svc.generate(db_session, goal.id, DeviceConceptGenerateRequest())
+    content = svc.export_device(db_session, gen.items[0].id, goal.id, "markdown").content
+    assert "> Clamped `n_elements`: 200 → 64" in content
+
+
+@patch("coscientist.services.device.ReproClient", _FakeReproClient)
+def test_simulate_echoes_card_clamps(db_session):
+    goal = _create_goal(db_session)
+    _create_validated_approach(db_session, goal.id)
+    with patch("coscientist.services.device._run_device_agent",
+               return_value=MOCK_CONCEPTS_WITH_GEOMETRY):
+        gen = svc.generate(db_session, goal.id, DeviceConceptGenerateRequest())
+    result = svc.simulate(db_session, gen.items[0].id, goal.id)
+    assert [c.key for c in result.clamped] == ["n_elements"]

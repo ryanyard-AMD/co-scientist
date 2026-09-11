@@ -1955,6 +1955,11 @@ def device_simulate(
                 "[yellow]overrides[/yellow]",
                 ", ".join(f"{k}={v}" for k, v in result.overrides.items()),
             )
+        if result.clamped:
+            geo.add_row(
+                "[yellow]clamped[/yellow]",
+                ", ".join(f"{c.key} {c.proposed}→{c.applied}" for c in result.clamped),
+            )
         console.print(geo)
 
         verdict = "[green]meets[/green]" if result.meets_target else "[red]below[/red]"

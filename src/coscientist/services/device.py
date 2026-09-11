@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import time
 import uuid
@@ -722,6 +723,45 @@ def _resolve_geometry(card: DeviceConceptCard) -> dict:
     return geometry
 
 
+_UNSET = "—"
+
+
+def _simulated_geometry(card: DeviceConceptCard, sim: dict) -> dict:
+    """The geometry the card's last simulation actually ran on: the resolved block
+    plus the overrides that run carried. Re-resolved rather than read out of
+    `sim["resolved_geometry"]`, because repro's *response* renames keys
+    (`listener_m`, `cap_radius_m`, `freqs_hz`) while its request does not."""
+    geometry = _resolve_geometry(card)
+    try:
+        return _apply_overrides(geometry, sim.get("overrides"))
+    except ValueError:
+        # A blob written before a knob was renamed out of the allowlist; the base
+        # resolution is still the honest answer.
+        return geometry
+
+
+def _boresight_distance(geometry: dict) -> float | None:
+    listener = geometry.get("listener")
+    if isinstance(listener, (list, tuple)) and len(listener) == 3:
+        return float(listener[1])
+    return None
+
+
+def _zone_separation(geometry: dict) -> float | None:
+    """Euclidean distance between bright and dark zone centres — the separation the
+    device has to achieve, and the single number that makes two concepts comparable."""
+    listener, dark = geometry.get("listener"), geometry.get("dark")
+    if not (isinstance(listener, (list, tuple)) and isinstance(dark, (list, tuple))):
+        return None
+    if len(listener) != 3 or len(dark) != 3:
+        return None
+    return math.dist([float(v) for v in listener], [float(v) for v in dark])
+
+
+def _fmt_m(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else _UNSET
+
+
 def simulate(
     db: Session,
     device_id: str,
@@ -806,7 +846,16 @@ def simulate(
         repro_endpoint=f"{settings.repro_url.rstrip('/')}/api/v1/device-sim",
         overrides=overrides or {},
         previous_contrast_db=previous_contrast_db,
+        clamped=_card_clamps(card),
     )
+
+
+def _card_clamps(card: DeviceConceptCard) -> list[GeometryClamp]:
+    try:
+        raw = json.loads(getattr(card, "geometry", None) or "{}")
+    except (ValueError, TypeError):
+        return []
+    return DeviceGeometry(**raw).clamped if raw else []
 
 
 def reproduce(
@@ -1279,6 +1328,12 @@ def compare(
         "form_factor_type",
         "maturity",
         "confidence",
+        "layout",
+        "n_elements",
+        "listener_distance_m",
+        "zone_separation_m",
+        "predicted_contrast_db",
+        "meets_target",
         "approach_count",
         "experiment_count",
         "validation_result_count",
@@ -1292,6 +1347,9 @@ def compare(
     for card in cards:
         ff = json.loads(card.form_factor) if card.form_factor else {}
         ev = device_evidence_svc.build_execution_evidence(db, card.id)
+        sim = json.loads(card.simulation) if card.simulation else {}
+        geo = _simulated_geometry(card, sim)
+        contrast = sim.get("acoustic_contrast_db")
         concepts.append(
             DeviceConceptComparisonItem(
                 id=card.id,
@@ -1299,6 +1357,18 @@ def compare(
                 values={
                     "form_factor_type": ff.get("type", ""),
                     "maturity": card.maturity,
+                    "layout": str(geo.get("layout", _UNSET)),
+                    "n_elements": str(geo.get("n_elements", _UNSET)),
+                    "listener_distance_m": _fmt_m(_boresight_distance(geo)),
+                    "zone_separation_m": _fmt_m(_zone_separation(geo)),
+                    "predicted_contrast_db": (
+                        f"{float(contrast):.2f}" if contrast is not None else _UNSET
+                    ),
+                    "meets_target": (
+                        str(bool(sim.get("meets_target")))
+                        if sim.get("meets_target") is not None
+                        else _UNSET
+                    ),
                     "confidence": f"{card.confidence:.2f}",
                     "approach_count": str(len(json.loads(card.approach_ids or "[]"))),
                     "experiment_count": str(len(json.loads(card.experiment_ids or "[]"))),
@@ -1322,9 +1392,15 @@ def export_device(
 ) -> DeviceConceptExportResponse:
     card = _get_or_404(db, device_id, goal_id)
     resp = _to_response(card)
+    sim = json.loads(card.simulation) if card.simulation else {}
+    geo = _simulated_geometry(card, sim)
 
     if fmt == "json":
-        content = resp.model_dump_json(indent=2)
+        payload = json.loads(resp.model_dump_json())
+        # The resolved block is what someone would actually build or re-simulate;
+        # the card's own geometry block is only the subset it chose to pin.
+        payload["resolved_geometry"] = geo
+        content = json.dumps(payload, indent=2)
     else:
         lines = [f"# {resp.name}"]
         if resp.description:
@@ -1364,6 +1440,40 @@ def export_device(
             lines.append(f"**Microphones**: {json.dumps(hw.microphones)}")
         if hw.compute:
             lines.append(f"**Compute**: {json.dumps(hw.compute)}")
+        lines += ["", "## Resolved Geometry", ""]
+        if resp.geometry.design_intent:
+            lines += [f"*{resp.geometry.design_intent}*", ""]
+        lines += [f"- **{k}**: {json.dumps(v)}" for k, v in sorted(geo.items())]
+        lines.append(f"- **zone_separation_m**: {_fmt_m(_zone_separation(geo))}")
+        for clamp in resp.geometry.clamped:
+            lines.append(
+                f"> Clamped `{clamp.key}`: {json.dumps(clamp.proposed)} → "
+                f"{json.dumps(clamp.applied)} ({clamp.bound}) — {clamp.reason}"
+            )
+        if sim.get("acoustic_contrast_db") is not None:
+            lines += [
+                "",
+                "## Predicted Performance",
+                "",
+                f"- **Acoustic contrast**: {float(sim['acoustic_contrast_db']):.2f} dB",
+            ]
+            if sim.get("target_contrast_db") is not None:
+                verdict = "meets" if sim.get("meets_target") else "below"
+                lines.append(
+                    f"- **Target**: {float(sim['target_contrast_db']):.0f} dB ({verdict})"
+                )
+            if sim.get("mode") == "sound_field_reproduction":
+                lines += [
+                    f"- **Normalized reproduction error**: {sim.get('normalized_reproduction_error')}",
+                    f"- **Spatial correlation**: {sim.get('spatial_correlation')}",
+                ]
+            if sim.get("overrides"):
+                lines.append(
+                    "- **Overrides applied**: "
+                    + ", ".join(f"`{k}={v}`" for k, v in sorted(sim["overrides"].items()))
+                )
+            for note in sim.get("approximations", []):
+                lines.append(f"- *Approximation*: {note}")
         ep = resp.expected_performance
         lines += [
             "",
