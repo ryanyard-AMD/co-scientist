@@ -544,7 +544,7 @@ GEOMETRY_BOUNDS: dict[str, tuple[float, float, str]] = {
     "n_elements": (4, 64, "under 4 elements there are too few DOF to steer; over 64 the image-source room build dominates runtime"),
     "cap_radius": (0.03, 0.60, "a spherical cap under 3 cm cannot hold elements; over 60 cm stops being a device"),
     "cap_deg": (5.0, 80.0, "under 5 deg the cap degenerates to planar; over 80 deg the outer elements face away from the listener"),
-    "ring_radius": (0.10, 2.00, "ring modules must sit outside the listener zone and inside the room"),
+    "ring_radius": (0.10, 2.00, "absolute floor; the binding constraint is the bright-zone clearance rule in _clear_ring"),
     "pitch": (0.005, 0.10, "5 mm is physical element collision; 100 mm is deep grating-lobe territory"),
     "zone_half_extent": (0.02, 0.40, "under 2 cm is sub-head; over 40 cm is not a personal zone"),
     "t60": (0.0, 2.0, "0 is the anechoic bound; over 2 s the image-source truncation is no longer valid"),
@@ -636,6 +636,7 @@ def _clamp_geometry(geo: DeviceGeometry) -> DeviceGeometry:
         )
 
     _separate_zones(values, clamps)
+    _clear_ring(values, clamps)
 
     values["clamped"] = [c.model_dump() for c in clamps]
     return DeviceGeometry(**values)
@@ -683,6 +684,35 @@ def _separate_zones(values: dict, clamps: list[GeometryClamp]) -> None:
         reason="bright and dark zones overlapped; contrast is undefined for overlapping zones",
     ))
     values["dark"] = applied
+
+
+def _clear_ring(values: dict, clamps: list[GeometryClamp]) -> None:
+    """Keep ring modules out of the bright zone.
+
+    repro's `listener_ring` centres the ring on the listener, so `ring_radius` is the
+    distance from every module to the bright-zone centre. The zone is a cube, so its
+    corners reach `sqrt(3) * zone_half_extent` — a ring inside that is sitting in the
+    volume it is supposed to be illuminating, and the contrast it reports is an artefact
+    of proximity rather than zone control. Applied whenever `ring_radius` is set rather
+    than gating on `layout == "ring"`: a block may leave `layout` unset and inherit it
+    from the prose layer, and the knob is inert for every other topology.
+    """
+    radius = values.get("ring_radius")
+    if radius is None:
+        return
+    defaults = _default_geometry()
+    half = values.get("zone_half_extent") or defaults["zone_half_extent"]
+    aperture = values.get("aperture") or defaults["aperture"]
+    floor = math.sqrt(3.0) * half + aperture
+    if radius >= floor:
+        return
+    clamps.append(GeometryClamp(
+        key="ring_radius", proposed=radius, applied=floor,
+        bound=f">= {floor:.3f} m (sqrt(3) * {half} + {aperture})",
+        reason="ring modules must clear the bright-zone cube's corners; inside it, "
+               "contrast measures proximity rather than zone control",
+    ))
+    values["ring_radius"] = floor
 
 
 def _default_geometry() -> dict:

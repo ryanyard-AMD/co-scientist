@@ -92,7 +92,7 @@ meaningfully handle, with the physical reason for each bound:
 | `n_elements` | 4..64 | Under 4 there are too few DOF to steer; over 64 the image-source room build dominates runtime. |
 | `cap_radius` | 0.03..0.60 m | Under 3 cm cannot hold elements; over 60 cm stops being a device. |
 | `cap_deg` | 5..80° | Under 5° degenerates to planar; over 80° the outer elements face away from the listener. |
-| `ring_radius` | 0.10..2.00 m | Modules must sit outside the listener zone and inside the room. |
+| `ring_radius` | 0.10..2.00 m | Absolute floor. The binding constraint is the clearance rule below. |
 | `pitch` | 0.005..0.10 m | 5 mm is physical element collision; 100 mm is deep grating-lobe territory. |
 | `zone_half_extent` | 0.02..0.40 m | Under 2 cm is sub-head; over 40 cm is not a personal zone. |
 | `t60` | 0..2.0 s | 0 is the anechoic bound; over 2 s the image-source truncation is no longer valid. |
@@ -100,6 +100,32 @@ meaningfully handle, with the physical reason for each bound:
 | `aperture` | 0.002..0.05 m | Sets the Berktay beamwidth. |
 | `sidelobe_floor` | 0.001..0.5 | 0.056 (−25 dB) is what real PAL hardware measures. |
 | `nearfield_length` | 0..3.0 m | 0 disables the near-field taper. |
+
+### Ring clearance, and why contrast can't pick the radius
+
+The simulator centres a `ring` on the listener, so `ring_radius` is the distance from
+every module to the bright-zone **centre**. The zone is a cube, so its corners reach
+`sqrt(3) × zone_half_extent`; a ring inside that radius is sitting in the volume it is
+supposed to be illuminating. `_clear_ring` therefore clamps
+
+```
+ring_radius >= sqrt(3) * zone_half_extent + aperture     # 0.166 m at defaults
+```
+
+This matters because **acoustic contrast is monotone in `ring_radius`** — shrinking the
+ring moves the sources toward the listener's head, so bright-zone energy climbs as 1/r²
+while the dark zone stays put. Measured on a 16-element ring at 60 cm zone separation,
+`t60` 0.4:
+
+| `ring_radius` | 0.30 | 0.20 | 0.15 | 0.12 | 0.10 |
+|---|---|---|---|---|---|
+| contrast (dB) | 49.70 | 53.99 | 63.55 | 66.91 | 67.39 |
+
+The number keeps rising with no improvement in zone *control*, so an unconstrained
+sweep converges on headphones rather than a periphery array. The clearance rule stops
+the physically absurd end of that range; it does not make contrast a valid objective for
+this knob. **Fix `ring_radius` from the use case** — a tabletop deployment is ~0.3 m —
+and sweep the knobs that trade off against something.
 
 `freqs` are normalised to 1–8 values in 100 Hz..20 kHz (deduped, sorted).
 `room_dims` components clamp to 1..20 m. Vector knobs must be three finite numbers

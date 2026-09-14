@@ -1,4 +1,5 @@
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -631,6 +632,20 @@ def test_clamp_geometry_drops_malformed_vector():
     clamps, geo = _clamp(listener=[0.0, 1.0])
     assert geo.listener is None
     assert clamps["listener"].applied is None
+
+
+def test_clamp_geometry_clears_ring_from_bright_zone():
+    # 0.15 m clears the static 0.10 floor but sits inside the zone cube's corners.
+    clamps, geo = _clamp(layout="ring", ring_radius=0.15, zone_half_extent=0.09, aperture=0.01)
+    assert geo.ring_radius == pytest.approx(math.sqrt(3) * 0.09 + 0.01)
+    assert "bright-zone" in clamps["ring_radius"].reason
+
+
+def test_clear_ring_floor_follows_zone_half_extent():
+    clamps, geo = _clamp(layout="ring", ring_radius=0.15, zone_half_extent=0.03, aperture=0.01)
+    # A smaller zone lets the ring sit closer; 0.15 is already clear of it.
+    assert geo.ring_radius == 0.15
+    assert "ring_radius" not in clamps
 
 
 def test_clamp_geometry_noop_records_nothing():
