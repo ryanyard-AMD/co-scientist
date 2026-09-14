@@ -219,6 +219,26 @@ def test_device_reproduce_sweep_renders_ranked_candidates():
     }
 
 
+def test_device_optimize_warns_on_boundary_optimum():
+    result_obj = _fake_result().model_copy(update={"boundary_keys": ["ring_radius"]})
+    with patch("coscientist.services.device.optimize", return_value=result_obj):
+        result = runner.invoke(
+            app, ["device", "optimize", "dev-1", "goal-1", "--sweep", "ring_radius=0.3,0.5"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "boundary optimum" in result.output
+    assert "ring_radius" in result.output
+
+
+def test_device_optimize_silent_without_boundary_keys():
+    with patch("coscientist.services.device.optimize", return_value=_fake_result()):
+        result = runner.invoke(
+            app, ["device", "optimize", "dev-1", "goal-1", "--sweep", "n_elements=8,16"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "boundary optimum" not in result.output
+
+
 def test_device_optimize_requires_sweep():
     result = runner.invoke(app, ["device", "optimize", "dev-1", "goal-1"])
     assert result.exit_code == 1

@@ -1225,6 +1225,30 @@ def reproduce_sweep(
     )
 
 
+def _boundary_keys(search_space: dict, best_overrides: dict) -> list[str]:
+    """Numeric knobs whose winning value sits at an end of the range it was given.
+
+    A boundary optimum means the sweep never bracketed a maximum: the objective was
+    still climbing when the values ran out, so the winner records where the range
+    stopped rather than where the design is best. `ring_radius` does this always —
+    contrast is monotone in it — but any knob can, and it is the signal that the
+    sweep should be re-run wider or that the objective is wrong for that knob.
+    Categorical sweeps (layout, pal_model) are skipped: an unordered set has no ends.
+    """
+    flagged = []
+    for key, values in sorted(search_space.items()):
+        best = best_overrides.get(key)
+        if not isinstance(values, (list, tuple)) or len(values) < 2:
+            continue
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+            continue
+        if not isinstance(best, (int, float)) or isinstance(best, bool):
+            continue
+        if best in (min(values), max(values)):
+            flagged.append(key)
+    return flagged
+
+
 def optimize(
     db: Session,
     device_id: str,
@@ -1287,6 +1311,7 @@ def optimize(
     contrast = float(result.get("best_contrast_db", best.get("acoustic_contrast_db", 0.0)))
     per_band = best.get("per_band", [])
     best_overrides = result.get("best_overrides", {})
+    boundary_keys = _boundary_keys(search_space, best_overrides)
     target = DEFAULT_TARGET_CONTRAST_DB
     simulated_at = datetime.now(timezone.utc)
     endpoint = f"{settings.repro_url.rstrip('/')}/api/v1/device-sim"
@@ -1306,6 +1331,7 @@ def optimize(
             "previous_contrast_db": previous_contrast_db,
             "optimization": {
                 "swept_keys": result.get("swept_keys", []),
+                "boundary_keys": boundary_keys,
                 "n_candidates": result.get("n_candidates", 0),
                 "best_overrides": best_overrides,
             },
@@ -1323,6 +1349,7 @@ def optimize(
         target_contrast_db=target,
         meets_target=contrast >= target,
         swept_keys=result.get("swept_keys", []),
+        boundary_keys=boundary_keys,
         n_candidates=result.get("n_candidates", 0),
         rooms_built=result.get("rooms_built", 0),
         candidates=[

@@ -125,7 +125,8 @@ The number keeps rising with no improvement in zone *control*, so an unconstrain
 sweep converges on headphones rather than a periphery array. The clearance rule stops
 the physically absurd end of that range; it does not make contrast a valid objective for
 this knob. **Fix `ring_radius` from the use case** — a tabletop deployment is ~0.3 m —
-and sweep the knobs that trade off against something.
+and sweep the knobs that trade off against something. `optimize` flags any knob whose
+winner lands on the edge of its swept range for exactly this reason.
 
 `freqs` are normalised to 1–8 values in 100 Hz..20 kHz (deduped, sorted).
 `room_dims` components clamp to 1..20 m. Vector knobs must be three finite numbers

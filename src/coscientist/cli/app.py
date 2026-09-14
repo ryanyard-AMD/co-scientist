@@ -2438,6 +2438,14 @@ def device_optimize(
                 f"({result.previous_contrast_db:.2f} dB)"
             )
 
+        if result.boundary_keys:
+            console.print(
+                f"\n[yellow]⚠ boundary optimum:[/yellow] "
+                f"{', '.join(result.boundary_keys)} won at the edge of the swept range. "
+                "The sweep never bracketed a maximum — widen it, or fix the knob from "
+                "the use case if the objective is monotone in it."
+            )
+
         if roadmap:
             console.print("\n[bold]Regenerating roadmap from the refined card…[/bold]")
             rm = roadmap_svc.generate(db, goal_id)

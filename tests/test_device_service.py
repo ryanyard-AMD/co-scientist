@@ -634,6 +634,23 @@ def test_clamp_geometry_drops_malformed_vector():
     assert clamps["listener"].applied is None
 
 
+def test_boundary_keys_flags_winner_at_range_edge():
+    flagged = svc._boundary_keys(
+        {"n_elements": [4, 8, 16], "ring_radius": [0.3, 0.4, 0.5]},
+        {"n_elements": 16, "ring_radius": 0.4},
+    )
+    assert flagged == ["n_elements"]
+
+
+def test_boundary_keys_ignores_categorical_sweeps():
+    # An unordered set has no ends, so "winning at an edge" is meaningless.
+    flagged = svc._boundary_keys(
+        {"layout": ["ula", "ring"], "pal_model": [True, False]},
+        {"layout": "ring", "pal_model": True},
+    )
+    assert flagged == []
+
+
 def test_clamp_geometry_clears_ring_from_bright_zone():
     # 0.15 m clears the static 0.10 floor but sits inside the zone cube's corners.
     clamps, geo = _clamp(layout="ring", ring_radius=0.15, zone_half_extent=0.09, aperture=0.01)

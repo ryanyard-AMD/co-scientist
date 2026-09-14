@@ -307,6 +307,9 @@ class DeviceOptimizeResult(BaseModel):
     target_contrast_db: float | None = None
     meets_target: bool | None = None
     swept_keys: list[str] = Field(default_factory=list)
+    # Swept knobs whose winner landed on an end of its range — the sweep never
+    # bracketed a maximum, so the value reports where the range stopped.
+    boundary_keys: list[str] = Field(default_factory=list)
     n_candidates: int = 0
     rooms_built: int = 0
     candidates: list[DeviceOptimizeCandidate] = Field(default_factory=list)
